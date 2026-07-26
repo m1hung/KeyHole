@@ -79,6 +79,22 @@ function CreateVault({ vault }: { vault: VaultController }) {
   const canSubmit =
     password.length >= MIN_MASTER_PASSWORD_LENGTH && password === confirm && acknowledged && !vault.busy;
 
+  /**
+   * Why the button is disabled, in the order a user works down the form.
+   *
+   * Without this the form is a dead end: you type a perfectly good password,
+   * the button does nothing, and there is no way to tell that the unticked
+   * acknowledgement is what is blocking you.
+   */
+  const blocker = ((): string | null => {
+    if (password.length === 0) return 'Enter a master password to continue.';
+    if (tooShort) return `Master password must be at least ${MIN_MASTER_PASSWORD_LENGTH} characters — ${MIN_MASTER_PASSWORD_LENGTH - password.length} more to go.`;
+    if (confirm.length === 0) return 'Re-enter your master password to confirm it.';
+    if (password !== confirm) return 'The two passwords do not match.';
+    if (!acknowledged) return 'Tick the box above to confirm you understand there is no password recovery.';
+    return null;
+  })();
+
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!canSubmit) return;
@@ -150,9 +166,21 @@ function CreateVault({ vault }: { vault: VaultController }) {
           </label>
         </div>
 
-        <button type="submit" className="primary" style={{ width: '100%', marginTop: 8 }} disabled={!canSubmit}>
+        <button
+          type="submit"
+          className="primary"
+          style={{ width: '100%', marginTop: 8 }}
+          disabled={!canSubmit}
+          aria-describedby={blocker ? 'submit-blocker' : undefined}
+        >
           {vault.busy ? 'Deriving key…' : 'Create vault'}
         </button>
+
+        {blocker && (
+          <p className="hint" id="submit-blocker" role="status" style={{ textAlign: 'center', marginTop: 8 }}>
+            {blocker}
+          </p>
+        )}
 
         <ImportControl vault={vault} label="Import an existing vault file" />
       </form>
