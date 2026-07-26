@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Never commit a real vault. The only checked-in vault is examples/demo-vault.keyhole.json,
+# which contains fabricated data and a published master password.
+*.keyhole.json
+!examples/demo-vault.keyhole.json

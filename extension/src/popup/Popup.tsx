@@ -1,0 +1,267 @@
+/**
+ * Popup UI.
+ *
+ * Holds no vault data of its own: every secret is fetched from the service
+ * worker one value at a time, in response to a specific user click, and is
+ * dropped as soon as the popup closes.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
+
+type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
+
+export function Popup() {
+  const [screen, setScreen] = useState<Screen>('loading');
+  const [matches, setMatches] = useState<EntrySummary[]>([]);
+  const [all, setAll] = useState<EntrySummary[]>([]);
+  const [query, setQuery] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [tabId, setTabId] = useState<number | null>(null);
+  const [tabHost, setTabHost] = useState<string | null>(null);
+
+  const refreshState = useCallback(async () => {
+    const response = await sendToBackground({ type: 'GET_STATE' });
+    if (!response.ok) {
+      setError(response.error);
+      setScreen('locked');
+      return;
+    }
+    if (response.type !== 'STATE') return;
+    setScreen(!response.hasVault ? 'no-vault' : response.locked ? 'locked' : 'unlocked');
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id !== undefined) setTabId(tab.id);
+      if (tab?.url) {
+        try {
+          setTabHost(new URL(tab.url).hostname);
+        } catch {
+          setTabHost(null);
+        }
+      }
+      await refreshState();
+    })();
+  }, [refreshState]);
+
+  // Load entries whenever we become unlocked or the search changes.
+  useEffect(() => {
+    if (screen !== 'unlocked') return;
+    void (async () => {
+      if (tabId !== null) {
+        const matched = await sendToBackground({ type: 'MATCH_TAB', tabId });
+        if (matched.ok && matched.type === 'ENTRIES') setMatches(matched.entries);
+      }
+      const listed = await sendToBackground({ type: 'LIST_ENTRIES', query });
+      if (listed.ok && listed.type === 'ENTRIES') setAll(listed.entries);
+    })();
+  }, [screen, query, tabId]);
+
+  const flash = (message: string) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(null), 2500);
+  };
+
+  const copy = async (entryId: string, field: 'password' | 'username' | 'totp') => {
+    const response = await sendToBackground({ type: 'REVEAL_SECRET', entryId, field });
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    if (response.type !== 'SECRET') return;
+    await navigator.clipboard.writeText(response.value);
+    flash(`${field === 'totp' ? 'Code' : field === 'password' ? 'Password' : 'Username'} copied`);
+
+    if (response.clipboardClearSeconds > 0) {
+      // Best effort: the popup usually closes first, so the service worker
+      // cannot rely on this. Documented in the README.
+      window.setTimeout(() => {
+        void navigator.clipboard.writeText('').catch(() => undefined);
+      }, response.clipboardClearSeconds * 1000);
+    }
+  };
+
+  const fill = async (entryId: string) => {
+    if (tabId === null) return;
+    setError(null);
+    const response = await sendToBackground({ type: 'FILL', entryId, tabId });
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    window.close(); // credential delivered; nothing left to show
+  };
+
+  if (screen === 'loading') return <div className="popup-center">Loading…</div>;
+
+  if (screen === 'no-vault') {
+    return (
+      <div className="popup">
+        <Header host={tabHost} />
+        <div className="popup-center">
+          <p>No vault in this browser yet.</p>
+          <button type="button" className="primary" onClick={() => void chrome.runtime.openOptionsPage()}>
+            Set up Keyhole
+          </button>
+          <p className="hint">Create a new vault, or import one exported from the Keyhole web app.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'locked') {
+    return (
+      <UnlockForm
+        error={error}
+        busy={busy}
+        host={tabHost}
+        onUnlock={async (password) => {
+          setBusy(true);
+          setError(null);
+          const response = await sendToBackground({ type: 'UNLOCK', masterPassword: password });
+          setBusy(false);
+          if (!response.ok) {
+            setError(response.error);
+            return;
+          }
+          await refreshState();
+        }}
+      />
+    );
+  }
+
+  const shown = query.trim().length > 0 ? all : matches.length > 0 ? matches : all;
+  const showingMatches = query.trim().length === 0 && matches.length > 0;
+
+  return (
+    <div className="popup">
+      <Header host={tabHost}>
+        <button
+          type="button"
+          className="icon"
+          title="Lock vault"
+          onClick={() => void sendToBackground({ type: 'LOCK' }).then(refreshState)}
+        >
+          🔒
+        </button>
+        <button type="button" className="icon" title="Open full vault" onClick={() => void chrome.runtime.openOptionsPage()}>
+          ⚙️
+        </button>
+      </Header>
+
+      <input
+        className="popup-search"
+        type="search"
+        placeholder="Search all entries…"
+        aria-label="Search entries"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        autoFocus
+      />
+
+      {error && <div className="popup-error">{error}</div>}
+
+      {showingMatches && <p className="popup-section-label">Matches for {tabHost}</p>}
+      {!showingMatches && shown.length > 0 && <p className="popup-section-label">All entries</p>}
+
+      {shown.length === 0 ? (
+        <div className="popup-center">
+          <p className="hint">{query ? 'No matches.' : 'No entries yet.'}</p>
+        </div>
+      ) : (
+        <ul className="popup-list">
+          {shown.map((entry) => (
+            <li key={entry.id} className="popup-item">
+              <div className="popup-item-main">
+                <div className="popup-item-title">
+                  {entry.title}
+                  {entry.matchStrength === 'exact' && <span className="badge">exact</span>}
+                </div>
+                <div className="popup-item-meta">
+                  {entry.username || <em>no username</em>}
+                  {entry.host ? ` · ${entry.host}` : ''}
+                </div>
+              </div>
+              <div className="popup-item-actions">
+                <button type="button" className="icon" title="Copy username" onClick={() => void copy(entry.id, 'username')}>
+                  👤
+                </button>
+                <button type="button" className="icon" title="Copy password" onClick={() => void copy(entry.id, 'password')}>
+                  📋
+                </button>
+                {entry.hasTotp && (
+                  <button type="button" className="icon" title="Copy one-time code" onClick={() => void copy(entry.id, 'totp')}>
+                    🔢
+                  </button>
+                )}
+                <button type="button" className="fill-button" onClick={() => void fill(entry.id)}>
+                  Fill
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {notice && <div className="popup-toast">{notice}</div>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function Header({ host, children }: { host: string | null; children?: React.ReactNode }) {
+  return (
+    <header className="popup-header">
+      <span className="popup-brand">🔑 Keyhole</span>
+      {host && <span className="popup-host">{host}</span>}
+      <span style={{ flex: 1 }} />
+      {children}
+    </header>
+  );
+}
+
+function UnlockForm({
+  error,
+  busy,
+  host,
+  onUnlock,
+}: {
+  error: string | null;
+  busy: boolean;
+  host: string | null;
+  onUnlock: (password: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  return (
+    <div className="popup">
+      <Header host={host} />
+      <form
+        className="popup-unlock"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void onUnlock(password).then(() => setPassword(''));
+        }}
+      >
+        <label htmlFor="popup-master">Master password</label>
+        <input
+          id="popup-master"
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={busy}
+        />
+        {error && <div className="popup-error">{error}</div>}
+        <button type="submit" className="primary" disabled={busy || password.length === 0}>
+          {busy ? 'Deriving key…' : 'Unlock'}
+        </button>
+      </form>
+    </div>
+  );
+}

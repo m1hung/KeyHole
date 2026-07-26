@@ -1,0 +1,272 @@
+/* Popup styling. Shares Keyhole's token names with the web app. */
+
+:root {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f2f2f4;
+  --border: #e2e2e5;
+  --text: #17171a;
+  --text-dim: #6b6b73;
+  --accent: #4f46e5;
+  --accent-text: #ffffff;
+  --danger: #c62828;
+  --danger-bg: #fdeaea;
+  --radius: 8px;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c20;
+    --surface: #1c1c20;
+    --surface-2: #26262b;
+    --border: #35353c;
+    --text: #ececf1;
+    --text-dim: #9a9aa5;
+    --accent: #7c74f5;
+    --accent-text: #0d0d10;
+    --danger: #ff6b6b;
+    --danger-bg: #3a1d1d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  width: 380px;
+  max-height: 580px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 10px;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.icon {
+  border-color: transparent;
+  background: transparent;
+  padding: 4px 6px;
+  line-height: 1;
+  font-size: 14px;
+}
+
+button.icon:hover {
+  background: var(--surface-2);
+}
+
+input {
+  font: inherit;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.popup {
+  display: flex;
+  flex-direction: column;
+  max-height: 580px;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.popup-brand {
+  font-weight: 700;
+}
+
+.popup-host {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  padding: 2px 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.popup-search {
+  margin: 10px 12px;
+  width: calc(100% - 24px);
+}
+
+.popup-section-label {
+  margin: 4px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.popup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 8px;
+  overflow-y: auto;
+}
+
+.popup-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.popup-item:hover {
+  background: var(--surface-2);
+}
+
+.popup-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.popup-item-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popup-item-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popup-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fill-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 5px 12px;
+}
+
+.fill-button:hover:not(:disabled) {
+  filter: brightness(1.1);
+  background: var(--accent);
+}
+
+.badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.popup-center {
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.popup-center button {
+  margin: 8px 0;
+}
+
+.popup-unlock {
+  padding: 16px 12px;
+}
+
+.popup-unlock button {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.popup-error {
+  margin: 8px 12px;
+  padding: 7px 10px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.popup-toast {
+  position: fixed;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
