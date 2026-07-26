@@ -5,6 +5,7 @@ import {
   DEFAULT_GENERATOR_OPTIONS,
   displayHost,
   generatePassword,
+  generatorEntropyBits,
   generateTotp,
   parseOtpAuthUri,
   type Entry,
@@ -25,12 +26,18 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
   const [draft, setDraft] = useState(entry);
   const [revealed, setRevealed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * Exact entropy, set only while showing a password this editor just generated.
+   * Null for a stored password, whose pool we cannot know after the fact.
+   */
+  const [generatedBits, setGeneratedBits] = useState<number | null>(null);
 
   // Switching entries must reset the draft and re-hide the password — otherwise
   // a revealed secret would carry over to the next entry the user clicks.
   useEffect(() => {
     setDraft(entry);
     setRevealed(false);
+    setGeneratedBits(null);
   }, [entry.id, entry]);
 
   const dirty =
@@ -55,7 +62,9 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
   };
 
   const regenerate = () => {
-    setDraft({ ...draft, password: generatePassword(generatorDefaults ?? DEFAULT_GENERATOR_OPTIONS) });
+    const options = generatorDefaults ?? DEFAULT_GENERATOR_OPTIONS;
+    setDraft({ ...draft, password: generatePassword(options) });
+    setGeneratedBits(generatorEntropyBits(options));
     setRevealed(true);
   };
 
@@ -115,7 +124,9 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
         onCopy={() => onCopy(draft.password, 'Password')}
       />
       <div className="field" style={{ marginTop: -8 }}>
-        {revealed && draft.password.length > 0 && <StrengthMeter password={draft.password} />}
+        {revealed && draft.password.length > 0 && (
+          <StrengthMeter password={draft.password} exactBits={generatedBits ?? undefined} />
+        )}
         <div className="button-row" style={{ marginTop: 8 }}>
           <button type="button" className="ghost" onClick={regenerate}>
             Generate new password

@@ -167,7 +167,7 @@ paths are not secret; envelopes stay ciphertext.
 
 - [x] Design doc (`docs/SYNC.md`)
 - [x] Pure `compareEnvelopes` / `decideSync` in `@keyhole/core` + tests
-- [ ] Pointer from `ARCHITECTURE.md`
+- [x] Pointer from `ARCHITECTURE.md`
 
 ### Phase 1 — web app polish
 

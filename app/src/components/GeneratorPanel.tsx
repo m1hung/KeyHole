@@ -1,7 +1,7 @@
 /** Standalone password generator with live strength feedback. */
 
 import { useCallback, useEffect, useState } from 'react';
-import { MAX_LENGTH, MIN_LENGTH, generatePassword, type GeneratorOptions } from '@keyhole/core';
+import { MAX_LENGTH, MIN_LENGTH, generatePassword, generatorEntropyBits, type GeneratorOptions } from '@keyhole/core';
 import { StrengthMeter } from './common.tsx';
 
 interface GeneratorPanelProps {
@@ -58,7 +58,7 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
             📋
           </button>
         </div>
-        {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : <StrengthMeter password={password} />}
+        {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : <StrengthMeter password={password} exactBits={generatorEntropyBits(options)} />}
       </div>
 
       <div className="field">

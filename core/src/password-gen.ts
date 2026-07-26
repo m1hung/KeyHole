@@ -110,6 +110,33 @@ export function generatePassword(options: GeneratorOptions = DEFAULT_GENERATOR_O
   return shuffle(chars).join('');
 }
 
+/** Size of the character pool `generatePassword` draws from for these options. */
+export function generatorPoolSize(options: GeneratorOptions): number {
+  return buildClasses(options).join('').length;
+}
+
+/**
+ * Entropy of a password produced by `generatePassword` with these options.
+ *
+ * Prefer this over `estimateStrength` whenever the password was just generated.
+ * `estimateStrength` has to *infer* the pool from the characters it can see, and
+ * it credits any non-alphanumeric character with a 33-symbol pool. That was
+ * roughly right for the original 27-symbol set, but the set is now 8 characters,
+ * so inference overstates a generated password by ~9 bits at the default length.
+ * Here the exact pool is known, so no inference is needed.
+ *
+ * Slight upper bound: `generatePassword` guarantees one character from each
+ * enabled class, which trims the reachable output space a little. The gap is far
+ * below one bit at any usable length (see the test asserting it), and erring
+ * high by <1 bit is preferable to the alternative of erring low and nagging the
+ * user about a password that is genuinely fine.
+ */
+export function generatorEntropyBits(options: GeneratorOptions): number {
+  const poolSize = generatorPoolSize(options);
+  if (poolSize === 0 || options.length <= 0) return 0;
+  return options.length * Math.log2(poolSize);
+}
+
 /** Diceware-style passphrase. `wordlist` should hold >= 2048 distinct words. */
 export function generatePassphrase(wordlist: readonly string[], words = 5, separator = '-'): string {
   if (wordlist.length < 128) throw new ValidationError('Wordlist is too small to be useful.');
@@ -144,7 +171,19 @@ export function estimateStrength(password: string): StrengthResult {
   if (password.length === 0) {
     return { bits: 0, score: 0, label: 'very weak', crackTimeDisplay: 'instantly' };
   }
-  const bits = Math.round(entropyBits(password) * 10) / 10;
+  return strengthFromBits(entropyBits(password));
+}
+
+/**
+ * Score and label an entropy figure that is already known exactly.
+ *
+ * Lets a caller holding a precise value — `generatorEntropyBits` for a
+ * freshly generated password — render the same meter and wording as the
+ * inferred path, instead of round-tripping through `estimateStrength` and
+ * inheriting its pool-size guess.
+ */
+export function strengthFromBits(rawBits: number): StrengthResult {
+  const bits = Math.round(Math.max(rawBits, 0) * 10) / 10;
   const { score, label } = classify(bits);
   return { bits, score, label, crackTimeDisplay: crackTime(bits) };
 }

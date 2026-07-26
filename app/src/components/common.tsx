@@ -1,7 +1,7 @@
 /** Small shared UI primitives used by both the app and the extension popup. */
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import { estimateStrength } from '@keyhole/core';
+import { estimateStrength, strengthFromBits } from '@keyhole/core';
 
 // ------------------------------------------------------------------ secrets
 
@@ -45,8 +45,17 @@ export function SecretField({ label, value, revealed, onToggleReveal, onCopy, id
 
 // ------------------------------------------------------------------ strength
 
-export function StrengthMeter({ password }: { password: string }) {
-  const result = estimateStrength(password);
+interface StrengthMeterProps {
+  password: string;
+  /**
+   * Exact entropy, when the caller generated this password and knows the pool.
+   * Omit for user-typed passwords, where `estimateStrength` must infer it.
+   */
+  exactBits?: number | undefined;
+}
+
+export function StrengthMeter({ password, exactBits }: StrengthMeterProps) {
+  const result = exactBits === undefined ? estimateStrength(password) : strengthFromBits(exactBits);
   const colors = ['var(--danger)', 'var(--danger)', 'var(--warn)', 'var(--ok)', 'var(--ok)'];
   return (
     <div className="strength">

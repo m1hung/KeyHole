@@ -7,6 +7,9 @@ import {
   estimateStrength,
   generatePassphrase,
   generatePassword,
+  generatorEntropyBits,
+  generatorPoolSize,
+  strengthFromBits,
 } from '../src/password-gen.ts';
 import { ValidationError } from '../src/errors.ts';
 import type { GeneratorOptions } from '../src/types.ts';
@@ -170,5 +173,104 @@ describe('estimateStrength', () => {
     expect(estimateStrength(generatePassword(DEFAULT_GENERATOR_OPTIONS)).crackTimeDisplay).toBe(
       'longer than the age of the universe',
     );
+  });
+});
+
+describe('generator entropy (exact, not inferred)', () => {
+  const allClasses: GeneratorOptions = {
+    length: 20,
+    lowercase: true,
+    uppercase: true,
+    digits: true,
+    symbols: true,
+    excludeAmbiguous: false,
+  };
+
+  it('derives the pool from the real character sets', () => {
+    // Tied to SYMBOLS, so narrowing the symbol set updates the reported entropy
+    // instead of silently drifting from what the generator actually does.
+    expect(generatorPoolSize(allClasses)).toBe(26 + 26 + 10 + SYMBOLS.length);
+    expect(generatorEntropyBits(allClasses)).toBeCloseTo(20 * Math.log2(26 + 26 + 10 + SYMBOLS.length), 6);
+  });
+
+  it('tracks each enabled class', () => {
+    const only = (patch: Partial<GeneratorOptions>): GeneratorOptions => ({
+      ...allClasses,
+      lowercase: false,
+      uppercase: false,
+      digits: false,
+      symbols: false,
+      ...patch,
+    });
+    expect(generatorPoolSize(only({ lowercase: true }))).toBe(26);
+    expect(generatorPoolSize(only({ digits: true }))).toBe(10);
+    expect(generatorPoolSize(only({ symbols: true }))).toBe(SYMBOLS.length);
+    expect(generatorPoolSize(only({ lowercase: true, digits: true }))).toBe(36);
+  });
+
+  it('shrinks when ambiguous characters are excluded', () => {
+    const plain = generatorPoolSize(allClasses);
+    const filtered = generatorPoolSize({ ...allClasses, excludeAmbiguous: true });
+    expect(filtered).toBeLessThan(plain);
+    expect(generatorEntropyBits({ ...allClasses, excludeAmbiguous: true })).toBeLessThan(
+      generatorEntropyBits(allClasses),
+    );
+  });
+
+  it('scales with length and handles degenerate options', () => {
+    expect(generatorEntropyBits({ ...allClasses, length: 40 })).toBeCloseTo(
+      2 * generatorEntropyBits(allClasses),
+      6,
+    );
+    const noClasses = { ...allClasses, lowercase: false, uppercase: false, digits: false, symbols: false };
+    expect(generatorEntropyBits(noClasses)).toBe(0);
+  });
+
+  it('does not overstate the way inference does', () => {
+    // The regression this guards: estimateStrength credits any non-alphanumeric
+    // with a 33-symbol pool, which overstates the 8-symbol generated password.
+    const password = generatePassword(allClasses);
+    const inferred = estimateStrength(password).bits;
+    const exact = generatorEntropyBits(allClasses);
+    expect(exact).toBeLessThan(inferred);
+    expect(inferred - exact).toBeGreaterThan(5); // ~8.8 bits at the default length
+  });
+
+  it('stays within a bit of the true class-constrained entropy', () => {
+    // generatePassword guarantees one char per class, so the reachable space is
+    // slightly smaller than pool^length. Confirm the documented "<1 bit" claim.
+    const { length } = allClasses;
+    const pool = generatorPoolSize(allClasses);
+    const classSizes = [26, 26, 10, SYMBOLS.length];
+    // Inclusion-exclusion: fraction of strings containing every class.
+    let valid = 0;
+    for (let mask = 0; mask < 16; mask += 1) {
+      let excluded = 0;
+      let bits = 0;
+      for (let i = 0; i < 4; i += 1) {
+        if (mask & (1 << i)) {
+          excluded += classSizes[i]!;
+          bits += 1;
+        }
+      }
+      valid += (bits % 2 === 0 ? 1 : -1) * Math.pow((pool - excluded) / pool, length);
+    }
+    const trueBits = length * Math.log2(pool) + Math.log2(valid);
+    expect(generatorEntropyBits(allClasses) - trueBits).toBeLessThan(1);
+  });
+});
+
+describe('strengthFromBits', () => {
+  it('labels a known entropy figure the same way inference would', () => {
+    expect(strengthFromBits(0).label).toBe('very weak');
+    expect(strengthFromBits(35).label).toBe('weak');
+    expect(strengthFromBits(50).label).toBe('fair');
+    expect(strengthFromBits(70).label).toBe('strong');
+    expect(strengthFromBits(128).label).toBe('excellent');
+  });
+
+  it('rounds to one decimal and clamps negatives', () => {
+    expect(strengthFromBits(122.5555).bits).toBe(122.6);
+    expect(strengthFromBits(-5).bits).toBe(0);
   });
 });

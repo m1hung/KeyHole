@@ -5,7 +5,7 @@ A local-first, zero-knowledge password manager. Runs as a **local web app** and 
 No accounts. No cloud sync. No telemetry. No network calls of any kind. Your vault is a single encrypted file that never leaves your device. (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
 
 ```
-core/        framework-agnostic crypto + vault (no I/O, 135 tests)
+core/        framework-agnostic crypto + vault (no I/O, 143 tests)
 app/         local web app (Vite + React + TypeScript)
 extension/   Chrome MV3 extension (popup, service worker, autofill)
 examples/    demo vault with a published master password
@@ -20,7 +20,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 143 tests across core + extension
+npm test                    # 161 tests across core + extension
 npm run demo                # end-to-end crypto proof, printed to the terminal
 npm run dev:app             # local web app at http://127.0.0.1:5173
 npm run build:extension     # extension/dist, ready to load unpacked
