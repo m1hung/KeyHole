@@ -34,7 +34,7 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
     ['lowercase', 'Lowercase (a–z)'],
     ['uppercase', 'Uppercase (A–Z)'],
     ['digits', 'Digits (0–9)'],
-    ['symbols', 'Symbols (!@#…)'],
+    ['symbols', 'Symbols (!@#$%^&*)'],
   ];
 
   return (

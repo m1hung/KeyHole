@@ -3,6 +3,7 @@ import {
   DEFAULT_GENERATOR_OPTIONS,
   MAX_LENGTH,
   MIN_LENGTH,
+  SYMBOLS,
   estimateStrength,
   generatePassphrase,
   generatePassword,
@@ -36,6 +37,16 @@ describe('generatePassword', () => {
 
     const noSymbols = generatePassword(opts({ symbols: false, length: 64 }));
     expect(noSymbols).toMatch(/^[a-zA-Z0-9]{64}$/);
+  });
+
+  it('draws symbols only from the compatibility set', () => {
+    const allowed = new Set(SYMBOLS);
+    for (let i = 0; i < 100; i += 1) {
+      const pw = generatePassword(
+        opts({ length: 64, lowercase: false, uppercase: false, digits: false, symbols: true }),
+      );
+      for (const ch of pw) expect(allowed.has(ch)).toBe(true);
+    }
   });
 
   it('excludes ambiguous glyphs when asked', () => {

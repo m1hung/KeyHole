@@ -2,13 +2,14 @@
 
 A local-first, zero-knowledge password manager. Runs as a **local web app** and as a **Chrome extension (Manifest V3)**, sharing one audited crypto core.
 
-No accounts. No sync. No telemetry. No network calls of any kind. Your vault is a single encrypted file that never leaves your device.
+No accounts. No cloud sync. No telemetry. No network calls of any kind. Your vault is a single encrypted file that never leaves your device. (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
 
 ```
-core/        framework-agnostic crypto + vault (no I/O, 125 tests)
+core/        framework-agnostic crypto + vault (no I/O, 135 tests)
 app/         local web app (Vite + React + TypeScript)
 extension/   Chrome MV3 extension (popup, service worker, autofill)
 examples/    demo vault with a published master password
+docs/        design notes (e.g. local live sync)
 ```
 
 ---
@@ -256,7 +257,7 @@ The extension build validates its own output: manifest correctness, no `<all_url
 
 ### Explicitly out of scope for v1
 
-Cloud sync, accounts, vault sharing, biometrics, analytics, and any form of phone-home. There is no networking code in this repository — `connect-src` is pinned to `'self'` in both the app and the extension.
+Cloud sync, accounts, vault sharing, biometrics, analytics, and any form of phone-home. There is no networking code in this repository — `connect-src` is pinned to `'self'` in both the app and the extension. Local live sync between the web app and extension (shared vault file, no network) is designed in [docs/SYNC.md](docs/SYNC.md) and not fully wired yet.
 
 ---
 

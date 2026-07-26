@@ -7,6 +7,7 @@ graph TD
   subgraph core["@keyhole/core — pure, no I/O"]
     crypto["crypto.ts<br/>Argon2id · AES-GCM · AAD"]
     vault["vault.ts<br/>create · unlock · save · re-key · CRUD"]
+    sync["sync.ts<br/>envelope LWW compare"]
     types["types.ts"]
     validation["validation.ts<br/>zod schemas"]
     gen["password-gen.ts"]
@@ -223,3 +224,13 @@ graph TD
 Green is stored in the clear (and authenticated as associated data). Red is ciphertext.
 
 `schemaVersion` and `formatVersion` are versioned independently: the former describes the decrypted model and is migrated in `migrate()`, the latter describes the envelope and gates unlock entirely. Both reject newer-than-supported values with an actionable error rather than a generic parse failure.
+
+---
+
+## Local live sync (in progress)
+
+Cloud sync remains out of scope. App ↔ extension live sync is designed as a
+**shared on-disk `VaultFile`**, with each client keeping a local ciphertext
+cache. Envelope ordering is pure LWW via `compareEnvelopes` / `decideSync` in
+`@keyhole/core`. See [docs/SYNC.md](./docs/SYNC.md) for the full design,
+MV3 mirror-host split, and phased rollout.

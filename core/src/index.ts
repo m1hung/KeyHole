@@ -14,3 +14,4 @@ export * from './url-match.ts';
 export * from './totp.ts';
 export * from './validation.ts';
 export * from './vault.ts';
+export * from './sync.ts';
