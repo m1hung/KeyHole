@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
+import { Icon } from '../../../app/src/components/Icon.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 
@@ -158,10 +159,10 @@ export function Popup() {
           title="Lock vault"
           onClick={() => void sendToBackground({ type: 'LOCK' }).then(refreshState)}
         >
-          🔒
+          <Icon name="lock" size={18} />
         </button>
         <button type="button" className="icon" title="Open full vault" onClick={() => void chrome.runtime.openOptionsPage()}>
-          ⚙️
+          <Icon name="settings" size={18} />
         </button>
       </Header>
 
@@ -205,7 +206,7 @@ export function Popup() {
                   title="Copy username"
                   onClick={() => void copy(entry.id, 'username')}
                 >
-                  👤
+                  <Icon name="user" size={17} />
                 </button>
                 <button
                   type="button"
@@ -213,7 +214,7 @@ export function Popup() {
                   title="Copy password"
                   onClick={() => void copy(entry.id, 'password')}
                 >
-                  📋
+                  <Icon name="copy" size={17} />
                 </button>
                 {entry.hasTotp && (
                   <button
@@ -222,7 +223,7 @@ export function Popup() {
                     title="Copy one-time code"
                     onClick={() => void copy(entry.id, 'totp')}
                   >
-                    🔢
+                    <Icon name="clock" size={17} />
                   </button>
                 )}
                 <button type="button" className="fill-button" onClick={() => void fill(entry.id)}>
@@ -244,7 +245,10 @@ export function Popup() {
 function Header({ host, children }: { host: string | null; children?: React.ReactNode }) {
   return (
     <header className="popup-header">
-      <span className="popup-brand">🔑 Keyhole</span>
+      <span className="popup-brand">
+        <Icon name="vault" size={17} />
+        Keyhole
+      </span>
       {host && <span className="popup-host">{host}</span>}
       <span style={{ flex: 1 }} />
       {children}

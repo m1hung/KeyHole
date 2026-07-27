@@ -3,7 +3,7 @@
   "name": "Keyhole — Local Password Manager",
   "version": "1.0.0",
   "description": "Local-first, zero-knowledge password manager. Your vault never leaves this device.",
-  "minimum_chrome_version": "116",
+  "minimum_chrome_version": "123",
 
   "permissions": ["storage", "activeTab", "scripting", "alarms", "clipboardWrite"],
 

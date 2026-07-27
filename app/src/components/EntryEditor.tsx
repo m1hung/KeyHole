@@ -12,6 +12,7 @@ import {
   type GeneratorOptions,
 } from '@keyhole/core';
 import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
+import { Icon } from './Icon.tsx';
 
 interface EntryEditorProps {
   entry: Entry;
@@ -110,7 +111,7 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
             title="Copy username"
             disabled={draft.username.length === 0}
           >
-            📋
+            <Icon name="copy" />
           </button>
         </div>
       </div>

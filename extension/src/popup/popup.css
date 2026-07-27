@@ -1,17 +1,20 @@
-/* Popup styling. Shares Keyhole's token names with the web app. */
+/* Popup styling. Shares Keyhole's token vocabulary with the web app. */
 
 :root {
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #f2f2f4;
-  --border: #e2e2e5;
-  --text: #17171a;
-  --text-dim: #6b6b73;
-  --accent: #4f46e5;
-  --accent-text: #ffffff;
-  --danger: #c62828;
-  --danger-bg: #fdeaea;
-  --radius: 8px;
+  /* Kept in step with app/src/styles.css — same palette, standalone file
+     because the popup ships its own minimal stylesheet. */
+  --bg: light-dark(#ffffff, #151b23);
+  --surface: light-dark(#ffffff, #151b23);
+  --surface-2: light-dark(#eef1f5, #1e262f);
+  --border: light-dark(#d7dee6, #2a3341);
+  --text: light-dark(#0f172a, #e6edf3);
+  --text-dim: light-dark(#57646f, #8b97a6);
+  --accent: light-dark(#0f62d0, #4d9fff);
+  --accent-soft: light-dark(#e7f0fd, #14243a);
+  --accent-text: light-dark(#ffffff, #06101d);
+  --danger: light-dark(#b42318, #ff7b72);
+  --danger-bg: light-dark(#fef3f2, #3a1a17);
+  --radius: 9px;
 
   /* Same motion vocabulary as the web app, so the two surfaces feel related. */
   --dur-fast: 120ms;
@@ -29,21 +32,6 @@
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c20;
-    --surface: #1c1c20;
-    --surface-2: #26262b;
-    --border: #35353c;
-    --text: #ececf1;
-    --text-dim: #9a9aa5;
-    --accent: #7c74f5;
-    --accent-text: #0d0d10;
-    --danger: #ff6b6b;
-    --danger-bg: #3a1d1d;
   }
 }
 
@@ -345,4 +333,51 @@ label {
 .hint {
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------------- icons */
+
+/**
+ * The popup ships its own stylesheet, so the app's icon rules do not reach it.
+ * These mirror app/src/styles.css.
+ */
+.popup-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.popup-brand svg {
+  color: var(--accent);
+  flex: none;
+}
+
+button svg {
+  flex: none;
+}
+
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button.icon:hover:not(:disabled) {
+  color: var(--text);
+}
+
+button.icon.just-copied {
+  color: var(--ok, #3fb950);
+}
+
+/* Match badge uses the tinted accent rather than a solid fill, so it reads as a
+   label on the row instead of a second button competing with Fill. */
+.badge {
+  background: var(--accent-soft);
+  color: var(--accent);
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MAX_LENGTH, MIN_LENGTH, generatePassword, generatorEntropyBits, type GeneratorOptions } from '@keyhole/core';
 import { StrengthMeter } from './common.tsx';
+import { Icon } from './Icon.tsx';
 
 interface GeneratorPanelProps {
   options: GeneratorOptions;
@@ -46,7 +47,7 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
         <div className="field-row">
           <input id="generated" className="mono" readOnly value={password} aria-live="polite" />
           <button type="button" className="icon" onClick={() => regenerate(options)} title="Regenerate">
-            🔄
+            <Icon name="refresh" />
           </button>
           <button
             type="button"
@@ -55,7 +56,7 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
             title="Copy"
             disabled={password.length === 0}
           >
-            📋
+            <Icon name="copy" />
           </button>
         </div>
         {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : <StrengthMeter password={password} exactBits={generatorEntropyBits(options)} />}

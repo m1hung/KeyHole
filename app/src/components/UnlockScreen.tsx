@@ -10,6 +10,7 @@ import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength } from '@keyhole/core';
 import { StrengthMeter } from './common.tsx';
 import { readVaultFromBlob } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
+import { Icon } from './Icon.tsx';
 
 /** Below this we warn but still allow — the length floor is the hard gate. */
 const RECOMMENDED_BITS = 60;
@@ -37,7 +38,10 @@ function Unlock({ vault }: { vault: VaultController }) {
       {/* `key` forces a remount so the shake replays on every failed attempt,
           not just the first. */}
       <form className={`card${vault.error ? ' rejected' : ''}`} key={attempt} onSubmit={onSubmit}>
-        <h1>🔑 Keyhole</h1>
+        <h1>
+          <Icon name="vault" size={26} />
+          Keyhole
+        </h1>
         <p className="subtitle">Your vault is locked.</p>
 
         {vault.error && <div className="error">{vault.error}</div>}
@@ -115,7 +119,10 @@ function CreateVault({ vault }: { vault: VaultController }) {
   return (
     <div className="center-screen">
       <form className="card" onSubmit={onSubmit}>
-        <h1>🔑 Keyhole</h1>
+        <h1>
+          <Icon name="vault" size={26} />
+          Keyhole
+        </h1>
         <p className="subtitle">Create a vault. Everything stays on this device.</p>
 
         {vault.error && <div className="error">{vault.error}</div>}

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength, generatePassword, DEFAULT_GENERATOR_OPTIONS } from '@keyhole/core';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
+import { Icon } from '../../../app/src/components/Icon.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 
@@ -172,7 +173,10 @@ export function Options() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">🔑 Keyhole</span>
+        <span className="brand">
+          <Icon name="vault" size={20} />
+          Keyhole
+        </span>
         <input
           className="search"
           type="search"
@@ -311,7 +315,7 @@ function EntryForm({
             onChange={(e) => onChange({ ...draft, password: e.target.value })}
           />
           <button type="button" className="icon" onClick={() => setRevealed((r) => !r)} aria-pressed={revealed}>
-            {revealed ? '🙈' : '👁'}
+            <Icon name={revealed ? 'eyeOff' : 'eye'} />
           </button>
           <button
             type="button"
@@ -322,7 +326,7 @@ function EntryForm({
               setRevealed(true);
             }}
           >
-            🔄
+            <Icon name="refresh" />
           </button>
         </div>
         {draft.password.length > 0 && (
@@ -400,7 +404,10 @@ function SetupOrUnlock({
           if (valid) void onSubmit(password).then(() => setPassword(''));
         }}
       >
-        <h1>🔑 Keyhole</h1>
+        <h1>
+          <Icon name="vault" size={26} />
+          Keyhole
+        </h1>
         <p className="subtitle">{creating ? 'Create a vault for this browser.' : 'Unlock your vault.'}</p>
 
         {error && <div className="error">{error}</div>}

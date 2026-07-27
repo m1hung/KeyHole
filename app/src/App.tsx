@@ -23,6 +23,7 @@ import { EntryEditor } from './components/EntryEditor.tsx';
 import { GeneratorPanel } from './components/GeneratorPanel.tsx';
 import { SettingsPanel } from './components/SettingsPanel.tsx';
 import { EmptyState, Toast } from './components/common.tsx';
+import { Icon } from './components/Icon.tsx';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
 
@@ -74,7 +75,10 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">🔑 Keyhole</span>
+        <span className="brand">
+          <Icon name="vault" size={20} />
+          Keyhole
+        </span>
 
         <input
           className="search"
@@ -165,7 +169,7 @@ export function App() {
             fade-up animation replays when you switch entries. */}
         <main className="detail-pane" key={view.kind === 'entry' ? view.id : view.kind}>
           <button type="button" className="back-button" onClick={() => setView({ kind: 'none' })}>
-            <span aria-hidden="true">‹</span> All entries
+            <Icon name="chevronLeft" size={18} /> All entries
           </button>
 
           {vault.error && <div className="error">{vault.error}</div>}
@@ -216,15 +220,15 @@ export function App() {
           the same actions. */}
       <nav className="tabbar" aria-label="Main">
         <button type="button" aria-current={view.kind === 'none' || view.kind === 'entry'} onClick={() => setView({ kind: 'none' })}>
-          <span className="tab-icon" aria-hidden="true">🗝️</span>
+          <Icon name="vault" size={22} className="tab-icon" />
           Vault
         </button>
         <button type="button" aria-current={view.kind === 'generator'} onClick={() => setView({ kind: 'generator' })}>
-          <span className="tab-icon" aria-hidden="true">🎲</span>
+          <Icon name="generator" size={22} className="tab-icon" />
           Generator
         </button>
         <button type="button" aria-current={view.kind === 'settings'} onClick={() => setView({ kind: 'settings' })}>
-          <span className="tab-icon" aria-hidden="true">⚙️</span>
+          <Icon name="settings" size={22} className="tab-icon" />
           Settings
         </button>
       </nav>

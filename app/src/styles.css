@@ -1,64 +1,59 @@
 /* Keyhole design tokens + components. Shared with the extension popup. */
 
+/**
+ * Palette.
+ *
+ * Neutrals are cool slate rather than pure grey, and the dark base is #0d1117
+ * rather than black: a vault you keep open for a while should feel like an
+ * instrument, not a void. True black also smears on OLED while scrolling.
+ *
+ * The accent moved from a generic indigo to azure for one concrete reason —
+ * the strength meter owns red / amber / green, so the accent must sit clearly
+ * outside that ramp or "excellent" and "primary button" start competing for the
+ * same meaning. Azure is unambiguous against all three.
+ *
+ * `light-dark()` keeps each token defined once. The previous approach repeated
+ * the whole dark palette in a media query *and* an attribute selector, which is
+ * two places to forget. It resolves against `color-scheme`, set per theme below.
+ */
 :root {
-  --bg: #f7f7f8;
-  --surface: #ffffff;
-  --surface-2: #f0f0f2;
-  --border: #dededf;
-  --text: #17171a;
-  --text-dim: #6b6b73;
-  --accent: #4f46e5;
-  --accent-text: #ffffff;
-  --danger: #c62828;
-  --danger-bg: #fdeaea;
-  --ok: #1b7f47;
-  --warn: #b45309;
-  --radius: 8px;
-  --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 4px 12px rgb(0 0 0 / 5%);
+  --bg: light-dark(#f4f6f8, #0d1117);
+  --surface: light-dark(#ffffff, #151b23);
+  --surface-2: light-dark(#e9edf2, #1e262f);
+  --border: light-dark(#d7dee6, #2a3341);
+  --text: light-dark(#0f172a, #e6edf3);
+  --text-dim: light-dark(#57646f, #8b97a6);
+
+  --accent: light-dark(#0f62d0, #4d9fff);
+  --accent-hover: light-dark(#0b4ea8, #74b4ff);
+  /* Tinted fill for selected rows and badges — accent at low commitment. */
+  --accent-soft: light-dark(#e7f0fd, #14243a);
+  --accent-text: light-dark(#ffffff, #06101d);
+
+  --danger: light-dark(#b42318, #ff7b72);
+  --danger-bg: light-dark(#fef3f2, #3a1a17);
+  --ok: light-dark(#067647, #3fb950);
+  --warn: light-dark(#b54708, #d29922);
+
+  --radius: 10px;
+  --radius-sm: 7px;
+
+  /* Tight contact shadow + soft ambient one, so panels sit rather than float. */
+  --shadow-contact: light-dark(0 1px 2px rgb(15 23 42 / 8%), 0 1px 2px rgb(0 0 0 / 50%));
+  --shadow-ambient: light-dark(0 8px 24px -6px rgb(15 23 42 / 12%), 0 8px 24px -6px rgb(0 0 0 / 45%));
+  --shadow: var(--shadow-contact), var(--shadow-ambient);
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   color-scheme: light;
 }
 
-:root[data-theme='dark'],
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
 :root[data-theme='system'] {
   color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme='system'] {
-    --bg: #131316;
-    --surface: #1c1c20;
-    --surface-2: #26262b;
-    --border: #35353c;
-    --text: #ececf1;
-    --text-dim: #9a9aa5;
-    --accent: #7c74f5;
-    --accent-text: #0d0d10;
-    --danger: #ff6b6b;
-    --danger-bg: #3a1d1d;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 12px rgb(0 0 0 / 30%);
-  }
-}
-
-:root[data-theme='dark'] {
-  --bg: #131316;
-  --surface: #1c1c20;
-  --surface-2: #26262b;
-  --border: #35353c;
-  --text: #ececf1;
-  --text-dim: #9a9aa5;
-  --accent: #7c74f5;
-  --accent-text: #0d0d10;
-  --danger: #ff6b6b;
-  --danger-bg: #3a1d1d;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 4px 12px rgb(0 0 0 / 30%);
-
-  color-scheme: dark;
 }
 
 /* ------------------------------------------------------------------ motion
@@ -1032,4 +1027,65 @@ dialog h2 {
   .close-desktop {
     display: none;
   }
+}
+
+/* ------------------------------------------------------------------- icons */
+
+/**
+ * Line icons replace the emoji the UI shipped with. Emoji ignored currentColor,
+ * rendered differently per OS, and carried their own baked-in metrics — so
+ * alignment and theming both had to be fought. These inherit both.
+ */
+.brand svg,
+.popup-brand svg,
+.card h1 svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.card h1,
+.brand,
+.popup-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Optical centring: strokes read slightly light against text at these sizes. */
+button svg {
+  flex: none;
+}
+
+.back-button svg {
+  margin-right: -2px;
+}
+
+/* Tab bar glyphs are the primary wayfinding, so they carry the active state. */
+.tabbar button .tab-icon {
+  transition:
+    transform var(--dur-base) var(--ease-spring),
+    color var(--dur-fast) ease;
+}
+
+/* Icon buttons: square, centred, no text baseline to fight. */
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Copy confirmation swaps clipboard → check. Scale the swap so it registers
+   even when the two glyphs occupy similar space. */
+button.icon.just-copied {
+  color: var(--ok);
+}
+
+/* Selected row uses the tinted accent rather than plain grey, so selection and
+   hover are never mistaken for each other. */
+.entry-item[aria-current='true'] {
+  background: var(--accent-soft);
+}
+
+.entry-item:hover:not([aria-current='true']) {
+  background: var(--surface-2);
 }

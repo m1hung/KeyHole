@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { estimateStrength, strengthFromBits } from '@keyhole/core';
+import { Icon } from './Icon.tsx';
 
 // ------------------------------------------------------------------ secrets
 
@@ -53,7 +54,7 @@ export function SecretField({ label, value, revealed, onToggleReveal, onCopy, id
           aria-pressed={revealed}
           title={revealed ? 'Hide' : 'Show'}
         >
-          {revealed ? '🙈' : '👁'}
+          <Icon name={revealed ? 'eyeOff' : 'eye'} />
         </button>
         <button
           type="button"
@@ -61,7 +62,7 @@ export function SecretField({ label, value, revealed, onToggleReveal, onCopy, id
           onClick={copy}
           title={`Copy ${label.toLowerCase()}`}
         >
-          {justCopied ? '✅' : '📋'}
+          <Icon name={justCopied ? 'check' : 'copy'} />
         </button>
       </div>
     </div>
