@@ -15,6 +15,10 @@ import {
   writeToHandle,
 } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
+import { deriveSyncAuthSecret, unlockVault } from '@keyhole/core';
+import { healthCheck, registerAccount, fetchPrelogin, SyncClientError } from '../sync/client.ts';
+import { loadSyncConfig, saveSyncConfig } from '../sync/storage.ts';
+import { performSync } from '../sync/runSync.ts';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -87,6 +91,7 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount }:
       </div>
 
       <LocalStorageSection vault={vault} />
+      <SyncSection vault={vault} />
       <BackupSection vault={vault} entryCount={entryCount} />
       <ChangeMasterPassword vault={vault} />
       <DangerZone vault={vault} entryCount={entryCount} />
@@ -182,6 +187,182 @@ function LocalStorageSection({ vault }: { vault: VaultController }) {
           {status && <p className="hint">{status}</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function SyncSection({ vault }: { vault: VaultController }) {
+  const saved = loadSyncConfig();
+  const [baseUrl, setBaseUrl] = useState(saved?.baseUrl ?? 'http://127.0.0.1:8787');
+  const [accountId, setAccountId] = useState(saved?.accountId ?? '');
+  const [masterPassword, setMasterPassword] = useState('');
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const formatSyncError = (err: unknown, fallback: string): string => {
+    if (err instanceof SyncClientError) return err.message;
+    if (err instanceof TypeError && /fetch|network|load failed/i.test(err.message)) {
+      return 'Could not reach the sync server (browser blocked the request). Confirm the server is running and try again.';
+    }
+    if (err instanceof Error) return err.message;
+    return fallback;
+  };
+
+  const persistConfig = () => {
+    const trimmedId = accountId.trim().toLowerCase();
+    if (baseUrl.trim().length === 0 || trimmedId.length === 0) return;
+    saveSyncConfig({ baseUrl: baseUrl.trim(), accountId: trimmedId });
+  };
+
+  const register = async () => {
+    const file = vault.exportVault();
+    if (!file) {
+      setStatus('No vault loaded.');
+      return;
+    }
+    if (masterPassword.length === 0) {
+      setStatus('Enter your master password to derive sync credentials.');
+      return;
+    }
+    const trimmedId = accountId.trim().toLowerCase();
+    if (trimmedId.length === 0) {
+      setStatus('Account id is required.');
+      return;
+    }
+
+    setBusy(true);
+    setStatus(null);
+    try {
+      const ok = await healthCheck(baseUrl.trim());
+      if (!ok) {
+        setStatus(
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+        );
+        return;
+      }
+
+      const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, file.kdf);
+      const result = await registerAccount(baseUrl.trim(), trimmedId, syncAuthSecretB64, file);
+      saveSyncConfig({ baseUrl: baseUrl.trim(), accountId: trimmedId });
+      setStatus(`Registered as ${result.accountId} (server version ${result.version}).`);
+      setMasterPassword('');
+    } catch (err) {
+      setStatus(formatSyncError(err, 'Registration failed.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncNow = async () => {
+    const file = vault.exportVault();
+    if (!file || vault.status !== 'unlocked') {
+      setStatus('Unlock the vault before syncing.');
+      return;
+    }
+    if (masterPassword.length === 0) {
+      setStatus('Enter your master password to sync.');
+      return;
+    }
+    const trimmedId = accountId.trim().toLowerCase();
+    if (trimmedId.length === 0) {
+      setStatus('Account id is required.');
+      return;
+    }
+
+    setBusy(true);
+    setStatus(null);
+    try {
+      const ok = await healthCheck(baseUrl.trim());
+      if (!ok) {
+        setStatus(
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+        );
+        return;
+      }
+
+      // Derive against the account's server-side KDF (prelogin), not only the
+      // local envelope — required when this device imported/joined an existing account.
+      const { kdf: accountKdf } = await fetchPrelogin(baseUrl.trim(), trimmedId);
+      const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
+      saveSyncConfig({ baseUrl: baseUrl.trim(), accountId: trimmedId });
+
+      const localSession = await unlockVault(file, masterPassword);
+
+      const result = await performSync({
+        baseUrl: baseUrl.trim(),
+        accountId: trimmedId,
+        syncAuthSecretB64,
+        masterPassword,
+        localFile: file,
+        session: localSession,
+      });
+
+      await vault.applySyncedSession(result.file, result.session);
+      setStatus(result.message);
+      setMasterPassword('');
+    } catch (err) {
+      setStatus(formatSyncError(err, 'Sync failed.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="section">
+      <h3>Sync server</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Optional self-hosted sync via the server in <code>server/</code>. The server stores only your encrypted
+        envelope — never plaintext. See <code>server/README.md</code> for setup.
+      </p>
+
+      <div className="field">
+        <label htmlFor="sync-url">Server URL</label>
+        <input
+          id="sync-url"
+          type="url"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          onBlur={persistConfig}
+          placeholder="http://127.0.0.1:8787"
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="sync-account">Account id</label>
+        <input
+          id="sync-account"
+          type="text"
+          autoComplete="off"
+          value={accountId}
+          onChange={(e) => setAccountId(e.target.value)}
+          onBlur={persistConfig}
+          placeholder="you@home"
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="sync-master">Master password (for sync only — not stored)</label>
+        <input
+          id="sync-master"
+          type="password"
+          autoComplete="current-password"
+          value={masterPassword}
+          onChange={(e) => setMasterPassword(e.target.value)}
+        />
+      </div>
+
+      <div className="button-row">
+        <button type="button" onClick={() => void register()} disabled={busy || vault.busy}>
+          {busy ? 'Working…' : 'Register & upload'}
+        </button>
+        <button type="button" onClick={() => void syncNow()} disabled={busy || vault.busy}>
+          {busy ? 'Syncing…' : 'Sync now'}
+        </button>
+      </div>
+
+      {status && <p className="hint">{status}</p>}
     </div>
   );
 }
@@ -353,16 +534,17 @@ function DangerZone({ vault, entryCount }: { vault: VaultController; entryCount:
     <div className="section">
       <h3 style={{ color: 'var(--danger)' }}>Danger zone</h3>
       <p className="hint" style={{ marginBottom: 12 }}>
-        Deleting removes the encrypted vault from this browser. Exported files are unaffected.
+        Deleting removes the encrypted vault from this browser so you can create a new one with a new master password.
+        Exported files are unaffected.
       </p>
       <button type="button" className="danger" onClick={() => setConfirming(true)}>
-        Delete vault from this browser
+        Delete vault and start over
       </button>
 
       <ConfirmDialog
         open={confirming}
         title="Delete this vault?"
-        confirmLabel="Delete vault"
+        confirmLabel="Delete and start over"
         danger
         confirmDisabled={typed !== 'DELETE'}
         onCancel={() => {
@@ -376,9 +558,10 @@ function DangerZone({ vault, entryCount }: { vault: VaultController; entryCount:
         }}
       >
         <p>
-          All <strong>{entryCount}</strong> entries will be removed from this browser and cannot be recovered without
-          an exported backup.
+          All <strong>{entryCount}</strong> entries will be removed from this browser. You will return to the create-vault
+          screen to pick a new master password.
         </p>
+        <p className="hint">Without an exported backup, the old vault cannot be recovered.</p>
         <div className="field" style={{ marginTop: 12 }}>
           <label htmlFor="delete-confirm">Type DELETE to confirm</label>
           <input id="delete-confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />

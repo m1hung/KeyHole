@@ -7,7 +7,7 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength } from '@keyhole/core';
-import { StrengthMeter } from './common.tsx';
+import { ConfirmDialog, StrengthMeter } from './common.tsx';
 import { readVaultFromBlob } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
 import { Icon } from './Icon.tsx';
@@ -25,12 +25,19 @@ export function UnlockScreen({ vault }: { vault: VaultController }) {
 function Unlock({ vault }: { vault: VaultController }) {
   const [password, setPassword] = useState('');
   const [attempt, setAttempt] = useState(0);
+  const [purging, setPurging] = useState(false);
+  const [purgeTyped, setPurgeTyped] = useState('');
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     await vault.unlock(password);
     setAttempt((n) => n + 1);
     setPassword('');
+  };
+
+  const closePurge = () => {
+    setPurging(false);
+    setPurgeTyped('');
   };
 
   return (
@@ -77,7 +84,48 @@ function Unlock({ vault }: { vault: VaultController }) {
         </p>
 
         <ImportControl vault={vault} label="Open a different vault file" />
+
+        <div className="section" style={{ marginTop: 12, paddingTop: 12 }}>
+          <button type="button" className="ghost danger-text" style={{ width: '100%' }} onClick={() => setPurging(true)}>
+            Delete vault and start over
+          </button>
+          <p className="hint" style={{ textAlign: 'center', marginTop: 8 }}>
+            Forgot the password, or want a fresh vault? This erases the encrypted copy in this browser.
+          </p>
+        </div>
       </form>
+
+      <ConfirmDialog
+        open={purging}
+        title="Delete this vault?"
+        confirmLabel="Delete and start over"
+        danger
+        confirmDisabled={purgeTyped !== 'DELETE'}
+        onCancel={closePurge}
+        onConfirm={() => {
+          closePurge();
+          vault.deleteVault();
+        }}
+      >
+        <p>
+          The encrypted vault in this browser will be removed. You can then create a new vault with a new master
+          password.
+        </p>
+        <p className="hint">
+          Exported <code>.keyhole.json</code> backups are not deleted. Without a backup, the old vault is gone forever —
+          there is no recovery.
+        </p>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="purge-confirm">Type DELETE to confirm</label>
+          <input
+            id="purge-confirm"
+            value={purgeTyped}
+            onChange={(e) => setPurgeTyped(e.target.value)}
+            autoComplete="off"
+            autoFocus
+          />
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }

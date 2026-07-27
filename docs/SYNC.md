@@ -1,11 +1,15 @@
 # Keyhole — Local live sync (design)
 
-Cloud sync, accounts, and any network transport remain **out of scope**. This
-document covers syncing the web app and the Chrome extension through a
-**shared vault file on disk** — the same encrypted `VaultFile` envelope both
-surfaces already read and write today.
+Cloud accounts and third-party sync remain **out of scope**. This document covers:
 
-Status: **design + core primitives**. Adapters and UI are not wired yet.
+1. **Shared vault file on disk** — syncing the web app and the Chrome extension through
+   the same encrypted `VaultFile` envelope both surfaces already read and write today.
+2. **Self-hosted sync server** — optional HTTP blob store in [`server/`](../server/README.md).
+   The web app can register an account, pull the remote envelope, merge decrypted
+   vaults client-side (`mergeVaultData`), and push back with compare-and-swap versioning.
+
+Status: **core primitives + app sync UI (server path)**. Extension server sync and shared-file
+adapters are not fully wired yet.
 
 ---
 
@@ -33,7 +37,7 @@ without user choice.
 | **Shared `.keyhole.json`** | Yes | Already the export format. Zero new trust boundary. Works offline. |
 | `externally_connectable` (localhost → extension) | Weak | Lets a web origin talk to the vault holder. Expands attack surface. |
 | Native Messaging host | Heavy | Extra install; still a process Keyhole would have to trust. |
-| Cloud / accounts | No | Explicitly out of scope. |
+| Cloud / accounts | No | Self-hosted sync server is opt-in; you run it. |
 
 The web app already persists via the File System Access API when linked
 (`app/src/storage.ts`). Live sync extends that idea: **the file is the
@@ -163,11 +167,13 @@ paths are not secret; envelopes stay ciphertext.
 
 ## Implementation phases
 
-### Phase 0 — this PR slice
+### Phase 0 — core
 
 - [x] Design doc (`docs/SYNC.md`)
-- [x] Pure `compareEnvelopes` / `decideSync` in `@keyhole/core` + tests
-- [x] Pointer from `ARCHITECTURE.md`
+- [x] Pure `compareEnvelopes` / `decideSync` in `@keyhole/core` (`envelope-sync.ts`) + tests
+- [x] Vault merge with tombstones (`mergeVaultData` in `sync.ts`) + tests
+- [x] Sync auth derivation (`deriveSyncAuthSecret`) + tests
+- [x] Self-hosted sync server (`server/`) + app Settings sync UI
 
 ### Phase 1 — web app polish
 

@@ -2,7 +2,7 @@
 
 A local-first, zero-knowledge password manager. Runs as a **local web app** and as a **Chrome extension (Manifest V3)**, sharing one audited crypto core.
 
-No accounts. No cloud sync. No telemetry. No network calls of any kind. Your vault is a single encrypted file that never leaves your device. (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
+No accounts. No cloud sync. No telemetry. Your vault is a single encrypted file that never leaves your device unless you opt in to a **self-hosted sync server** ([`server/README.md`](server/README.md)). (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
 
 ```
 core/        framework-agnostic crypto + vault (no I/O, 143 tests)
@@ -23,6 +23,7 @@ npm install
 npm test                    # 161 tests across core + extension
 npm run demo                # end-to-end crypto proof, printed to the terminal
 npm run dev:app             # local web app at http://127.0.0.1:5173 (next free port if busy)
+npm start --workspace @keyhole/server   # optional sync server at http://127.0.0.1:8787
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
 
@@ -257,7 +258,7 @@ The extension build validates its own output: manifest correctness, no `<all_url
 
 ### Explicitly out of scope for v1
 
-Cloud sync, accounts, vault sharing, biometrics, analytics, and any form of phone-home. There is no networking code in this repository — `connect-src` is pinned to `'self'` in both the app and the extension. Local live sync between the web app and extension (shared vault file, no network) is designed in [docs/SYNC.md](docs/SYNC.md) and not fully wired yet.
+Cloud sync to third-party servers, accounts on someone else's infrastructure, vault sharing, biometrics, analytics, and any form of phone-home telemetry. Networking is limited to an **optional self-hosted sync server** you run (`server/`); by default the app makes no network calls. Local live sync between the web app and extension (shared vault file) is also described in [docs/SYNC.md](docs/SYNC.md).
 
 ---
 

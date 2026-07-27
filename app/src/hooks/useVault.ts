@@ -49,6 +49,7 @@ export interface VaultController {
   changeMasterPassword: (current: string, next: string) => Promise<void>;
   importVault: (file: VaultFile) => void;
   exportVault: () => VaultFile | null;
+  applySyncedSession: (file: VaultFile, session: VaultSession) => Promise<void>;
   deleteVault: () => void;
   clearError: () => void;
   registerActivity: () => void;
@@ -205,12 +206,24 @@ export function useVault(): VaultController {
 
   const exportVault = useCallback(() => fileRef.current ?? loadFromLocalStorage(), []);
 
+  const applySyncedSession = useCallback(
+    async (file: VaultFile, session: VaultSession) => {
+      sessionRef.current = session;
+      await persist(file);
+      setData(session.data);
+      registerActivity();
+      setStatus('unlocked');
+    },
+    [persist, registerActivity],
+  );
+
   const deleteVault = useCallback(() => {
     sessionRef.current = null;
     fileRef.current = null;
     clearLocalStorage();
     void forgetStoredHandle();
     setData(null);
+    setError(null);
     setStatus('no-vault');
   }, []);
 
@@ -271,6 +284,7 @@ export function useVault(): VaultController {
       changeMasterPassword,
       importVault,
       exportVault,
+      applySyncedSession,
       deleteVault,
       clearError,
       registerActivity,
@@ -288,6 +302,7 @@ export function useVault(): VaultController {
       changeMasterPassword,
       importVault,
       exportVault,
+      applySyncedSession,
       deleteVault,
       clearError,
       registerActivity,

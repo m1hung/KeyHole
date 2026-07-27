@@ -23,6 +23,13 @@ import {
 } from './auth.ts';
 import { Store, type AccountRow } from './db.ts';
 import type { ServerConfig } from './config.ts';
+import { renderStatusPage } from './status-page.ts';
+import {
+  ConsoleLog,
+  levelForStatus,
+  shouldLogPath,
+  summariseRequest,
+} from './console-log.ts';
 
 /** Minimal shape check. The server must not depend on understanding the payload. */
 function looksLikeEnvelope(value: unknown): value is Record<string, unknown> {
@@ -43,14 +50,42 @@ export interface BuildOptions {
   config: ServerConfig;
   store?: Store;
   logger?: boolean;
+  /** Shared console buffer (tests can pass one to assert against). */
+  consoleLog?: ConsoleLog;
 }
 
-export function buildApp({ config, store, logger = false }: BuildOptions): FastifyInstance {
+export function buildApp({ config, store, logger = false, consoleLog }: BuildOptions): FastifyInstance {
   const db = store ?? new Store(config.databasePath);
   const limiter = new AttemptLimiter(config.authAttemptsPerWindow, config.authWindowMs);
   const pepper = db.pepper();
+  const liveLog = consoleLog ?? new ConsoleLog();
 
   const app = Fastify({ logger, bodyLimit: config.maxEnvelopeBytes });
+
+  /**
+   * CORS for the web app (and any other browser client on a different origin /
+   * port). Without these headers the browser surfaces a useless "Failed to
+   * fetch" even when the server is healthy.
+   *
+   * We reflect the request Origin rather than pinning a list: this host is
+   * self-hosted, and Vite alone may land on 5173, 5174, …
+   */
+  app.addHook('onRequest', async (request, reply) => {
+    const origin = request.headers.origin;
+    if (typeof origin === 'string' && origin.length > 0) {
+      reply.header('Access-Control-Allow-Origin', origin);
+      reply.header('Vary', 'Origin');
+    } else {
+      reply.header('Access-Control-Allow-Origin', '*');
+    }
+    reply.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, OPTIONS');
+    reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    reply.header('Access-Control-Max-Age', '86400');
+
+    if (request.method === 'OPTIONS') {
+      return reply.code(204).send();
+    }
+  });
 
   const sweeper = setInterval(() => limiter.sweep(), config.authWindowMs).unref();
   app.addHook('onClose', async () => {
@@ -58,15 +93,57 @@ export function buildApp({ config, store, logger = false }: BuildOptions): Fasti
     if (!store) db.close();
   });
 
-  /** Resolve credentials, or reply and return null. */
-  function authenticate(request: FastifyRequest): AccountRow | null {
+  app.addHook('onResponse', (request, reply, done) => {
+    try {
+      if (request.method === 'OPTIONS') {
+        done();
+        return;
+      }
+      const path = request.url;
+      if (!shouldLogPath(path)) {
+        done();
+        return;
+      }
+      const statusCode = reply.statusCode;
+      liveLog.push({
+        level: levelForStatus(statusCode),
+        method: request.method,
+        path,
+        statusCode,
+        ms: Math.round(reply.elapsedTime * 10) / 10,
+        ip: request.ip,
+        message: summariseRequest(request.method, path, statusCode),
+      });
+    } catch {
+      // Logging must never break a response.
+    }
+    done();
+  });
+
+  app.addHook('onReady', async () => {
+    liveLog.push({
+      level: 'info',
+      method: '—',
+      path: '/',
+      statusCode: 200,
+      ms: 0,
+      ip: 'local',
+      message: `Keyhole sync ready · registration ${config.allowRegistration ? 'open' : 'closed'}`,
+    });
+  });
+
+  /** Resolve credentials. Distinguishes rate-limit from bad auth so clients
+   *  see 429 instead of a misleading Unauthorized. */
+  function authenticate(
+    request: FastifyRequest,
+  ): { ok: true; account: AccountRow } | { ok: false; reason: 'rate_limited' | 'unauthorized' } {
     const ip = request.ip;
-    if (limiter.isBlocked(ip)) return null;
+    if (limiter.isBlocked(ip)) return { ok: false, reason: 'rate_limited' };
 
     const credentials: Credentials | null = parseAuthHeader(request.headers.authorization);
     if (!credentials) {
       limiter.recordFailure(ip);
-      return null;
+      return { ok: false, reason: 'unauthorized' };
     }
 
     const account = db.get(credentials.accountId);
@@ -74,22 +151,74 @@ export function buildApp({ config, store, logger = false }: BuildOptions): Fasti
       // Still hash, so a missing account is not faster than a wrong secret.
       hashVerifier(credentials.secretB64, newVerifierSalt());
       limiter.recordFailure(ip);
-      return null;
+      return { ok: false, reason: 'unauthorized' };
     }
 
     const candidate = hashVerifier(credentials.secretB64, account.verifierSalt);
     if (!verifierMatches(candidate, account.verifierHash)) {
       limiter.recordFailure(ip);
-      return null;
+      return { ok: false, reason: 'unauthorized' };
     }
 
     limiter.recordSuccess(ip);
-    return account;
+    return { ok: true, account };
   }
 
   // -------------------------------------------------------------------------
 
+  /** Browser-friendly landing page — the API itself has no vault UI. */
+  app.get('/', async (_request, reply) => {
+    const html = renderStatusPage({
+      port: config.port,
+      accounts: db.accountCount(),
+      allowRegistration: config.allowRegistration,
+    });
+    return reply.type('text/html; charset=utf-8').send(html);
+  });
+
   app.get('/api/v1/health', async () => ({ ok: true, service: 'keyhole-sync', apiVersion: 1 }));
+
+  /**
+   * Live request console for the status page.
+   *
+   * SSE stream of recent activity (plus a JSON snapshot via `?format=json`).
+   * Entries never include credentials or envelope bodies.
+   */
+  app.get('/api/v1/console', async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    if (query['format'] === 'json') {
+      return { entries: liveLog.snapshot() };
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    reply.raw.write(': connected\n\n');
+
+    for (const entry of liveLog.snapshot()) {
+      reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`);
+    }
+
+    const unsubscribe = liveLog.subscribe((entry) => {
+      reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`);
+    });
+
+    const heartbeat = setInterval(() => {
+      reply.raw.write(': ping\n\n');
+    }, 15_000);
+    heartbeat.unref();
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    request.raw.on('close', cleanup);
+    request.raw.on('error', cleanup);
+  });
 
   /**
    * KDF parameters for an account, so a fresh device can derive its auth
@@ -155,13 +284,15 @@ export function buildApp({ config, store, logger = false }: BuildOptions): Fasti
   });
 
   app.get('/api/v1/vault', async (request, reply) => {
-    const account = authenticate(request);
-    if (!account) return unauthorized(reply);
+    const auth = authenticate(request);
+    if (!auth.ok) {
+      return auth.reason === 'rate_limited' ? tooMany(reply) : unauthorized(reply);
+    }
 
     return reply.send({
-      envelope: JSON.parse(account.envelope) as unknown,
-      version: account.version,
-      updatedAt: account.updatedAt,
+      envelope: JSON.parse(auth.account.envelope) as unknown,
+      version: auth.account.version,
+      updatedAt: auth.account.updatedAt,
     });
   });
 
@@ -174,12 +305,15 @@ export function buildApp({ config, store, logger = false }: BuildOptions): Fasti
    * instead of two.
    */
   app.put('/api/v1/vault', async (request, reply) => {
-    const account = authenticate(request);
-    if (!account) return unauthorized(reply);
+    const auth = authenticate(request);
+    if (!auth.ok) {
+      return auth.reason === 'rate_limited' ? tooMany(reply) : unauthorized(reply);
+    }
 
     const body = (request.body ?? {}) as Record<string, unknown>;
     const envelope = body['envelope'];
     const expectedVersion = body['expectedVersion'];
+    const nextAuthSecret = body['authSecret'];
 
     if (!looksLikeEnvelope(envelope)) {
       return reply.code(400).send({ error: 'envelope is not a Keyhole vault file.' });
@@ -188,9 +322,23 @@ export function buildApp({ config, store, logger = false }: BuildOptions): Fasti
       return reply.code(400).send({ error: 'expectedVersion must be a positive integer.' });
     }
 
-    const updated = db.replaceEnvelope(account.accountId, JSON.stringify(envelope), expectedVersion);
+    let verifier: { salt: string; hash: string } | undefined;
+    if (nextAuthSecret !== undefined) {
+      if (typeof nextAuthSecret !== 'string' || nextAuthSecret.length === 0 || nextAuthSecret.length > 512) {
+        return reply.code(400).send({ error: 'authSecret missing or malformed.' });
+      }
+      const salt = newVerifierSalt();
+      verifier = { salt, hash: hashVerifier(nextAuthSecret, salt) };
+    }
+
+    const updated = db.replaceEnvelope(
+      auth.account.accountId,
+      JSON.stringify(envelope),
+      expectedVersion,
+      verifier,
+    );
     if (!updated) {
-      const current = db.get(account.accountId);
+      const current = db.get(auth.account.accountId);
       return reply.code(409).send({
         error: 'Version conflict — another device wrote first. Pull, merge and retry.',
         version: current?.version,
@@ -209,4 +357,8 @@ function unauthorized(reply: { code: (n: number) => { send: (b: unknown) => unkn
   // One message for every failure mode: unknown account, wrong secret, and
   // malformed header are indistinguishable from outside.
   return reply.code(401).send({ error: 'Unauthorized.' });
+}
+
+function tooMany(reply: { code: (n: number) => { send: (b: unknown) => unknown } }): unknown {
+  return reply.code(429).send({ error: 'Too many attempts. Try again shortly.' });
 }

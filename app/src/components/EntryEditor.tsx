@@ -12,6 +12,7 @@ import {
   type GeneratorOptions,
 } from '@keyhole/core';
 import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
+import { GeneratorOptionsForm } from './GeneratorOptionsForm.tsx';
 import { Icon } from './Icon.tsx';
 
 interface EntryEditorProps {
@@ -27,6 +28,12 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
   const [draft, setDraft] = useState(entry);
   const [revealed, setRevealed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [genOptions, setGenOptions] = useState<GeneratorOptions>(
+    () => generatorDefaults ?? DEFAULT_GENERATOR_OPTIONS,
+  );
+  /** Open by default for brand-new empty passwords so create flow has the controls handy. */
+  const [showGenerator, setShowGenerator] = useState(() => entry.password.length === 0 && entry.kind !== 'note');
+  const [genError, setGenError] = useState<string | null>(null);
   /**
    * Exact entropy, set only while showing a password this editor just generated.
    * Null for a stored password, whose pool we cannot know after the fact.
@@ -36,10 +43,33 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
   // Switching entries must reset the draft and re-hide the password — otherwise
   // a revealed secret would carry over to the next entry the user clicks.
   useEffect(() => {
+    const defaults = generatorDefaults ?? DEFAULT_GENERATOR_OPTIONS;
+    setGenOptions(defaults);
+    setGenError(null);
+
+    if (entry.kind !== 'note' && entry.password.length === 0) {
+      // New login: open options and seed a password so create isn't empty.
+      try {
+        const password = generatePassword(defaults);
+        setDraft({ ...entry, password });
+        setGeneratedBits(generatorEntropyBits(defaults));
+        setRevealed(true);
+        setShowGenerator(true);
+      } catch (err) {
+        setDraft(entry);
+        setGeneratedBits(null);
+        setRevealed(false);
+        setShowGenerator(true);
+        setGenError(err instanceof Error ? err.message : 'Cannot generate with these options.');
+      }
+      return;
+    }
+
     setDraft(entry);
     setRevealed(false);
     setGeneratedBits(null);
-  }, [entry.id, entry]);
+    setShowGenerator(false);
+  }, [entry.id, entry, generatorDefaults]);
 
   const isNote = draft.kind === 'note';
 
@@ -64,11 +94,23 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
     });
   };
 
-  const regenerate = () => {
-    const options = generatorDefaults ?? DEFAULT_GENERATOR_OPTIONS;
-    setDraft({ ...draft, password: generatePassword(options) });
-    setGeneratedBits(generatorEntropyBits(options));
-    setRevealed(true);
+  const applyGenerated = (options: GeneratorOptions) => {
+    try {
+      setDraft((current) => ({ ...current, password: generatePassword(options) }));
+      setGeneratedBits(generatorEntropyBits(options));
+      setRevealed(true);
+      setGenError(null);
+      setShowGenerator(true);
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : 'Cannot generate with these options.');
+    }
+  };
+
+  const onGenOptionsChange = (options: GeneratorOptions) => {
+    setGenOptions(options);
+    // Live-refresh only when the current password still came from the generator,
+    // so typing a manual password is never overwritten by a slider nudge.
+    if (generatedBits !== null) applyGenerated(options);
   };
 
   const setTotp = (raw: string) => {
@@ -149,10 +191,38 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
               <StrengthMeter password={draft.password} exactBits={generatedBits ?? undefined} />
             )}
             <div className="button-row" style={{ marginTop: 8 }}>
-              <button type="button" className="ghost" onClick={regenerate}>
-                Generate new password
+              <button type="button" className="ghost" onClick={() => applyGenerated(genOptions)}>
+                <Icon name="refresh" size={16} />
+                Generate password
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                aria-expanded={showGenerator}
+                onClick={() => setShowGenerator((open) => !open)}
+              >
+                <Icon name="generator" size={16} />
+                {showGenerator ? 'Hide options' : 'Generator options'}
               </button>
             </div>
+            {showGenerator && (
+              <div className="entry-generator">
+                <GeneratorOptionsForm
+                  options={genOptions}
+                  onChange={onGenOptionsChange}
+                  idPrefix={`entry-gen-${entry.id}`}
+                  compact
+                />
+                {genError && (
+                  <p className="hint" style={{ color: 'var(--danger)' }}>
+                    {genError}
+                  </p>
+                )}
+                <p className="hint" style={{ marginTop: 8 }}>
+                  Starts from your vault defaults. Changes here apply to this password only.
+                </p>
+              </div>
+            )}
             {draft.password !== entry.password && (
               <p className="hint" style={{ color: 'var(--warn)' }}>
                 Unsaved password change — remember to update the site too.

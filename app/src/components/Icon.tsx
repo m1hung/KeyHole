@@ -6,16 +6,17 @@
  * theme, and carried their own baked-in colour and metrics — none of which
  * belongs in a product whose whole surface is small monochrome affordances.
  *
- * `vault`, `key`, `generator`, `settings`, `secureNote` and `localServer` are
- * the supplied artwork, inlined verbatim. The rest are drawn to the same
- * grammar so the set reads as one family:
+ * `vault` is the Keyhole brand mark (filled rounded square with keyhole
+ * cutout — `docs/brand/logo-mark.svg`). `key`, `generator`, `settings`,
+ * `secureNote` and `localServer` are the supplied line artwork. The rest are
+ * drawn to the same grammar so the set reads as one family:
  *
  *   24x24 viewBox · fill none · stroke currentColor · width 1.75 · round caps
  *
  * Anything added later must follow those five rules or it will look imported.
  */
 
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 
 export type IconName =
   // --- supplied artwork ---
@@ -38,15 +39,7 @@ export type IconName =
   | 'plus'
   | 'trash';
 
-const PATHS: Record<IconName, ReactNode> = {
-  vault: (
-    <>
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      <circle cx="12" cy="12" r="5" />
-      <path d="M12 7v2m5 3h-2m-3 5v-2m-5-3h2" />
-      <circle cx="12" cy="12" r="1" />
-    </>
-  ),
+const PATHS: Record<Exclude<IconName, 'vault'>, ReactNode> = {
   key: (
     <>
       <circle cx="7.5" cy="15.5" r="4.5" />
@@ -151,6 +144,34 @@ interface IconProps {
 }
 
 export function Icon({ name, size = 20, className, title }: IconProps) {
+  const rawId = useId();
+  // Colons from React's useId break `url(#…)` mask references in some engines.
+  const maskId = `kh-mark-${rawId.replace(/:/g, '')}`;
+  const a11y = title ? { role: 'img' as const } : { 'aria-hidden': true as const };
+
+  if (name === 'vault') {
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 64 64"
+        className={className}
+        focusable="false"
+        {...a11y}
+      >
+        {title ? <title>{title}</title> : null}
+        <defs>
+          <mask id={maskId}>
+            <rect width="64" height="64" fill="white" />
+            <circle cx="32" cy="25" r="8" fill="black" />
+            <path d="M28.5 30.5 24 48h16l-4.5-17.5Z" fill="black" />
+          </mask>
+        </defs>
+        <rect x="4" y="4" width="56" height="56" rx="15" fill="currentColor" mask={`url(#${maskId})`} />
+      </svg>
+    );
+  }
+
   return (
     <svg
       width={size}
@@ -165,7 +186,7 @@ export function Icon({ name, size = 20, className, title }: IconProps) {
       // `focusable` stops IE/legacy Edge putting SVGs in the tab order; harmless
       // elsewhere and cheap insurance.
       focusable="false"
-      {...(title ? { role: 'img' } : { 'aria-hidden': true })}
+      {...a11y}
     >
       {title ? <title>{title}</title> : null}
       {PATHS[name]}

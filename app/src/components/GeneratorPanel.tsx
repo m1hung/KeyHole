@@ -1,8 +1,9 @@
 /** Standalone password generator with live strength feedback. */
 
 import { useCallback, useEffect, useState } from 'react';
-import { MAX_LENGTH, MIN_LENGTH, generatePassword, generatorEntropyBits, type GeneratorOptions } from '@keyhole/core';
+import { generatePassword, generatorEntropyBits, type GeneratorOptions } from '@keyhole/core';
 import { StrengthMeter } from './common.tsx';
+import { GeneratorOptionsForm } from './GeneratorOptionsForm.tsx';
 import { Icon } from './Icon.tsx';
 
 interface GeneratorPanelProps {
@@ -29,15 +30,6 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
     regenerate(options);
   }, [options, regenerate]);
 
-  const update = (patch: Partial<GeneratorOptions>) => onOptionsChange({ ...options, ...patch });
-
-  const classToggles: Array<[keyof GeneratorOptions, string]> = [
-    ['lowercase', 'Lowercase (a–z)'],
-    ['uppercase', 'Uppercase (A–Z)'],
-    ['digits', 'Digits (0–9)'],
-    ['symbols', 'Symbols (!@#$%^&*)'],
-  ];
-
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>Password generator</h2>
@@ -59,44 +51,16 @@ export function GeneratorPanel({ options, onOptionsChange, onCopy }: GeneratorPa
             <Icon name="copy" />
           </button>
         </div>
-        {error ? <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p> : <StrengthMeter password={password} exactBits={generatorEntropyBits(options)} />}
+        {error ? (
+          <p className="hint" style={{ color: 'var(--danger)' }}>
+            {error}
+          </p>
+        ) : (
+          <StrengthMeter password={password} exactBits={generatorEntropyBits(options)} />
+        )}
       </div>
 
-      <div className="field">
-        <label htmlFor="length">Length: {options.length}</label>
-        <input
-          id="length"
-          type="range"
-          min={MIN_LENGTH}
-          max={MAX_LENGTH}
-          value={options.length}
-          onChange={(e) => update({ length: Number(e.target.value) })}
-        />
-      </div>
-
-      <div className="section">
-        <h3>Character classes</h3>
-        {classToggles.map(([key, label]) => (
-          <div className="checkbox-row" key={key}>
-            <input
-              id={`gen-${key}`}
-              type="checkbox"
-              checked={options[key] as boolean}
-              onChange={(e) => update({ [key]: e.target.checked } as Partial<GeneratorOptions>)}
-            />
-            <label htmlFor={`gen-${key}`}>{label}</label>
-          </div>
-        ))}
-        <div className="checkbox-row">
-          <input
-            id="gen-ambiguous"
-            type="checkbox"
-            checked={options.excludeAmbiguous}
-            onChange={(e) => update({ excludeAmbiguous: e.target.checked })}
-          />
-          <label htmlFor="gen-ambiguous">Exclude look-alike characters (0/O, 1/l/I)</label>
-        </div>
-      </div>
+      <GeneratorOptionsForm options={options} onChange={onOptionsChange} idPrefix="gen" />
 
       <p className="hint" style={{ marginTop: 16 }}>
         Generated with <code>crypto.getRandomValues</code> and rejection sampling, so every character is equally

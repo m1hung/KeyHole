@@ -92,6 +92,12 @@ export class Store {
     };
   }
 
+  /** How many accounts are enrolled — for the status page only. */
+  accountCount(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number };
+    return Number(row.n);
+  }
+
   create(account: Omit<AccountRow, 'version' | 'createdAt' | 'updatedAt'>): AccountRow {
     const now = new Date().toISOString();
     this.db
@@ -110,9 +116,30 @@ export class Store {
    * conflict signal: another device wrote first, and this client must pull,
    * merge and retry. Doing the check inside the UPDATE's WHERE clause makes it
    * atomic — two simultaneous writers cannot both succeed.
+   *
+   * Optional verifier rotation: used when a device overwrites the account with
+   * a different vault (new KDF salt → new auth secret).
    */
-  replaceEnvelope(accountId: string, envelope: string, expectedVersion: number): AccountRow | undefined {
+  replaceEnvelope(
+    accountId: string,
+    envelope: string,
+    expectedVersion: number,
+    verifier?: { salt: string; hash: string },
+  ): AccountRow | undefined {
     const now = new Date().toISOString();
+    if (verifier) {
+      const result = this.db
+        .prepare(
+          `UPDATE accounts
+           SET envelope = ?, version = version + 1, updated_at = ?,
+               verifier_salt = ?, verifier_hash = ?
+           WHERE account_id = ? AND version = ?`,
+        )
+        .run(envelope, now, verifier.salt, verifier.hash, accountId, expectedVersion);
+      if (result.changes === 0) return undefined;
+      return this.get(accountId);
+    }
+
     const result = this.db
       .prepare(
         `UPDATE accounts SET envelope = ?, version = version + 1, updated_at = ?

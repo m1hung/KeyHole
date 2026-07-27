@@ -60,6 +60,41 @@ describe('health', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ ok: true, apiVersion: 1 });
   });
+
+  it('serves a status page at /', async () => {
+    const res = await app.inject({ method: 'GET', url: '/' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    expect(res.body).toContain('Keyhole');
+    expect(res.body).toContain('Healthy');
+    expect(res.body).toContain('--accent');
+    expect(res.body).toContain('Live console');
+    expect(res.body).toContain('/api/v1/console');
+  });
+
+  it('allows cross-origin browser clients (CORS)', async () => {
+    const origin = 'http://127.0.0.1:5173';
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/v1/account',
+      headers: {
+        origin,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe(origin);
+    expect(String(preflight.headers['access-control-allow-methods'])).toMatch(/POST/);
+
+    const health = await app.inject({
+      method: 'GET',
+      url: '/api/v1/health',
+      headers: { origin },
+    });
+    expect(health.statusCode).toBe(200);
+    expect(health.headers['access-control-allow-origin']).toBe(origin);
+  });
 });
 
 describe('registration', () => {
@@ -279,11 +314,40 @@ describe('rate limiting', () => {
     }
     // Budget spent: even the correct secret is refused until the window rolls.
     const blocked = await limited.inject({ method: 'GET', url: '/api/v1/vault', headers: { authorization: basic('alice', SECRET) } });
-    expect(blocked.statusCode).toBe(401);
+    expect(blocked.statusCode).toBe(429);
 
     const prelogin = await limited.inject({ method: 'GET', url: '/api/v1/prelogin?account=alice' });
     expect(prelogin.statusCode).toBe(429);
 
     await limited.close();
+  });
+});
+
+describe('live console', () => {
+  it('records API activity and serves a JSON snapshot', async () => {
+    const { ConsoleLog } = await import('../src/console-log.ts');
+    const consoleLog = new ConsoleLog();
+    const logged = buildApp({
+      config: loadConfig({ databasePath: ':memory:' }),
+      store,
+      consoleLog,
+    });
+    await logged.ready();
+
+    await logged.inject({ method: 'GET', url: '/api/v1/health' });
+    await logged.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'alice', authSecret: SECRET, envelope: envelope() },
+    });
+
+    const snap = await logged.inject({ method: 'GET', url: '/api/v1/console?format=json' });
+    expect(snap.statusCode).toBe(200);
+    const body = snap.json() as { entries: Array<{ message: string; statusCode: number }> };
+    expect(body.entries.some((e) => e.message.includes('ready'))).toBe(true);
+    expect(body.entries.some((e) => e.message === 'Health check' && e.statusCode === 200)).toBe(true);
+    expect(body.entries.some((e) => e.message === 'Account registered' && e.statusCode === 201)).toBe(true);
+
+    await logged.close();
   });
 });

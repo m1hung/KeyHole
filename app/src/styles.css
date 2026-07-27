@@ -206,6 +206,15 @@ button.ghost:hover:not(:disabled) {
   background: var(--surface-2);
 }
 
+button.ghost.danger-text {
+  color: var(--danger);
+}
+
+button.ghost.danger-text:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 button.icon {
   padding: 6px 8px;
   min-width: 44px;
@@ -433,6 +442,20 @@ label {
   min-height: 0;
 }
 
+/* Full-width settings / sync surface (extension vault window). */
+.settings-layout {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.settings-pane {
+  max-width: 520px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px;
+  min-height: 0;
+}
+
 .list-pane {
   border-right: 1px solid var(--border);
   overflow-y: auto;
@@ -523,6 +546,12 @@ label {
 @media (max-width: 720px) {
   .app {
     grid-template-rows: auto auto 1fr auto;
+  }
+
+  /* Extension sync/settings has no search row or tab bar — keep content in the
+     flexible row so the panel is not crushed into the search track. */
+  .app:has(> .settings-layout) {
+    grid-template-rows: auto 1fr;
   }
 
   .search-row {
@@ -962,11 +991,36 @@ dialog h2 {
   flex: 0 0 auto;
 }
 
-.note-body {
-  min-height: 220px;
-  font-family: var(--font);
-  line-height: 1.5;
+.entry-generator {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
 }
+
+.generator-options.compact .field {
+  margin-bottom: 8px;
+}
+
+.generator-class-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+}
+
+.button-row .ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 480px) {
+  .generator-class-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 .list-toolbar {
   padding: 12px;
