@@ -22,7 +22,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 npm install
 npm test                    # 161 tests across core + extension
 npm run demo                # end-to-end crypto proof, printed to the terminal
-npm run dev:app             # local web app at http://127.0.0.1:5173
+npm run dev:app             # local web app at http://127.0.0.1:5173 (next free port if busy)
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
 
@@ -179,7 +179,7 @@ npm run dev:app     # http://127.0.0.1:5173
 npm run build --workspace @keyhole/app
 ```
 
-The dev server binds to `127.0.0.1` only. WebCrypto requires a secure context, so serve any production build over `https://` or `localhost`.
+The dev server binds to `127.0.0.1` only, on port 5173 or the next free one — set `PORT` to pin it. WebCrypto requires a secure context, so serve any production build over `https://` or `localhost`.
 
 **First run:** choose *Create vault* (minimum 12 characters, with an explicit no-recovery acknowledgement) or *Import an existing vault file*.
 

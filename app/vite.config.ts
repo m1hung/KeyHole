@@ -11,10 +11,19 @@ export default defineConfig({
   root: here,
   plugins: [react()],
   server: {
-    port: 5173,
+    /**
+     * 5173 is a convenience default, not a requirement — Keyhole has no OAuth
+     * redirect, webhook, or fixed-origin CORS rule tied to a port, and
+     * `localhost` is a secure context (which WebCrypto needs) on any port.
+     *
+     * So honour PORT when a supervisor assigns one, and do not use strictPort:
+     * failing outright on a busy port buys nothing here and produces a confusing
+     * "port in use" crash instead of just moving over.
+     */
+    port: Number(process.env['PORT']) || 5173,
     // Local-first: never expose the dev server beyond this machine.
     host: '127.0.0.1',
-    strictPort: true,
+    strictPort: false,
   },
   build: {
     outDir: resolve(here, 'dist'),
