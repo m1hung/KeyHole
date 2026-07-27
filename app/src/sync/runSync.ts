@@ -1,15 +1,20 @@
 /**
  * Pull-merge-push sync against a Keyhole sync server.
+ *
+ * While the vault is unlocked, callers can omit `masterPassword` and reuse the
+ * session key to open the remote envelope (same vault id). The sync auth secret
+ * still must be supplied (cached in memory after the first derivation).
  */
 
-import { mergeVaultData, saveVault, unlockVault, type VaultFile, type VaultSession } from '@keyhole/core';
+import { mergeVaultData, openVaultWithKey, saveVault, unlockVault, type VaultFile, type VaultSession } from '@keyhole/core';
 import { getVault, putVault, SyncClientError } from './client.ts';
 
 export interface PerformSyncParams {
   baseUrl: string;
   accountId: string;
   syncAuthSecretB64: string;
-  masterPassword: string;
+  /** Required only when the remote envelope cannot be opened with session.key. */
+  masterPassword?: string;
   localFile: VaultFile;
   session: VaultSession;
 }
@@ -21,6 +26,20 @@ export interface PerformSyncResult {
 }
 
 const MAX_RETRIES = 4;
+
+async function readRemoteData(envelope: VaultFile, session: VaultSession, masterPassword?: string) {
+  if (envelope.vaultId === session.vaultId) {
+    try {
+      return await openVaultWithKey(envelope, session.key);
+    } catch {
+      // Fall through to password unlock (e.g. key rotation).
+    }
+  }
+  if (!masterPassword || masterPassword.length === 0) {
+    throw new SyncClientError('Master password required to open the remote vault.', 401);
+  }
+  return (await unlockVault(envelope, masterPassword)).data;
+}
 
 export async function performSync(params: PerformSyncParams): Promise<PerformSyncResult> {
   const { baseUrl, accountId, syncAuthSecretB64, masterPassword, localFile, session } = params;
@@ -39,8 +58,8 @@ export async function performSync(params: PerformSyncParams): Promise<PerformSyn
   let file = localFile;
   let expectedVersion = remote.version;
 
-  const remoteSession = await unlockVault(remote.envelope, masterPassword);
-  const { data: merged, stats } = mergeVaultData(workingSession.data, remoteSession.data);
+  const remoteData = await readRemoteData(remote.envelope, workingSession, masterPassword);
+  const { data: merged, stats } = mergeVaultData(workingSession.data, remoteData);
   workingSession = { ...workingSession, data: merged };
   file = await saveVault(workingSession, file);
 
@@ -66,8 +85,8 @@ export async function performSync(params: PerformSyncParams): Promise<PerformSyn
     };
     expectedVersion = remote.version;
 
-    const conflictSession = await unlockVault(remote.envelope, masterPassword);
-    const { data: remerged } = mergeVaultData(workingSession.data, conflictSession.data);
+    const conflictData = await readRemoteData(remote.envelope, workingSession, masterPassword);
+    const { data: remerged } = mergeVaultData(workingSession.data, conflictData);
     workingSession = { ...workingSession, data: remerged };
     file = await saveVault(workingSession, file);
   }

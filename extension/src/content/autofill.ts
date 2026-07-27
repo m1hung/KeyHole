@@ -30,6 +30,7 @@ interface FillCommand {
   type: 'KEYHOLE_FILL';
   username: string;
   password: string;
+  totp?: string;
   expectedOrigin: string;
 }
 
@@ -50,15 +51,28 @@ interface SuggestResponse {
   error?: string;
 }
 
+interface PendingSave {
+  username: string;
+  password: string;
+  host: string;
+}
+
 function parseFillCommand(raw: unknown): FillCommand | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const candidate = raw as Record<string, unknown>;
   if (candidate['type'] !== 'KEYHOLE_FILL') return null;
-  const { username, password, expectedOrigin } = candidate;
+  const { username, password, expectedOrigin, totp } = candidate;
   if (typeof username !== 'string' || username.length > 512) return null;
   if (typeof password !== 'string' || password.length > 4096) return null;
   if (typeof expectedOrigin !== 'string' || expectedOrigin.length > 2048) return null;
-  return { type: 'KEYHOLE_FILL', username, password, expectedOrigin };
+  if (totp !== undefined && (typeof totp !== 'string' || totp.length > 16)) return null;
+  return {
+    type: 'KEYHOLE_FILL',
+    username,
+    password,
+    expectedOrigin,
+    ...(typeof totp === 'string' ? { totp } : {}),
+  };
 }
 
 /**
@@ -91,18 +105,19 @@ function install(): void {
     // Second origin check, in the page's own context. The service worker already
     // verified the tab URL; this catches an in-flight same-tab navigation.
     if (window.location.origin !== command.expectedOrigin) {
-      sendResponse({ filledUsername: false, filledPassword: false });
+      sendResponse({ filledUsername: false, filledPassword: false, filledTotp: false });
       return false;
     }
 
     hideSuggestions();
-    sendResponse(performFill(command.username, command.password));
+    sendResponse(performFill(command.username, command.password, command.totp));
     return false;
   });
 
   document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('submit', onFormSubmit, true);
   // Reposition on viewport scroll/resize — do NOT dismiss. Capture-phase scroll
   // on window previously hid the menu as soon as Reddit (and many SPAs) fired
   // nested scroll events while focusing a field.
@@ -417,12 +432,43 @@ function setFieldValue(field: HTMLInputElement, value: string): void {
   }
 }
 
-function performFill(username: string, password: string): { filledUsername: boolean; filledPassword: boolean } {
+function findOtpField(root: ParentNode): HTMLInputElement | null {
+  let best: HTMLInputElement | null = null;
+  let bestScore = -1;
+  for (const input of deepQueryAllInputs(root)) {
+    const type = input.type.toLowerCase();
+    if (!['text', 'tel', 'number', 'one-time-code', ''].includes(type) || !isUsable(input)) continue;
+    if (type === 'password') continue;
+
+    let score = 0;
+    const ac = autocompleteOf(input);
+    if (ac.includes('one-time-code') || ac.includes('one-time')) score += 80;
+    const hint = attrBlob(input);
+    if (/\b(one[-_]?time|otp|totp|2fa|mfa|authenticator|verification[-_]?code|security[-_]?code)\b/.test(hint)) {
+      score += 50;
+    }
+    if (/\b(search|query|filter|username|email|password)\b/.test(hint)) score -= 40;
+    if (input.maxLength > 0 && input.maxLength <= 8) score += 15;
+    if (score > bestScore) {
+      bestScore = score;
+      best = input;
+    }
+  }
+  return bestScore >= 40 ? best : null;
+}
+
+function performFill(
+  username: string,
+  password: string,
+  totp?: string,
+): { filledUsername: boolean; filledPassword: boolean; filledTotp: boolean } {
   const passwordField = findPasswordField(document);
   const usernameField = findUsernameField(document, passwordField);
+  const otpField = totp && totp.length > 0 ? findOtpField(document) : null;
 
   let filledUsername = false;
   let filledPassword = false;
+  let filledTotp = false;
 
   if (usernameField && username.length > 0) {
     setFieldValue(usernameField, username);
@@ -432,14 +478,20 @@ function performFill(username: string, password: string): { filledUsername: bool
     setFieldValue(passwordField, password);
     filledPassword = true;
   }
+  if (otpField && totp && totp.length > 0) {
+    setFieldValue(otpField, totp);
+    filledTotp = true;
+  }
 
-  if (passwordField) passwordField.focus();
+  if (otpField && filledTotp) otpField.focus();
+  else if (passwordField) passwordField.focus();
   else if (usernameField) usernameField.focus();
 
   flash(usernameField, filledUsername);
   flash(passwordField, filledPassword);
+  flash(otpField, filledTotp);
 
-  return { filledUsername, filledPassword };
+  return { filledUsername, filledPassword, filledTotp };
 }
 
 function flash(field: HTMLInputElement | null, didFill: boolean): void {
@@ -924,3 +976,238 @@ function hideSuggestions(): void {
     suggestRoot = null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Offer to save / update after login submit
+// ---------------------------------------------------------------------------
+
+let pendingSave: PendingSave | null = null;
+let saveOfferHost: HTMLElement | null = null;
+let saveOfferRoot: ShadowRoot | null = null;
+let lastOfferKey = '';
+
+function onFormSubmit(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const form = target.closest('form') ?? (target.tagName.toLowerCase() === 'faceplate-form' ? target : null);
+  if (!form) return;
+
+  const passwordField = findPasswordField(form);
+  if (!passwordField) return;
+
+  // Skip signup / change-password flows that advertise new-password.
+  const ac = autocompleteOf(passwordField);
+  if (ac.includes('new-password')) return;
+
+  const usernameField = findUsernameField(form, passwordField);
+  const password = passwordField.value;
+  if (password.length === 0) return;
+
+  const username = usernameField?.value ?? '';
+  let host = '';
+  try {
+    host = new URL(window.location.href).hostname.replace(/^www\./, '');
+  } catch {
+    host = window.location.hostname;
+  }
+
+  pendingSave = { username, password, host };
+  // Defer so the page can finish submit handling / navigation start.
+  window.setTimeout(() => void maybeOfferSave(), 400);
+}
+
+async function maybeOfferSave(): Promise<void> {
+  const pending = pendingSave;
+  if (!pending) return;
+
+  const offerKey = `${pending.host}|${pending.username}|${pending.password.length}`;
+  if (offerKey === lastOfferKey && saveOfferHost) return;
+
+  let response: SuggestResponse;
+  try {
+    response = (await chrome.runtime.sendMessage({ type: 'SUGGEST_FOR_PAGE' })) as SuggestResponse;
+  } catch {
+    return;
+  }
+
+  if (response?.theme === 'light' || response?.theme === 'dark' || response?.theme === 'system') {
+    activeTheme = response.theme;
+  }
+
+  if (!response || response.ok === false) return;
+
+  if (response.locked) {
+    showSaveOffer({
+      mode: 'locked',
+      host: pending.host,
+      username: pending.username,
+    });
+    lastOfferKey = offerKey;
+    return;
+  }
+
+  const entries = response.entries ?? [];
+  const exact = entries.find(
+    (e) => e.username === pending.username && pending.username.length > 0,
+  );
+  const anyMatch = exact ?? entries[0];
+
+  // If we already have this exact credential, stay quiet.
+  // (Password equality is checked only after the user picks Update — we cannot
+  // compare without revealing; instead skip when username matches and we just
+  // filled from Keyhole? Simpler: always offer update when username matches.)
+  if (anyMatch && exact) {
+    showSaveOffer({
+      mode: 'update',
+      host: pending.host,
+      username: pending.username,
+      entryId: exact.id,
+      title: exact.title,
+    });
+  } else if (anyMatch && pending.username.length === 0) {
+    showSaveOffer({
+      mode: 'update',
+      host: pending.host,
+      username: pending.username,
+      entryId: anyMatch.id,
+      title: anyMatch.title,
+    });
+  } else {
+    showSaveOffer({
+      mode: 'create',
+      host: pending.host,
+      username: pending.username,
+    });
+  }
+  lastOfferKey = offerKey;
+}
+
+function showSaveOffer(opts: {
+  mode: 'create' | 'update' | 'locked';
+  host: string;
+  username: string;
+  entryId?: string;
+  title?: string;
+}): void {
+  hideSaveOffer();
+  const host = document.createElement('div');
+  host.id = 'keyhole-save-offer';
+  host.style.cssText =
+    'all:initial;position:fixed;z-index:2147483646;bottom:16px;right:16px;width:min(360px,calc(100vw - 32px));font-family:system-ui,sans-serif;';
+  const root = host.attachShadow({ mode: 'closed' });
+  document.documentElement.appendChild(host);
+  saveOfferHost = host;
+  saveOfferRoot = root;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    :host { color-scheme: light dark; }
+    .card {
+      background: ${activeTheme === 'dark' ? '#1a1d23' : '#fff'};
+      color: ${activeTheme === 'dark' ? '#e8eaed' : '#1a1d23'};
+      border: 1px solid ${activeTheme === 'dark' ? '#333842' : '#d0d5dd'};
+      border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.18);
+      padding: 14px 16px;
+      font: 13px/1.4 system-ui, -apple-system, sans-serif;
+    }
+    .title { font-weight: 600; margin: 0 0 4px; font-size: 14px; }
+    .meta { margin: 0 0 12px; opacity: .75; word-break: break-all; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    button {
+      font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid transparent;
+      padding: 7px 12px;
+    }
+    .ghost {
+      background: transparent;
+      border-color: ${activeTheme === 'dark' ? '#333842' : '#d0d5dd'};
+      color: inherit;
+    }
+    .primary {
+      background: #0f62d0; color: #fff; border-color: #0f62d0;
+    }
+  `;
+  root.appendChild(style);
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  const title = document.createElement('p');
+  title.className = 'title';
+  const meta = document.createElement('p');
+  meta.className = 'meta';
+
+  if (opts.mode === 'locked') {
+    title.textContent = 'Unlock Keyhole to save';
+    meta.textContent = `Login on ${opts.host}` + (opts.username ? ` · ${opts.username}` : '');
+  } else if (opts.mode === 'update') {
+    title.textContent = 'Update saved password?';
+    meta.textContent = `${opts.title ?? opts.host}` + (opts.username ? ` · ${opts.username}` : '');
+  } else {
+    title.textContent = 'Save login in Keyhole?';
+    meta.textContent = `${opts.host}` + (opts.username ? ` · ${opts.username}` : '');
+  }
+
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'ghost';
+  dismiss.textContent = 'Not now';
+  dismiss.addEventListener('click', () => {
+    pendingSave = null;
+    hideSaveOffer();
+  });
+  row.appendChild(dismiss);
+
+  if (opts.mode !== 'locked') {
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'primary';
+    confirm.textContent = opts.mode === 'update' ? 'Update' : 'Save';
+    confirm.addEventListener('click', () => {
+      void confirmSave(opts.entryId);
+    });
+    row.appendChild(confirm);
+  }
+
+  card.appendChild(title);
+  card.appendChild(meta);
+  card.appendChild(row);
+  root.appendChild(card);
+}
+
+async function confirmSave(entryId?: string): Promise<void> {
+  const pending = pendingSave;
+  if (!pending) {
+    hideSaveOffer();
+    return;
+  }
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: 'SAVE_FROM_PAGE',
+      username: pending.username,
+      password: pending.password,
+      ...(entryId ? { entryId } : {}),
+    })) as { ok?: boolean; error?: string };
+    if (response?.ok === false) {
+      // Keep the offer so the user can retry after unlocking.
+      const title = saveOfferRoot?.querySelector('.title');
+      if (title) title.textContent = response.error ?? 'Could not save.';
+      return;
+    }
+  } catch {
+    // Ignore.
+  }
+  pendingSave = null;
+  hideSaveOffer();
+}
+
+function hideSaveOffer(): void {
+  if (saveOfferHost) {
+    saveOfferHost.remove();
+    saveOfferHost = null;
+    saveOfferRoot = null;
+  }
+}
+

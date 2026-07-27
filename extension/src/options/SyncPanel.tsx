@@ -2,6 +2,7 @@
  * Sync server settings — drives privileged sync via the service worker.
  *
  * Master password is sent to the background for sync only; it is never stored.
+ * After the first successful sync this unlock, the auth secret stays in SW memory.
  */
 
 import { useEffect, useState } from 'react';
@@ -53,6 +54,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [accountId, setAccountId] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
+  const [hasSyncAuth, setHasSyncAuth] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [statusKind, setStatusKind] = useState<'ok' | 'error'>('ok');
   const [busy, setBusy] = useState(false);
@@ -65,6 +67,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
       if (response.ok && response.type === 'SYNC_CONFIG') {
         if (response.baseUrl) setBaseUrl(response.baseUrl);
         if (response.accountId) setAccountId(response.accountId);
+        setHasSyncAuth(response.hasSyncAuthSecret);
       }
       setSuggestEnabled(await hasSuggestPermission());
     })();
@@ -105,16 +108,13 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
     });
   };
 
-  const requireFields = (): string | null => {
-    if (masterPassword.length === 0) return 'Enter your master password.';
-    if (accountId.trim().length === 0) return 'Account id is required.';
-    return null;
-  };
-
   const register = async () => {
-    const fieldErr = requireFields();
-    if (fieldErr) {
-      showStatus(fieldErr, 'error');
+    if (masterPassword.length === 0) {
+      showStatus('Enter your master password.', 'error');
+      return;
+    }
+    if (accountId.trim().length === 0) {
+      showStatus('Account id is required.', 'error');
       return;
     }
     const trimmedId = accountId.trim().toLowerCase();
@@ -142,6 +142,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
       if (response.type === 'SYNC_RESULT') {
         showStatus(response.message, 'ok');
         setMasterPassword('');
+        setHasSyncAuth(true);
       }
     } finally {
       setBusy(false);
@@ -149,9 +150,12 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
   };
 
   const syncNow = async () => {
-    const fieldErr = requireFields();
-    if (fieldErr) {
-      showStatus(fieldErr, 'error');
+    if (masterPassword.length === 0 && !hasSyncAuth) {
+      showStatus('Enter your master password once this unlock to enable sync.', 'error');
+      return;
+    }
+    if (accountId.trim().length === 0) {
+      showStatus('Account id is required.', 'error');
       return;
     }
     const trimmedId = accountId.trim().toLowerCase();
@@ -178,7 +182,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
 
       const response = await sendToBackground({
         type: 'SYNC_NOW',
-        masterPassword,
+        ...(masterPassword.length > 0 ? { masterPassword } : {}),
         baseUrl: baseUrl.trim(),
         accountId: trimmedId,
       });
@@ -197,6 +201,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
       if (response.type === 'SYNC_RESULT') {
         showStatus(response.message, 'ok');
         setMasterPassword('');
+        setHasSyncAuth(true);
       }
     } finally {
       setBusy(false);
@@ -204,9 +209,12 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
   };
 
   const resolveMismatch = async (action: 'SYNC_ADOPT_REMOTE' | 'SYNC_OVERWRITE_REMOTE') => {
-    const fieldErr = requireFields();
-    if (fieldErr) {
-      showStatus(fieldErr, 'error');
+    if (masterPassword.length === 0) {
+      showStatus('Enter your master password.', 'error');
+      return;
+    }
+    if (accountId.trim().length === 0) {
+      showStatus('Account id is required.', 'error');
       return;
     }
     const trimmedId = accountId.trim().toLowerCase();
@@ -228,6 +236,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
         setVaultMismatch(false);
         showStatus(response.message, 'ok');
         setMasterPassword('');
+        setHasSyncAuth(true);
       }
     } finally {
       setBusy(false);
@@ -275,7 +284,9 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
       </div>
 
       <div className="field">
-        <label htmlFor="ext-sync-master">Master password (for sync only — not stored)</label>
+        <label htmlFor="ext-sync-master">
+          Master password {hasSyncAuth ? '(optional — cached for this unlock)' : '(required once per unlock)'}
+        </label>
         <input
           id="ext-sync-master"
           type="password"
@@ -326,7 +337,8 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
         <h3>Inline autofill</h3>
         <p className="hint">
           When enabled, Keyhole shows matching logins when you click a username or password field.
-          Chrome will ask for permission to run on websites.
+          Chrome will ask for permission to run on websites. After you submit a login, Keyhole can also
+          offer to save or update the password (with your confirmation).
         </p>
         <div className="button-row">
           <button type="button" className="primary" disabled={busy || suggestEnabled} onClick={() => void enableSuggestions()}>

@@ -53,6 +53,14 @@ export interface VaultController {
   deleteVault: () => void;
   clearError: () => void;
   registerActivity: () => void;
+  /** Run sync using the unlocked session; caches syncAuthSecret until lock. */
+  syncNow: (args: {
+    baseUrl: string;
+    accountId: string;
+    masterPassword?: string;
+  }) => Promise<string>;
+  getSyncAuthSecret: () => string | null;
+  setSyncAuthSecret: (secret: string | null) => void;
 }
 
 export function useVault(): VaultController {
@@ -67,6 +75,8 @@ export function useVault(): VaultController {
   const sessionRef = useRef<VaultSession | null>(null);
   const fileRef = useRef<VaultFile | null>(null);
   const lastActivityRef = useRef<number>(Date.now());
+  /** Sync auth secret derived while unlocked — cleared on lock. Never persisted. */
+  const syncAuthSecretRef = useRef<string | null>(null);
 
   useEffect(() => {
     setStatus(loadFromLocalStorage() ? 'locked' : 'no-vault');
@@ -74,6 +84,7 @@ export function useVault(): VaultController {
 
   const lock = useCallback(() => {
     sessionRef.current = null;
+    syncAuthSecretRef.current = null;
     setData(null);
     setSecondsUntilLock(null);
     setStatus(fileRef.current || loadFromLocalStorage() ? 'locked' : 'no-vault');
@@ -195,6 +206,7 @@ export function useVault(): VaultController {
   const importVault = useCallback(
     (file: VaultFile) => {
       sessionRef.current = null;
+      syncAuthSecretRef.current = null;
       fileRef.current = file;
       saveToLocalStorage(file);
       setData(null);
@@ -270,6 +282,46 @@ export function useVault(): VaultController {
 
   const clearError = useCallback(() => setError(null), []);
 
+  const getSyncAuthSecret = useCallback(() => syncAuthSecretRef.current, []);
+  const setSyncAuthSecret = useCallback((secret: string | null) => {
+    syncAuthSecretRef.current = secret;
+  }, []);
+
+  const syncNow = useCallback(
+    async (args: { baseUrl: string; accountId: string; masterPassword?: string }) => {
+      const session = sessionRef.current;
+      const file = fileRef.current;
+      if (!session || !file) throw new Error('Unlock the vault before syncing.');
+
+      const { fetchPrelogin } = await import('../sync/client.ts');
+      const { performSync } = await import('../sync/runSync.ts');
+      const { deriveSyncAuthSecret } = await import('@keyhole/core');
+
+      const { kdf: accountKdf } = await fetchPrelogin(args.baseUrl, args.accountId);
+      let secret = syncAuthSecretRef.current;
+      if (args.masterPassword && args.masterPassword.length > 0) {
+        secret = await deriveSyncAuthSecret(args.masterPassword, accountKdf);
+        syncAuthSecretRef.current = secret;
+      }
+      if (!secret) throw new Error('Enter your master password once this session to enable sync.');
+
+      const result = await performSync({
+        baseUrl: args.baseUrl,
+        accountId: args.accountId,
+        syncAuthSecretB64: secret,
+        ...(args.masterPassword ? { masterPassword: args.masterPassword } : {}),
+        localFile: file,
+        session,
+      });
+      sessionRef.current = result.session;
+      await persist(result.file);
+      setData(result.session.data);
+      registerActivity();
+      return result.message;
+    },
+    [persist, registerActivity],
+  );
+
   return useMemo(
     () => ({
       status,
@@ -288,6 +340,9 @@ export function useVault(): VaultController {
       deleteVault,
       clearError,
       registerActivity,
+      syncNow,
+      getSyncAuthSecret,
+      setSyncAuthSecret,
     }),
     [
       status,
@@ -306,6 +361,9 @@ export function useVault(): VaultController {
       deleteVault,
       clearError,
       registerActivity,
+      syncNow,
+      getSyncAuthSecret,
+      setSyncAuthSecret,
     ],
   );
 }

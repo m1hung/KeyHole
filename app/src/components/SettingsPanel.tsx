@@ -1,7 +1,18 @@
 /** Settings: lock behaviour, theme, local storage, export/import, master password, delete vault. */
 
 import { useEffect, useRef, useState } from 'react';
-import { MIN_MASTER_PASSWORD_LENGTH, type Settings, type VaultFile } from '@keyhole/core';
+import {
+  MIN_MASTER_PASSWORD_LENGTH,
+  applyMigration,
+  analyzeVaultHealth,
+  createEntry,
+  createFolder,
+  deriveSyncAuthSecret,
+  parseMigrationPayload,
+  type Settings,
+  type VaultFile,
+  type VaultHealthReport,
+} from '@keyhole/core';
 import { ConfirmDialog, StrengthMeter } from './common.tsx';
 import { Icon } from './Icon.tsx';
 import {
@@ -15,19 +26,18 @@ import {
   writeToHandle,
 } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
-import { deriveSyncAuthSecret, unlockVault } from '@keyhole/core';
-import { healthCheck, registerAccount, fetchPrelogin, SyncClientError } from '../sync/client.ts';
+import { healthCheck, registerAccount, SyncClientError } from '../sync/client.ts';
 import { loadSyncConfig, saveSyncConfig } from '../sync/storage.ts';
-import { performSync } from '../sync/runSync.ts';
 
 interface SettingsPanelProps {
   settings: Settings;
   onSettingsChange: (patch: Partial<Settings>) => void;
   vault: VaultController;
   entryCount: number;
+  onOpenEntry?: (id: string) => void;
 }
 
-export function SettingsPanel({ settings, onSettingsChange, vault, entryCount }: SettingsPanelProps) {
+export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, onOpenEntry }: SettingsPanelProps) {
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>Settings</h2>
@@ -92,6 +102,8 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount }:
 
       <LocalStorageSection vault={vault} />
       <SyncSection vault={vault} />
+      <MigrateSection vault={vault} />
+      <VaultHealthSection vault={vault} onOpenEntry={onOpenEntry} />
       <BackupSection vault={vault} entryCount={entryCount} />
       <ChangeMasterPassword vault={vault} />
       <DangerZone vault={vault} entryCount={entryCount} />
@@ -246,6 +258,7 @@ function SyncSection({ vault }: { vault: VaultController }) {
       const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, file.kdf);
       const result = await registerAccount(baseUrl.trim(), trimmedId, syncAuthSecretB64, file);
       saveSyncConfig({ baseUrl: baseUrl.trim(), accountId: trimmedId });
+      vault.setSyncAuthSecret(syncAuthSecretB64);
       setStatus(`Registered as ${result.accountId} (server version ${result.version}).`);
       setMasterPassword('');
     } catch (err) {
@@ -256,18 +269,13 @@ function SyncSection({ vault }: { vault: VaultController }) {
   };
 
   const syncNow = async () => {
-    const file = vault.exportVault();
-    if (!file || vault.status !== 'unlocked') {
-      setStatus('Unlock the vault before syncing.');
-      return;
-    }
-    if (masterPassword.length === 0) {
-      setStatus('Enter your master password to sync.');
-      return;
-    }
     const trimmedId = accountId.trim().toLowerCase();
     if (trimmedId.length === 0) {
       setStatus('Account id is required.');
+      return;
+    }
+    if (masterPassword.length === 0 && !vault.getSyncAuthSecret()) {
+      setStatus('Enter your master password once this session to enable sync.');
       return;
     }
 
@@ -282,25 +290,13 @@ function SyncSection({ vault }: { vault: VaultController }) {
         return;
       }
 
-      // Derive against the account's server-side KDF (prelogin), not only the
-      // local envelope — required when this device imported/joined an existing account.
-      const { kdf: accountKdf } = await fetchPrelogin(baseUrl.trim(), trimmedId);
-      const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
       saveSyncConfig({ baseUrl: baseUrl.trim(), accountId: trimmedId });
-
-      const localSession = await unlockVault(file, masterPassword);
-
-      const result = await performSync({
+      const message = await vault.syncNow({
         baseUrl: baseUrl.trim(),
         accountId: trimmedId,
-        syncAuthSecretB64,
-        masterPassword,
-        localFile: file,
-        session: localSession,
+        ...(masterPassword.length > 0 ? { masterPassword } : {}),
       });
-
-      await vault.applySyncedSession(result.file, result.session);
-      setStatus(result.message);
+      setStatus(message);
       setMasterPassword('');
     } catch (err) {
       setStatus(formatSyncError(err, 'Sync failed.'));
@@ -343,7 +339,9 @@ function SyncSection({ vault }: { vault: VaultController }) {
       </div>
 
       <div className="field">
-        <label htmlFor="sync-master">Master password (for sync only — not stored)</label>
+        <label htmlFor="sync-master">
+          Master password {vault.getSyncAuthSecret() ? '(optional — cached for this unlock)' : '(required once per unlock)'}
+        </label>
         <input
           id="sync-master"
           type="password"
@@ -363,6 +361,119 @@ function SyncSection({ vault }: { vault: VaultController }) {
       </div>
 
       {status && <p className="hint">{status}</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function MigrateSection({ vault }: { vault: VaultController }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (file: File | undefined) => {
+    if (!file || vault.status !== 'unlocked') return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const text = await file.text();
+      const migration = parseMigrationPayload(text, file.name);
+      let summary = '';
+      await vault.mutate((current) => {
+        const applied = applyMigration(current, migration, { createFolder, createEntry });
+        summary = `Imported ${applied.entryCount} entries` +
+          (applied.folderCount > 0 ? ` and ${applied.folderCount} folders` : '') +
+          ` from ${migration.format}.`;
+        if (migration.warnings.length > 0) {
+          summary += ` (${migration.warnings.length} skipped)`;
+        }
+        return applied.data;
+      });
+      setStatus(summary);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Import failed.');
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  return (
+    <div className="section">
+      <h3>Import from another password manager</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Merge an unencrypted Bitwarden JSON export or a CSV (Bitwarden / Chrome / generic) into this unlocked vault.
+        Encrypted Bitwarden exports are not supported — export without a password.
+      </p>
+      <button type="button" disabled={busy || vault.busy} onClick={() => inputRef.current?.click()}>
+        {busy ? 'Importing…' : 'Choose CSV or Bitwarden JSON'}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".json,.csv,text/csv,application/json"
+        className="sr-only"
+        onChange={(e) => void onFile(e.target.files?.[0])}
+      />
+      {status && <p className="hint">{status}</p>}
+    </div>
+  );
+}
+
+function VaultHealthSection({
+  vault,
+  onOpenEntry,
+}: {
+  vault: VaultController;
+  onOpenEntry?: ((id: string) => void) | undefined;
+}) {
+  const [report, setReport] = useState<VaultHealthReport | null>(null);
+
+  const run = () => {
+    if (!vault.data) return;
+    setReport(analyzeVaultHealth(vault.data));
+  };
+
+  return (
+    <div className="section">
+      <h3>Vault health</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Offline check for reused, weak, empty, or stale passwords. Nothing leaves this device.
+      </p>
+      <button type="button" onClick={run}>
+        Scan vault
+      </button>
+      {report && (
+        <div style={{ marginTop: 12 }}>
+          <p className="hint">
+            Checked {report.loginCount} logins — {report.issues.length === 0 ? 'no issues found.' : `${report.issues.length} finding(s).`}
+          </p>
+          {report.issues.length > 0 && (
+            <ul className="entry-list" style={{ marginTop: 8 }}>
+              {report.issues.slice(0, 40).map((issue) => (
+                <li key={`${issue.kind}-${issue.entryId}`}>
+                  <button
+                    type="button"
+                    className="entry-item"
+                    onClick={() => onOpenEntry?.(issue.entryId)}
+                  >
+                    <span className="entry-body">
+                      <div className="title">
+                        <span className="tag" style={{ marginRight: 6 }}>
+                          {issue.kind}
+                        </span>
+                        {issue.title}
+                      </div>
+                      <div className="meta">{issue.detail}</div>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

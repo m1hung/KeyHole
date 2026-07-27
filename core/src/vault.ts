@@ -161,6 +161,29 @@ export async function unlockVault(file: unknown, masterPassword: string): Promis
 }
 
 /**
+ * Decrypt a vault envelope using an already-held vault key (same vault id).
+ * Used by sync while unlocked so the master password need not be re-entered.
+ */
+export async function openVaultWithKey(file: unknown, vaultKey: CryptoKey): Promise<VaultData> {
+  const parsed = parseVaultFile(file);
+  if (parsed.formatVersion > FORMAT_VERSION) {
+    throw new UnsupportedVersionError(
+      `This vault was written by a newer version of Keyhole (format ${parsed.formatVersion}). Please update.`,
+    );
+  }
+  const header = { vaultId: parsed.vaultId, formatVersion: parsed.formatVersion, kdf: parsed.kdf };
+  const plaintext = await decrypt(vaultKey, parsed.payload, payloadAad(header));
+  try {
+    return migrate(parseVaultData(JSON.parse(bytesToUtf8(plaintext))));
+  } catch (err) {
+    if (err instanceof SyntaxError) throw new VaultFormatError('Vault payload is not valid JSON.');
+    throw err;
+  } finally {
+    zeroize(plaintext);
+  }
+}
+
+/**
  * Re-encrypt the session's current data into an existing envelope.
  *
  * Reuses `kdf` and `wrappedKey` untouched: the master key has not changed, so

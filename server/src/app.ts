@@ -218,6 +218,7 @@ export function buildApp({ config, store, logger = false, consoleLog }: BuildOpt
     };
     request.raw.on('close', cleanup);
     request.raw.on('error', cleanup);
+    return;
   });
 
   /**

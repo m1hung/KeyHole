@@ -7,7 +7,9 @@ import { useEffect, useState } from 'react';
 import {
   DEFAULT_GENERATOR_OPTIONS,
   createEntry,
+  createFolder,
   deleteEntry,
+  deleteFolder,
   displayHost,
   searchEntries,
   updateEntry,
@@ -27,13 +29,14 @@ import { EmptyState, Toast } from './components/common.tsx';
 import { Icon } from './components/Icon.tsx';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
-type ListFilter = 'all' | EntryKind;
+type ListFilter = 'all' | EntryKind | { folderId: string };
 
 export function App() {
   const vault = useVault();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ListFilter>('all');
   const [view, setView] = useState<View>({ kind: 'none' });
+  const [newFolderName, setNewFolderName] = useState('');
 
   const settings = vault.data?.settings;
   const clipboard = useClipboard(settings?.clipboardClearSeconds ?? 30);
@@ -47,6 +50,7 @@ export function App() {
       setView({ kind: 'none' });
       setQuery('');
       setFilter('all');
+      setNewFolderName('');
     }
   }, [vault.status]);
 
@@ -58,27 +62,40 @@ export function App() {
   }
 
   const data = vault.data;
-  const results = searchEntries(data, query).filter((e) => filter === 'all' || e.kind === filter);
+  const results = searchEntries(data, query).filter((e) => {
+    if (filter === 'all') return true;
+    if (typeof filter === 'string') return e.kind === filter;
+    return e.folderId === filter.folderId;
+  });
   const selected = view.kind === 'entry' ? data.entries.find((e) => e.id === view.id) : undefined;
   const loginCount = data.entries.filter((e) => e.kind === 'login').length;
   const noteCount = data.entries.filter((e) => e.kind === 'note').length;
 
   const addEntry = async (kind: EntryKind) => {
     let created: Entry | undefined;
+    const folderId = typeof filter === 'object' ? filter.folderId : null;
     await vault.mutate((current) => {
       const result = createEntry(current, {
         title: kind === 'note' ? 'New secure note' : 'New entry',
         kind,
         username: '',
         password: '',
+        folderId,
       });
       created = result.entry;
       return result.data;
     });
     if (created) {
-      if (filter !== 'all' && filter !== kind) setFilter(kind);
+      if (typeof filter === 'string' && filter !== 'all' && filter !== kind) setFilter(kind);
       setView({ kind: 'entry', id: created.id });
     }
+  };
+
+  const addFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    await vault.mutate((current) => createFolder(current, name).data);
+    setNewFolderName('');
   };
 
   const patchSettings = (patch: Partial<Settings>) => vault.mutate((current) => updateSettings(current, patch));
@@ -155,6 +172,50 @@ export function App() {
                 Notes
               </FilterChip>
             </div>
+            {data.folders.length > 0 && (
+              <div className="filter-row" role="tablist" aria-label="Folders" style={{ marginTop: 8 }}>
+                {data.folders.map((folder) => (
+                  <FilterChip
+                    key={folder.id}
+                    active={typeof filter === 'object' && filter.folderId === folder.id}
+                    onClick={() => setFilter({ folderId: folder.id })}
+                    count={data.entries.filter((e) => e.folderId === folder.id).length}
+                  >
+                    {folder.name}
+                  </FilterChip>
+                ))}
+              </div>
+            )}
+            <div className="field-row" style={{ marginTop: 8, padding: '0 12px' }}>
+              <input
+                type="text"
+                placeholder="New folder name"
+                aria-label="New folder name"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void addFolder();
+                }}
+              />
+              <button type="button" className="ghost" disabled={newFolderName.trim().length === 0} onClick={() => void addFolder()}>
+                Add folder
+              </button>
+            </div>
+            {typeof filter === 'object' && (
+              <div className="button-row" style={{ padding: '8px 12px' }}>
+                <button
+                  type="button"
+                  className="ghost danger-text"
+                  onClick={() => {
+                    const id = filter.folderId;
+                    setFilter('all');
+                    void vault.mutate((current) => deleteFolder(current, id));
+                  }}
+                >
+                  Delete folder
+                </button>
+              </div>
+            )}
             <div className="new-entry-row">
               <button type="button" className="primary" onClick={() => void addEntry('login')}>
                 <Icon name="key" size={16} />
@@ -172,6 +233,8 @@ export function App() {
               <p className="hint">
                 {query
                   ? 'Try a different search.'
+                  : typeof filter === 'object'
+                    ? 'This folder is empty.'
                   : filter === 'note'
                     ? 'Create a secure note for secrets that are not a login.'
                     : 'Add your first login or secure note to get started.'}
@@ -239,6 +302,7 @@ export function App() {
               onSettingsChange={patchSettings}
               vault={vault}
               entryCount={data.entries.length}
+              onOpenEntry={(id) => setView({ kind: 'entry', id })}
             />
           )}
 
@@ -253,6 +317,7 @@ export function App() {
           {view.kind === 'entry' && selected && (
             <EntryEditor
               entry={selected}
+              folders={data.folders}
               generatorDefaults={settings.generator ?? DEFAULT_GENERATOR_OPTIONS}
               onCopy={(value, label) => void clipboard.copy(value, label)}
               onClose={() => setView({ kind: 'none' })}

@@ -5,8 +5,8 @@
  *  - The session (CryptoKey + decrypted vault) lives in a module-scope variable
  *    and is NEVER written to chrome.storage, IndexedDB, or anywhere persistent.
  *  - Privileged messages are gated on `isTrustedExtensionSender`.
- *  - Content scripts may only send SUGGEST_FOR_PAGE / FILL_FROM_PAGE; matching
- *    always uses sender.tab's URL from Chrome, never a page-supplied URL.
+ *  - Content scripts may only send SUGGEST_FOR_PAGE / FILL_FROM_PAGE / SAVE_FROM_PAGE;
+ *    matching always uses sender.tab's URL from Chrome, never a page-supplied URL.
  *  - Autofill re-verifies the target tab's URL immediately before dispatching,
  *    closing the window where a page navigates between the user's click and the
  *    credential arriving.
@@ -59,6 +59,8 @@ const HEARTBEAT_ALARM = 'keyhole-heartbeat';
 let session: VaultSession | null = null;
 let vaultFile: VaultFile | null = null;
 let lastActivity = 0;
+/** Sync auth secret derived once per unlock; never persisted. */
+let syncAuthSecretB64: string | null = null;
 
 // ---------------------------------------------------------------------------
 // Lock management
@@ -70,6 +72,7 @@ function lock(): void {
   // never be written back over a newer one after a re-unlock.
   vaultFile = null;
   lastActivity = 0;
+  syncAuthSecretB64 = null;
   void chrome.alarms.clear(HEARTBEAT_ALARM);
   void clearMatchBadge();
 }
@@ -331,6 +334,7 @@ async function handle(request: Request): Promise<Response> {
         type: 'SYNC_CONFIG',
         baseUrl: config?.baseUrl ?? null,
         accountId: config?.accountId ?? null,
+        hasSyncAuthSecret: syncAuthSecretB64 !== null,
       };
     }
 
@@ -402,6 +406,8 @@ async function handleContentScript(request: ContentScriptRequest, sender: chrome
     }
     case 'FILL_FROM_PAGE':
       return fill(request.entryId, tabId);
+    case 'SAVE_FROM_PAGE':
+      return saveFromPage(tabId, request.username, request.password, request.entryId);
     default: {
       const exhaustive: never = request;
       return { ok: false, error: `Unhandled request: ${JSON.stringify(exhaustive)}` };
@@ -440,15 +446,18 @@ async function fill(entryId: string, tabId: number): Promise<Response> {
   }
 
   try {
+    const totp =
+      entry.totpSecret !== null ? (await generateTotp(entry.totpSecret)).code : undefined;
     const result = (await chrome.tabs.sendMessage(tabId, {
       type: 'KEYHOLE_FILL',
       username: entry.username,
       password: entry.password,
+      ...(totp !== undefined ? { totp } : {}),
       expectedOrigin: target.origin,
-    })) as { filledUsername?: boolean; filledPassword?: boolean } | undefined;
+    })) as { filledUsername?: boolean; filledPassword?: boolean; filledTotp?: boolean } | undefined;
 
     if (!result) return { ok: false, error: 'No login form responded on that page.' };
-    if (!result.filledUsername && !result.filledPassword) {
+    if (!result.filledUsername && !result.filledPassword && !result.filledTotp) {
       return { ok: false, error: 'No login fields found on that page.' };
     }
     return {
@@ -456,9 +465,50 @@ async function fill(entryId: string, tabId: number): Promise<Response> {
       type: 'FILLED',
       filledUsername: result.filledUsername === true,
       filledPassword: result.filledPassword === true,
+      filledTotp: result.filledTotp === true,
     };
   } catch {
     return { ok: false, error: 'The page did not accept the fill request.' };
+  }
+}
+
+async function saveFromPage(
+  tabId: number,
+  username: string,
+  password: string,
+  entryId?: string,
+): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const currentUrl = await tabUrl(tabId);
+  if (!currentUrl) return { ok: false, error: 'Cannot read that tab.' };
+  const target = parseTarget(currentUrl);
+  if (!target) return { ok: false, error: 'Keyhole only saves logins for http(s) pages.' };
+
+  try {
+    if (typeof entryId === 'string') {
+      const entry = session.data.entries.find((e) => e.id === entryId);
+      if (!entry) return { ok: false, error: 'Entry not found.' };
+      const stillMatches = findMatchingEntries([entry], currentUrl, 'subdomain').length > 0;
+      if (!stillMatches) {
+        return { ok: false, error: `That page (${target.hostname}) does not match this entry.` };
+      }
+      session.data = updateEntry(session.data, entryId, { username, password });
+    } else {
+      const title = target.hostname.replace(/^www\./, '') || 'Saved login';
+      session.data = createEntry(session.data, {
+        title,
+        username,
+        password,
+        urls: [target.origin],
+      }).data;
+    }
+    await persist();
+    void updateMatchBadge(tabId);
+    return { ok: true, type: 'OK' };
+  } catch (err) {
+    return { ok: false, error: describe(err) };
   }
 }
 
@@ -535,8 +585,9 @@ async function syncRegister(baseUrl: string, accountId: string, masterPassword: 
       };
     }
 
-    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, vaultFile.kdf);
-    const result = await registerAccount(url, id, syncAuthSecretB64, vaultFile);
+    const derived = await deriveSyncAuthSecret(masterPassword, vaultFile.kdf);
+    const result = await registerAccount(url, id, derived, vaultFile);
+    syncAuthSecretB64 = derived;
     await saveSyncConfig({ baseUrl: url, accountId: id });
     return { ok: true, type: 'SYNC_RESULT', message: `Registered as ${result.accountId} (server version ${result.version}).` };
   } catch (err) {
@@ -544,7 +595,7 @@ async function syncRegister(baseUrl: string, accountId: string, masterPassword: 
   }
 }
 
-async function syncNow(baseUrl: string, accountId: string, masterPassword: string): Promise<Response> {
+async function syncNow(baseUrl: string, accountId: string, masterPassword?: string): Promise<Response> {
   if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
   touch();
 
@@ -552,10 +603,17 @@ async function syncNow(baseUrl: string, accountId: string, masterPassword: strin
   const id = normalizeAccountId(accountId);
   if (url.length === 0 || id.length === 0) return { ok: false, error: 'Server URL and account id are required.' };
 
+  const password = masterPassword?.trim() ?? '';
+  if (password.length === 0 && !syncAuthSecretB64) {
+    return { ok: false, error: 'Enter your master password once this unlock to enable sync.' };
+  }
+
   try {
-    // Confirm the password unlocks *this* device's vault before paying for
-    // network / Argon2 against the account's server-side KDF.
-    await unlockVault(vaultFile, masterPassword);
+    if (password.length > 0) {
+      // Confirm the password unlocks *this* device's vault before paying for
+      // network / Argon2 against the account's server-side KDF.
+      await unlockVault(vaultFile, password);
+    }
 
     const ok = await healthCheck(url);
     if (!ok) {
@@ -569,15 +627,21 @@ async function syncNow(baseUrl: string, accountId: string, masterPassword: strin
     // Auth secret must be derived from the *account's* KDF (via prelogin), not
     // necessarily this device's local salt — otherwise Sync now 401s when the
     // account was registered from another vault/device with the same password.
-    const { kdf: accountKdf } = await fetchPrelogin(url, id);
-    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
+    let secret = syncAuthSecretB64;
+    if (password.length > 0) {
+      const { kdf: accountKdf } = await fetchPrelogin(url, id);
+      secret = await deriveSyncAuthSecret(password, accountKdf);
+      syncAuthSecretB64 = secret;
+    }
+    if (!secret) return { ok: false, error: 'Enter your master password once this unlock to enable sync.' };
+
     await saveSyncConfig({ baseUrl: url, accountId: id });
 
     const result = await performSync({
       baseUrl: url,
       accountId: id,
-      syncAuthSecretB64,
-      masterPassword,
+      syncAuthSecretB64: secret,
+      ...(password.length > 0 ? { masterPassword: password } : {}),
       localFile: vaultFile,
       session,
     });
@@ -619,12 +683,13 @@ async function syncAdoptRemote(baseUrl: string, accountId: string, masterPasswor
     }
 
     const { kdf: accountKdf } = await fetchPrelogin(url, id);
-    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
-    const remote = await getVault(url, id, syncAuthSecretB64);
+    const derived = await deriveSyncAuthSecret(masterPassword, accountKdf);
+    const remote = await getVault(url, id, derived);
     const remoteSession = await unlockVault(remote.envelope, masterPassword);
 
     await saveVaultFile(remote.envelope);
     await markUnlocked(remoteSession, remote.envelope);
+    syncAuthSecretB64 = derived;
     await saveSyncConfig({ baseUrl: url, accountId: id });
 
     return {
@@ -674,6 +739,7 @@ async function syncOverwriteRemote(baseUrl: string, accountId: string, masterPas
       };
     }
 
+    syncAuthSecretB64 = nextSecret;
     await saveSyncConfig({ baseUrl: url, accountId: id });
     return {
       ok: true,

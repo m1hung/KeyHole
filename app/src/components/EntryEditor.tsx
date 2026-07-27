@@ -5,10 +5,13 @@ import {
   DEFAULT_GENERATOR_OPTIONS,
   displayHost,
   generatePassword,
+  generatePassphrase,
   generatorEntropyBits,
   generateTotp,
   parseOtpAuthUri,
+  PASSPHRASE_WORDLIST,
   type Entry,
+  type Folder,
   type GeneratorOptions,
 } from '@keyhole/core';
 import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
@@ -17,6 +20,7 @@ import { Icon } from './Icon.tsx';
 
 interface EntryEditorProps {
   entry: Entry;
+  folders: Folder[];
   generatorDefaults: GeneratorOptions;
   onSave: (patch: Partial<Entry>) => void;
   onDelete: () => void;
@@ -24,7 +28,15 @@ interface EntryEditorProps {
   onClose: () => void;
 }
 
-export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy, onClose }: EntryEditorProps) {
+export function EntryEditor({
+  entry,
+  folders,
+  generatorDefaults,
+  onSave,
+  onDelete,
+  onCopy,
+  onClose,
+}: EntryEditorProps) {
   const [draft, setDraft] = useState(entry);
   const [revealed, setRevealed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -80,7 +92,8 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
     draft.notes !== entry.notes ||
     draft.urls.join('\n') !== entry.urls.join('\n') ||
     draft.tags.join(',') !== entry.tags.join(',') ||
-    draft.totpSecret !== entry.totpSecret;
+    draft.totpSecret !== entry.totpSecret ||
+    draft.folderId !== entry.folderId;
 
   const save = () => {
     onSave({
@@ -91,6 +104,7 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
       urls: draft.urls,
       tags: draft.tags,
       totpSecret: draft.totpSecret,
+      folderId: draft.folderId,
     });
   };
 
@@ -103,6 +117,20 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
       setShowGenerator(true);
     } catch (err) {
       setGenError(err instanceof Error ? err.message : 'Cannot generate with these options.');
+    }
+  };
+
+  const applyPassphrase = () => {
+    try {
+      setDraft((current) => ({
+        ...current,
+        password: generatePassphrase(PASSPHRASE_WORDLIST, 5, '-'),
+      }));
+      setGeneratedBits(Math.round(5 * Math.log2(PASSPHRASE_WORDLIST.length) * 10) / 10);
+      setRevealed(true);
+      setGenError(null);
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : 'Cannot generate passphrase.');
     }
   };
 
@@ -142,6 +170,22 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
       <div className="field">
         <label htmlFor="entry-title">Title</label>
         <input id="entry-title" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+      </div>
+
+      <div className="field">
+        <label htmlFor="entry-folder">Folder</label>
+        <select
+          id="entry-folder"
+          value={draft.folderId ?? ''}
+          onChange={(e) => setDraft({ ...draft, folderId: e.target.value.length > 0 ? e.target.value : null })}
+        >
+          <option value="">No folder</option>
+          {folders.map((folder) => (
+            <option key={folder.id} value={folder.id}>
+              {folder.name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {isNote ? (
@@ -194,6 +238,10 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
               <button type="button" className="ghost" onClick={() => applyGenerated(genOptions)}>
                 <Icon name="refresh" size={16} />
                 Generate password
+              </button>
+              <button type="button" className="ghost" onClick={applyPassphrase}>
+                <Icon name="refresh" size={16} />
+                Generate passphrase
               </button>
               <button
                 type="button"
@@ -269,7 +317,14 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
         </div>
       )}
 
-      {!isNote && <TotpSection secret={draft.totpSecret} onChange={setTotp} onCopy={onCopy} />}
+      {!isNote && (
+        <TotpSection
+          secret={draft.totpSecret}
+          entryTitle={draft.title}
+          onChange={setTotp}
+          onCopy={onCopy}
+        />
+      )}
 
       <div className="section">
         <h3>Details</h3>
@@ -311,10 +366,12 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
 
 function TotpSection({
   secret,
+  entryTitle,
   onChange,
   onCopy,
 }: {
   secret: string | null;
+  entryTitle: string;
   onChange: (value: string) => void;
   onCopy: (value: string, label: string) => void;
 }) {
@@ -350,6 +407,11 @@ function TotpSection({
     };
   }, [secret]);
 
+  const otpauthUri =
+    secret && !error
+      ? `otpauth://totp/${encodeURIComponent(entryTitle || 'Keyhole')}?secret=${secret.replace(/\s+/g, '')}&issuer=Keyhole`
+      : null;
+
   return (
     <div className="section">
       <h3>Two-factor code</h3>
@@ -359,11 +421,12 @@ function TotpSection({
           id="entry-totp"
           className="mono"
           value={secret ?? ''}
-          placeholder="JBSWY3DPEHPK3PXP"
+          placeholder="Paste secret or otpauth://…"
           autoComplete="off"
           spellCheck={false}
           onChange={(e) => onChange(e.target.value)}
         />
+        <p className="hint">Paste a base32 secret or a full otpauth:// URI from your authenticator export.</p>
         {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
       </div>
       {code && (
@@ -373,6 +436,17 @@ function TotpSection({
             <span className="lock-status">{code.secondsRemaining}s</span>
             <button type="button" className="ghost" onClick={() => onCopy(code.code, 'One-time code')}>
               Copy code
+            </button>
+          </div>
+        </div>
+      )}
+      {otpauthUri && (
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="entry-otpauth">Enroll URI (for authenticator apps)</label>
+          <div className="field-row">
+            <input id="entry-otpauth" className="mono" readOnly value={otpauthUri} />
+            <button type="button" className="icon" title="Copy otpauth URI" onClick={() => onCopy(otpauthUri, 'otpauth URI')}>
+              <Icon name="copy" />
             </button>
           </div>
         </div>

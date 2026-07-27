@@ -61,7 +61,8 @@ export const requestSchema = z.discriminatedUnion('type', [
   z
     .object({
       type: z.literal('SYNC_NOW'),
-      masterPassword: z.string().min(1).max(1024),
+      /** Optional when the sync auth secret is already cached for this unlock. */
+      masterPassword: z.string().max(1024).optional(),
       baseUrl: z.string().max(2048),
       accountId: z.string().max(256),
     })
@@ -93,10 +94,20 @@ export type Request = z.infer<typeof requestSchema>;
  *  - no tabId / URL (matching uses sender.tab from Chrome)
  *  - no secret reveal / export / unlock
  *  - FILL_FROM_PAGE only carries an entry id; the SW re-checks host match
+ *  - SAVE_FROM_PAGE only after the user confirms the in-page offer
  */
 export const contentScriptRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('SUGGEST_FOR_PAGE') }).strict(),
   z.object({ type: z.literal('FILL_FROM_PAGE'), entryId: z.uuid() }).strict(),
+  z
+    .object({
+      type: z.literal('SAVE_FROM_PAGE'),
+      username: z.string().max(512),
+      password: z.string().min(1).max(4096),
+      /** When set, update this matching entry instead of creating a new one. */
+      entryId: z.uuid().optional(),
+    })
+    .strict(),
 ]);
 
 export type ContentScriptRequest = z.infer<typeof contentScriptRequestSchema>;
@@ -134,9 +145,16 @@ export type Response =
       entries: EntrySummary[];
     }
   | { ok: true; type: 'SECRET'; value: string; clipboardClearSeconds: number }
-  | { ok: true; type: 'FILLED'; filledUsername: boolean; filledPassword: boolean }
+  | { ok: true; type: 'FILLED'; filledUsername: boolean; filledPassword: boolean; filledTotp: boolean }
   | { ok: true; type: 'EXPORT'; file: unknown }
-  | { ok: true; type: 'SYNC_CONFIG'; baseUrl: string | null; accountId: string | null }
+  | {
+      ok: true;
+      type: 'SYNC_CONFIG';
+      baseUrl: string | null;
+      accountId: string | null;
+      /** True when sync auth is cached in memory for this unlock. */
+      hasSyncAuthSecret: boolean;
+    }
   | { ok: true; type: 'SYNC_RESULT'; message: string }
   | { ok: true; type: 'SYNC_VAULT_MISMATCH'; message: string }
   | { ok: true; type: 'OK' }
@@ -151,6 +169,8 @@ export const fillCommandSchema = z
     type: z.literal('KEYHOLE_FILL'),
     username: z.string().max(512),
     password: z.string().max(4096),
+    /** Optional one-time code; only sent when the entry has a TOTP secret. */
+    totp: z.string().max(16).optional(),
     /** Origin the service worker verified immediately before dispatching. */
     expectedOrigin: z.string().max(2048),
   })
@@ -162,6 +182,7 @@ export const fillResultSchema = z
   .object({
     filledUsername: z.boolean(),
     filledPassword: z.boolean(),
+    filledTotp: z.boolean(),
   })
   .strict();
 

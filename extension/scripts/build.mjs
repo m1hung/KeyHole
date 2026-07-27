@@ -103,7 +103,8 @@ await build({
     outDir,
     emptyOutDir: false,
     target: 'es2022',
-    minify: false,
+    // Minify the injected script — every kilobyte runs in the page process.
+    minify: true,
     lib: {
       entry: join(root, 'src/content/autofill.ts'),
       formats: ['iife'],

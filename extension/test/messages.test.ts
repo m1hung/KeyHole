@@ -154,11 +154,26 @@ describe('isContentScriptSender — page-injected script gate', () => {
 });
 
 describe('contentScriptRequestSchema', () => {
-  it('accepts suggest and fill-from-page only', () => {
+  it('accepts suggest, fill-from-page, and save-from-page', () => {
     expect(contentScriptRequestSchema.safeParse({ type: 'SUGGEST_FOR_PAGE' }).success).toBe(true);
     expect(
       contentScriptRequestSchema.safeParse({
         type: 'FILL_FROM_PAGE',
+        entryId: '11111111-1111-4111-8111-111111111111',
+      }).success,
+    ).toBe(true);
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'SAVE_FROM_PAGE',
+        username: 'ada',
+        password: 'hunter2',
+      }).success,
+    ).toBe(true);
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'SAVE_FROM_PAGE',
+        username: 'ada',
+        password: 'hunter2',
         entryId: '11111111-1111-4111-8111-111111111111',
       }).success,
     ).toBe(true);
@@ -177,6 +192,14 @@ describe('contentScriptRequestSchema', () => {
         type: 'FILL_FROM_PAGE',
         entryId: '11111111-1111-4111-8111-111111111111',
         tabId: 9,
+      }).success,
+    ).toBe(false);
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'SAVE_FROM_PAGE',
+        username: 'ada',
+        password: 'hunter2',
+        urls: ['https://evil.example/'],
       }).success,
     ).toBe(false);
   });
@@ -201,6 +224,11 @@ describe('requestSchema', () => {
       {
         type: 'SYNC_NOW',
         masterPassword: 'correct horse battery staple',
+        baseUrl: 'http://127.0.0.1:8787',
+        accountId: 'you@home',
+      },
+      {
+        type: 'SYNC_NOW',
         baseUrl: 'http://127.0.0.1:8787',
         accountId: 'you@home',
       },
