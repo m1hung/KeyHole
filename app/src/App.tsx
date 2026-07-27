@@ -3,7 +3,7 @@
  * search, theme application and the lock countdown.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   DEFAULT_GENERATOR_OPTIONS,
   createEntry,
@@ -32,24 +32,6 @@ import { readLegacyBrowserVault } from './storage.ts';
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
 type ListFilter = 'all' | EntryKind | { folderId: string };
 
-/**
- * Manifest shortcuts — right-click the installed app icon — launch the app at
- * `?view=generator` or `?view=settings`.
- *
- * Read once at module load and stripped from the URL immediately: this is a
- * launch intent, not application state. Leaving it in place would re-open that
- * pane on every subsequent reload, and the app has no routing to reconcile it
- * with. Held until the vault unlocks, since no pane can be shown before that.
- */
-const LAUNCH_VIEW = readLaunchView();
-
-function readLaunchView(): View | null {
-  const requested = new URLSearchParams(window.location.search).get('view');
-  if (requested !== 'generator' && requested !== 'settings') return null;
-  window.history.replaceState(null, '', window.location.pathname);
-  return { kind: requested };
-}
-
 interface AppProps {
   /**
    * Desktop first run with a vault present in this machine's browser build.
@@ -61,7 +43,6 @@ interface AppProps {
 
 export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
   const vault = useVault();
-  const pendingLaunchView = useRef<View | null>(LAUNCH_VIEW);
   const [migrationDismissed, setMigrationDismissed] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ListFilter>('all');
@@ -81,14 +62,6 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
       setQuery('');
       setFilter('all');
       setNewFolderName('');
-      return;
-    }
-    // First unlock after a shortcut launch: honour it, then forget it, so a
-    // later manual lock/unlock returns to the normal entry list.
-    const pending = pendingLaunchView.current;
-    if (pending) {
-      pendingLaunchView.current = null;
-      setView(pending);
     }
   }, [vault.status]);
 

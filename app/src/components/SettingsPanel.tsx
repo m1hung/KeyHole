@@ -1,6 +1,6 @@
 /** Settings: lock behaviour, theme, local storage, export/import, master password, delete vault. */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   MIN_MASTER_PASSWORD_LENGTH,
   applyMigration,
@@ -31,7 +31,6 @@ import {
 import type { VaultController } from '../hooks/useVault.ts';
 import { healthCheck, registerAccount, SyncClientError } from '../sync/client.ts';
 import { loadSyncConfig, saveSyncConfig } from '../sync/storage.ts';
-import { activateUpdate, getAppShellState, promptInstall, subscribeAppShell } from '../pwa.ts';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -121,88 +120,16 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
 // ---------------------------------------------------------------------------
 
 /**
- * Installation, offline availability and updates.
+ * Where the vault file lives — desktop only.
  *
- * The install offer lives here rather than as a browser banner because what
- * "install" means for a password manager is worth one sentence of context: it
- * is the same code in its own window, not a second copy of the vault.
+ * Keyhole is not distributed as an installable web app, so there is no install
+ * prompt, no offline shell and no in-app update channel to report on. Running
+ * this renderer in a browser is a development mode, and a settings section
+ * about the app's installation would have nothing true to say there.
  */
 function AppSection() {
-  const shell = useSyncExternalStore(subscribeAppShell, getAppShellState);
-  const [status, setStatus] = useState<string | null>(null);
-
-  const install = async () => {
-    const outcome = await promptInstall();
-    if (outcome === 'accepted') setStatus('Installed. Keyhole now opens in its own window.');
-    else if (outcome === 'dismissed') setStatus('Installation cancelled.');
-    else setStatus('This browser did not offer an install prompt.');
-  };
-
-  // The desktop build has no install prompt, no offline shell and no in-app
-  // update channel, so none of the machinery below applies to it.
-  if (shell.desktop) return <DesktopAppSection />;
-
-  return (
-    <div className="section">
-      <h3>App</h3>
-      <div className="storage-card">
-        <div className="storage-card-icon" aria-hidden="true">
-          <Icon name="vault" size={28} />
-        </div>
-        <div className="storage-card-body">
-          <div className="storage-card-title">
-            {shell.standalone ? 'Running as an installed app' : 'Running in a browser tab'}
-          </div>
-          <p className="hint" style={{ margin: '4px 0 0' }}>
-            Installing gives Keyhole its own window and launcher icon. It is the same app and the same vault in the
-            same place — nothing is copied, and nothing new is sent anywhere.
-          </p>
-          <ul className="storage-facts">
-            <li>
-              <strong>Window</strong>
-              <span>{shell.standalone ? 'Standalone' : 'Browser tab'}</span>
-            </li>
-            <li>
-              <strong>Offline</strong>
-              <span>
-                {shell.offlineReady
-                  ? 'Ready — the app opens with no network'
-                  : 'Not active in this build (available once installed from a built copy)'}
-              </span>
-            </li>
-          </ul>
-
-          {!shell.standalone && shell.installable && (
-            <div className="button-row" style={{ marginTop: 12 }}>
-              <button type="button" className="primary" onClick={() => void install()}>
-                Install Keyhole
-              </button>
-            </div>
-          )}
-          {!shell.standalone && !shell.installable && (
-            <p className="hint">
-              No install prompt available here. Chrome and Edge offer one from the address bar or the browser menu on a
-              built copy; Safari uses <em>Share → Add to Dock</em>. Firefox does not support installing web apps on
-              the desktop.
-            </p>
-          )}
-          {status && <p className="hint">{status}</p>}
-        </div>
-      </div>
-
-      {shell.updateWaiting && (
-        <div style={{ marginTop: 12 }}>
-          <p className="hint">
-            A newer version of Keyhole is downloaded and ready. It applies the next time every Keyhole window is
-            closed, or now — restarting <strong>locks the vault</strong>, so finish anything in progress first.
-          </p>
-          <button type="button" onClick={() => void activateUpdate()}>
-            Update and restart
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  if (!isDesktop()) return null;
+  return <DesktopAppSection />;
 }
 
 /**

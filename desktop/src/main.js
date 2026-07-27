@@ -87,7 +87,6 @@ const MIME_TYPES = {
   '.map': 'application/json',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
-  '.webmanifest': 'application/manifest+json',
   '.woff2': 'font/woff2',
 };
 
@@ -131,7 +130,7 @@ function registerAppProtocol() {
       await access(file, fsConstants.R_OK);
     } catch {
       // Single-page app: unknown paths fall back to the shell rather than 404,
-      // which keeps the manifest's ?view= shortcuts working.
+      // so a deep path can never leave the window on an error page.
       file = join(RENDERER_DIR, 'index.html');
     }
 

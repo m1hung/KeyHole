@@ -34,24 +34,6 @@ declare function showSaveFilePicker(options?: SaveFilePickerOptions): Promise<Fi
 declare function showOpenFilePicker(options?: OpenFilePickerOptions): Promise<FileSystemFileHandle[]>;
 
 /**
- * Install-prompt typings.
- *
- * `beforeinstallprompt` is Chromium-only and not in the DOM lib, so the same
- * narrow-declaration rule as above applies. Consumers must still treat it as
- * possibly-absent at runtime — Firefox and Safari never fire it.
- */
-interface BeforeInstallPromptEvent extends Event {
-  readonly platforms: string[];
-  readonly userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-  prompt(): Promise<void>;
-}
-
-interface WindowEventMap {
-  beforeinstallprompt: BeforeInstallPromptEvent;
-  appinstalled: Event;
-}
-
-/**
  * The Electron preload bridge (desktop/src/preload.cjs).
  *
  * Absent in the browser build, which is exactly how the app detects which one it

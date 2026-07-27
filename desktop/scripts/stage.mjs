@@ -8,10 +8,9 @@
  * packaging reliably goes wrong. One copy step buys a self-contained package
  * directory that behaves identically unpacked (dev) and inside the asar (built).
  *
- * The service worker is deliberately dropped: `app://` is not registered with
- * `allowServiceWorkers`, so sw.js could not register anyway, and shipping an
- * offline shell inside an app that is already offline would be dead weight that
- * looks like a caching layer to anyone auditing this.
+ * There used to be an exclusion list here for sw.js and the web manifest. The
+ * app build no longer emits either — Keyhole is not an installable web app — so
+ * the copy is now unconditional apart from source maps.
  */
 
 import { cp, mkdir, rm, readdir } from 'node:fs/promises';
@@ -21,8 +20,6 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const source = resolve(here, '..', '..', 'app', 'dist');
 const target = resolve(here, '..', 'renderer');
-
-const EXCLUDED = new Set(['sw.js', 'manifest.webmanifest']);
 
 let built;
 try {
@@ -42,12 +39,8 @@ await mkdir(target, { recursive: true });
 
 await cp(source, target, {
   recursive: true,
-  filter: (src) => {
-    const name = basename(src);
-    // Source maps roughly triple the package size and are devtools-only.
-    if (name.endsWith('.map')) return false;
-    return !EXCLUDED.has(name);
-  },
+  // Source maps roughly triple the package size and are devtools-only.
+  filter: (src) => !basename(src).endsWith('.map'),
 });
 
 const staged = await readdir(target);

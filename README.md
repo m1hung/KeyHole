@@ -1,6 +1,6 @@
 # 🔑 Keyhole
 
-A local-first, zero-knowledge password manager. Runs as a **native desktop app** (a portable Windows `.exe`), as an **installable web app**, and as a **Chrome extension (Manifest V3)** — all sharing one audited crypto core.
+A local-first, zero-knowledge password manager. Runs as a **native desktop app** (a portable Windows `.exe`) and as a **Chrome extension (Manifest V3)** — both sharing one audited crypto core.
 
 They are for different jobs. The extension lives in the browser, where autofill has to happen. The desktop app is the vault you sit down with — its own window, its own icon, no browser involved, and a vault that is a real file you can back up.
 
@@ -8,7 +8,7 @@ No accounts. No telemetry. Your vault is a single encrypted file that never leav
 
 ```
 core/        framework-agnostic crypto + vault (no I/O, 175 tests)
-app/         the UI (Vite + React + TypeScript); also runs as an installable web app
+app/         the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/     Electron shell → portable Windows .exe, vault as a real file
 extension/   Chrome MV3 extension (popup, service worker, autofill)
 server/      optional self-hosted sync server
@@ -17,7 +17,7 @@ examples/    demo vault with a published master password
 docs/        design notes (e.g. local live sync)
 ```
 
-`desktop/` does not fork the UI — it packages the exact same renderer from `app/`, adding a main process, a preload bridge and Windows packaging.
+`app/` is not a product of its own — it is the renderer. `desktop/` does not fork it, it packages exactly that build and adds a main process, a preload bridge and Windows packaging; `extension/` imports its sync client, icons and stylesheet directly. Keyhole is not served to browsers or installable as a web app.
 
 ---
 
@@ -31,17 +31,18 @@ npm test                    # 226 tests across core + extension + server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 npm run desktop             # build + run the native desktop app
 npm run build:desktop       # portable .exe → desktop/dist/Keyhole-1.0.0-portable.exe
-npm run app                 # build + serve the web app at http://127.0.0.1:4173
-npm run dev:app             # dev server with HMR at http://127.0.0.1:5173 (next free port if busy)
+npm run dev:app             # renderer dev server with HMR at http://127.0.0.1:5173 (next free port if busy)
 npm run server:tray         # sync server as a one-click tray app
 npm run build:server-tray   # portable .exe → server-tray/dist/
 npm start --workspace @keyhole/server   # or run the sync server headless at http://127.0.0.1:8787
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
 
-Use `npm run app` to *use* Keyhole and `npm run dev:app` to *work on* it — the
-dev server deliberately registers no service worker, so installing and offline
-launch only work from the built copy.
+`npm run desktop` is how you *use* Keyhole; `npm run dev:app` is how you *work on*
+its UI, with HMR and no Electron rebuild in the loop. The dev server is a
+development tool, not a way to run Keyhole — it serves the renderer to a browser
+tab, where the desktop bridge is absent and the vault falls back to
+`localStorage`.
 
 ### Try the demo vault
 
@@ -143,11 +144,10 @@ Titles, usernames, passwords, URLs, notes, tags and TOTP secrets are all inside 
 | Where | Contents |
 |---|---|
 | `%APPDATA%\Keyhole\keyhole-vault.keyhole.json` (desktop) | The encrypted envelope, written atomically (temp file + rename), with one `.bak` generation. Never stored beside the `.exe`. |
-| `localStorage["keyhole.vault.v1"]` (web app) | The encrypted envelope. Nothing else. Installing the web app does not move, copy or duplicate it. |
+| `localStorage["keyhole.vault.v1"]` (renderer in a browser tab) | The encrypted envelope. Only reached when the desktop bridge is absent, i.e. `npm run dev:app`. |
 | `chrome.storage.local["keyhole.vault.v1"]` | The encrypted envelope. 10 MB quota ≈ 40,000 entries; writes above 9 MB are refused with a clear error. |
 | `chrome.storage.local["keyhole.local.v1"]` | Non-secret preferences (auto-lock minutes, theme). |
 | IndexedDB `keyhole-handles` (app) | A `FileSystemFileHandle`, if you linked the vault to a file on disk. Not secret. |
-| Cache Storage `keyhole-shell-<build>` (app) | The app's own HTML, JS, CSS and icons, for offline launch. No vault data — service workers cannot read `localStorage`. |
 | Memory, while unlocked | Non-extractable `CryptoKey` + decrypted entries. Never persisted. |
 
 ### Associated data binding
@@ -220,17 +220,15 @@ To sync from another device, tick **Allow access from other devices** in the tra
 
 For a headless deployment, run `server/` directly as before — that path is unchanged.
 
-## Running the web app
+## Working on the UI
 
 ```sh
-npm run app         # build + serve at http://127.0.0.1:4173
+npm run dev:app     # renderer with HMR at http://127.0.0.1:5173
 ```
 
-Then install it: Chrome and Edge show an install control in the address bar, or use *Settings → App → Install Keyhole* inside the app itself. Safari uses *Share → Add to Dock*. Firefox does not support installing web apps on the desktop, so it stays a tab there.
+This is a development tool, not a way to run Keyhole. There is no installable web build and nothing is served to browsers as a product: the renderer in a tab has no desktop bridge, so it falls back to `localStorage` and the *App* section of Settings — which reports where the vault file is — does not appear.
 
-Once installed, Keyhole opens in its own window with its own icon, launches with no network, and never shows browser chrome. Right-clicking the icon offers *Password generator* and *Settings* as shortcuts.
-
-Both servers bind to `127.0.0.1` only — 4173 for the built app, 5173 for `npm run dev:app` — on that port or the next free one; set `PORT` to pin it. `127.0.0.1` is a secure context, which is what WebCrypto, service workers and installation all require, so no certificate is needed locally. Serving from anywhere other than loopback requires `https://`.
+The dev server binds `127.0.0.1` only, on 5173 or the next free port; set `PORT` to pin it. `127.0.0.1` is a secure context, which is what WebCrypto requires, so no certificate is needed locally.
 
 **First run:** choose *Create vault* (minimum 12 characters, with an explicit no-recovery acknowledgement) or *Import an existing vault file*.
 
@@ -268,7 +266,7 @@ First run: the popup offers *Set up Keyhole*, which opens the options page to cr
 
 - **`'wasm-unsafe-eval'` in the CSP is required**, not optional — MV3 blocks WebAssembly compilation without it, and Argon2id is WASM. The rest of the CSP pins `script-src` to `'self'`; there is no `unsafe-eval`, no remote code, no `eval()`.
 - **Service worker eviction locks the vault.** Chrome terminates idle service workers, which discards the in-memory session. An alarm-driven heartbeat keeps the worker warm while unlocked, but Chrome may still evict under memory pressure. This is fail-closed: you get the unlock screen, never a stale "unlocked" state.
-- **Clipboard auto-clear is best-effort in the popup.** The popup usually closes before the timer fires. The standalone app, which stays open, clears reliably. Neither can reach OS-level clipboard history or Handoff.
+- **Clipboard auto-clear is best-effort in the popup.** The popup usually closes before the timer fires. The desktop app, which stays open, clears reliably. Neither can reach OS-level clipboard history or Handoff.
 
 ---
 
@@ -317,14 +315,11 @@ Verified in a real browser during development; re-run after any change to crypto
 - [ ] Configure sync against a local server → *Register & upload* succeeds; the server row holds only the encrypted envelope.
 - [ ] Move the `.exe` to another folder and run it → same vault, because the vault is not stored beside it.
 
-### Installed web app / offline shell
-- [ ] `npm run app`, install it, then stop the server → the installed app still launches and unlocks.
-- [ ] DevTools → Application → Cache Storage → `keyhole-shell-*` holds only app assets; no `keyhole.vault.v1`, no entry data, no sync response.
-- [ ] With sync configured, click *Sync now* → the request appears in the network log as a real request, not a cached response.
-- [ ] Rebuild, reload → *Settings → App* offers *Update and restart*; nothing reloads on its own.
-- [ ] Take *Update and restart* while unlocked → the app returns locked, not unlocked.
-- [ ] Install, edit an entry in the installed window, open the same URL in a tab → the edit is there. One vault, not two.
-- [ ] `npm run dev:app` → DevTools shows no service worker registered.
+### Renderer dev server
+- [ ] `npm run dev:app` → DevTools → Application shows no service worker, no Cache Storage, and no web manifest.
+- [ ] *Settings* has no *App* section in a browser tab, and no install offer anywhere in the UI.
+- [ ] `npm run build --workspace @keyhole/app` → `dist/` contains no `sw.js` and no `manifest.webmanifest`.
+- [ ] With sync configured, click *Sync now* → the request appears in the network log as a real request.
 
 ### Locking
 - [ ] Set auto-lock to 1 minute, idle → locks; countdown appears under 60s.
@@ -390,7 +385,7 @@ The extension build validates its own output: manifest correctness, no `<all_url
 
 ### Explicitly out of scope for v1
 
-Cloud sync to third-party servers, accounts on someone else's infrastructure, vault sharing, biometrics, analytics, and any form of phone-home telemetry. Networking is limited to an **optional self-hosted sync server** you run (`server/`); by default no surface makes network calls, and neither installing the web app nor running the desktop `.exe` adds any — the offline shell only ever reads files built into it, and the desktop build ships with no update channel at all. Local live sync between the app and extension (shared vault file) is also described in [docs/SYNC.md](docs/SYNC.md).
+Cloud sync to third-party servers, accounts on someone else's infrastructure, vault sharing, biometrics, analytics, and any form of phone-home telemetry. Networking is limited to an **optional self-hosted sync server** you run (`server/`); by default no surface makes network calls, and running the desktop `.exe` adds none — it ships with no update channel at all. Keyhole is also not distributed as a web app: there is no hosted copy, no installable build and no service worker. Local live sync between the app and extension (shared vault file) is described in [docs/SYNC.md](docs/SYNC.md).
 
 Also out of scope for the desktop build specifically: code signing, an auto-updater, macOS and Linux packaging, and OS-keychain integration.
 
@@ -403,7 +398,7 @@ Earlier versions of this document ruled out an Electron/Tauri wrapper. That is n
 **What it costs, plainly:**
 
 - **You own the Chromium patch cadence.** A browser updates itself; a bundled Chromium does not. An old Keyhole `.exe` is an old Chromium, with whatever is known about it. Rebuild against current Electron periodically — this is the single biggest ongoing security cost of shipping a binary.
-- **~86 MB, versus a few hundred KB of web app.**
+- **~86 MB, versus a few hundred KB of renderer bundle.**
 - **No code signing.** The build is unsigned, so SmartScreen warns on first run. See [`desktop/README.md`](desktop/README.md) for why.
 - **A build toolchain with open advisories.** `electron-builder` carries a set of high-severity transitive advisories with no upstream fix available. None of it ships — the packaged `app.asar` contains no `node_modules` at all — but `npm audit` will report them, and that is worth understanding rather than muting. See below.
 - **No auto-update channel.** Deliberate — an auto-updater is a remote-code path into a password manager. Updating means replacing the `.exe` yourself.

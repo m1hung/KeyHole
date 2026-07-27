@@ -21,7 +21,7 @@
     "demo": "npm run demo --workspace @keyhole/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "app": "npm start --workspace @keyhole/app",
+    "//dev:app": "Develops the renderer that the desktop app ships and the extension borrows from. Not a way to serve Keyhole to browsers — there is no installable web build any more.",
     "dev:app": "npm run dev --workspace @keyhole/app",
     "desktop": "npm start --workspace @keyhole/desktop",
     "build:desktop": "npm run build --workspace @keyhole/desktop",

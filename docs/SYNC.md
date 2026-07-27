@@ -2,10 +2,10 @@
 
 Cloud accounts and third-party sync remain **out of scope**. This document covers:
 
-1. **Shared vault file on disk** — syncing the web app and the Chrome extension through
+1. **Shared vault file on disk** — syncing the desktop app and the Chrome extension through
    the same encrypted `VaultFile` envelope both surfaces already read and write today.
 2. **Self-hosted sync server** — optional HTTP blob store in [`server/`](../server/README.md).
-   The web app can register an account, pull the remote envelope, merge decrypted
+   The desktop app can register an account, pull the remote envelope, merge decrypted
    vaults client-side (`mergeVaultData`), and push back with compare-and-swap versioning.
 
 Status: **core primitives + app sync UI (server path)**. Extension server sync and shared-file
@@ -17,7 +17,7 @@ adapters are not fully wired yet.
 
 When the user links both clients to the same `.keyhole.json` file:
 
-1. An edit in the web app appears in the extension (and vice versa) without a
+1. An edit in the desktop app appears in the extension (and vice versa) without a
    manual export/import step.
 2. Only ciphertext moves. Unlock state, the VEK, and decrypted entries never
    leave the process that unlocked them.
@@ -39,13 +39,13 @@ without user choice.
 | Native Messaging host | Heavy | Extra install; still a process Keyhole would have to trust. |
 | Cloud / accounts | No | Self-hosted sync server is opt-in; you run it. |
 
-The web app already persists via the File System Access API when linked
+The desktop app already persists via the File System Access API when linked
 (`app/src/storage.ts`). Live sync extends that idea: **the file is the
 canonical mirror; each client keeps a local cache for cold start.**
 
 ```
 ┌─────────────────┐         ┌──────────────────────────┐         ┌──────────────────┐
-│  Web app        │  read/  │  keyhole-vault.keyhole.  │  read/  │  Extension       │
+│  Desktop app    │  read/  │  keyhole-vault.keyhole.  │  read/  │  Extension       │
 │  localStorage   │◄───────►│  json  (user-owned file) │◄───────►│  chrome.storage  │
 │  cache          │  write  │                          │  write  │  .local cache    │
 └─────────────────┘         └──────────────────────────┘         └──────────────────┘
@@ -72,7 +72,7 @@ So the extension splits roles:
 | File link + mirror | Options page (and later an offscreen document) | Holds the `FileSystemFileHandle`, polls/reads/writes the file, copies envelopes into `chrome.storage.local`. |
 | Popup | Popup | Unchanged messaging to the SW. |
 
-The web app already combines UI + file handle in one document; no split needed.
+The desktop app already combines UI + file handle in one document; no split needed.
 
 ### Warm path while the options page is closed
 
@@ -125,7 +125,7 @@ after local cache update, surface an error and retry; do not claim synced.
 ### First-time link (either client)
 
 1. User chooses *Link vault file* (open existing) or *Save vault file* (create).
-2. Persist `FileSystemFileHandle` in IndexedDB (web app already does this;
+2. Persist `FileSystemFileHandle` in IndexedDB (the desktop app already does this;
    extension options gets the same pattern under the extension origin).
 3. On link:
    - If file empty/missing and local cache exists → write cache → file.
@@ -175,7 +175,7 @@ paths are not secret; envelopes stay ciphertext.
 - [x] Sync auth derivation (`deriveSyncAuthSecret`) + tests
 - [x] Self-hosted sync server (`server/`) + app Settings sync UI
 
-### Phase 1 — web app polish
+### Phase 1 — desktop app polish
 
 - [ ] Explicit “Linked file” status in Settings (path name, last mirrored at)
 - [ ] Pull-on-focus using the existing handle

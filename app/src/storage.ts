@@ -1,5 +1,5 @@
 /**
- * Persistence for the standalone app.
+ * Persistence for the renderer.
  *
  * Only ever handles the *encrypted* envelope. The decrypted vault, the master
  * password and derived keys never reach this module — which is why writing the
@@ -13,9 +13,10 @@
  *    main process. Chosen because a password manager's data should be something
  *    you can back up and carry, not something buried in a browser profile.
  *
- *  - **Browser.** `localStorage` under the page's origin, as before. An
- *    installed PWA and the same origin in a tab share it, so there is exactly
- *    one vault either way.
+ *  - **Browser.** `localStorage` under the page's origin. Reached only under the
+ *    dev server, since Keyhole is not shipped as a web app — and by the vaults
+ *    people created back when it was, which is what `readLegacyBrowserVault`
+ *    below exists to rescue.
  *
  * The two are separate stores by construction — different origins, different
  * disks. A desktop build cannot see a browser vault, which is precisely why

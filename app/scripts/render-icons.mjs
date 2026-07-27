@@ -1,5 +1,10 @@
 /**
- * Regenerate the installed-app icons in app/public/icons from the brand mark.
+ * Regenerate app/public/icons/icon-512.png from the brand mark.
+ *
+ * It is the single raster this repo builds from: both Electron packages stage
+ * their icons from it (desktop/scripts/stage.mjs, server-tray/scripts/bundle.mjs).
+ * The 192px, maskable and apple-touch variants went with the installable web
+ * build — they existed for the web manifest that referenced them.
  *
  * Usage: npm run icons -w @keyhole/app
  *
@@ -176,18 +181,8 @@ function encodePng(size, rgba) {
 
 // --------------------------------------------------------------------------
 
-/**
- * `extent` for maskable is 0.6, not 1: Android may crop an installed icon to a
- * circle inscribed in the middle 80%, so the mark has to sit well inside that.
- * The plain icons keep the SVG's own 4/64 inset and bleed to the edge.
- */
-const TARGETS = [
-  { file: 'icon-192.png', size: 192, extent: 1 },
-  { file: 'icon-512.png', size: 512, extent: 1 },
-  { file: 'icon-maskable-512.png', size: 512, extent: 0.6 },
-  // iOS ignores manifest icons for Add to Home Screen and reads this instead.
-  { file: 'apple-touch-icon.png', size: 180, extent: 1 },
-];
+/** `extent: 1` keeps the SVG's own 4/64 inset and bleeds to the edge. */
+const TARGETS = [{ file: 'icon-512.png', size: 512, extent: 1 }];
 
 mkdirSync(outDir, { recursive: true });
 

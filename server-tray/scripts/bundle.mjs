@@ -82,15 +82,20 @@ console.log(`Bundled ${inputs} modules → server-dist/keyhole-server.mjs (${(si
  * Icons, taken from the app's generated set rather than committed again here.
  * `tray.png` is what sits in the notification area; `icon.png` is what
  * electron-builder embeds in the .exe.
+ *
+ * Both come from the same 512px source. There used to be a 192px variant to
+ * take the tray from, but that existed for the web manifest and went with it —
+ * and main.js resizes to 16px before handing it to Tray anyway, so which raster
+ * it downsamples from was never load-bearing.
  */
-const iconSource = resolve(here, '..', '..', 'app', 'public', 'icons');
+const iconSource = resolve(here, '..', '..', 'app', 'public', 'icons', 'icon-512.png');
 const buildDir = resolve(here, '..', 'build');
 await mkdir(buildDir, { recursive: true });
 try {
-  await cp(resolve(iconSource, 'icon-192.png'), resolve(buildDir, 'tray.png'));
-  await cp(resolve(iconSource, 'icon-512.png'), resolve(buildDir, 'icon.png'));
+  await cp(iconSource, resolve(buildDir, 'tray.png'));
+  await cp(iconSource, resolve(buildDir, 'icon.png'));
   console.log('Staged build/tray.png and build/icon.png from the app icon set');
 } catch {
-  console.error(`Missing icons in ${iconSource}. Run: npm run icons -w @keyhole/app`);
+  console.error(`Missing ${iconSource}. Run: npm run icons -w @keyhole/app`);
   process.exit(1);
 }

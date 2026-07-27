@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "keyhole-app",
-      "//": "Routed through sh so a Node install under ~/.local (not on PATH) is still found. On a machine with npm already on PATH the prefix is a harmless no-op.",
-      "runtimeExecutable": "/bin/sh",
-      "runtimeArgs": ["-c", "PATH=\"$HOME/.local/node/bin:$PATH\" exec npm run dev:app"],
+      "//": "The renderer dev server, for developing the UI the desktop app ships. Not a way to serve Keyhole to browsers as a product.",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:app"],
       "port": 5173,
       "autoPort": true
     },

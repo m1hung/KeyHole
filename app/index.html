@@ -5,25 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!--
       Bundled locally. connect-src allows the optional self-hosted sync server.
-      manifest-src and worker-src are spelled out because default-src 'none' is
-      what they fall back to — without them the browser refuses to fetch the web
-      manifest and refuses to register the offline service worker, and the app
-      silently stops being installable.
+      There is no manifest-src or worker-src: this renderer is not installable
+      and registers no service worker, so both correctly fall back to
+      default-src 'none'.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* http: https:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* http: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     />
     <meta name="referrer" content="no-referrer" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 
-    <!-- Installed-app metadata. -->
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="Keyhole" />
-    <!-- Matches --bg in styles.css, so the window chrome does not flash the
-         wrong shade before React paints. -->
+    <!-- Matches --bg in styles.css, so the window does not flash the wrong
+         shade before React paints. -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f6f8" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d1117" />
 

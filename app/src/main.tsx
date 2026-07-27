@@ -1,13 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
-import { initAppShell } from './pwa.ts';
 import { initVaultStore } from './storage.ts';
 import './styles.css';
-
-// Before mounting: the install prompt fires during load and cannot be recovered
-// if nothing is listening when it does.
-initAppShell();
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Root container missing.');
