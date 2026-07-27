@@ -1,0 +1,37 @@
+appId: dev.keyhole.server-tray
+productName: Keyhole Sync Server
+copyright: MIT
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - src/**/*
+  - package.json
+
+# The bundled server sits beside the asar rather than inside it: the child
+# process launches it by absolute path with Electron's own Node, and a plain
+# file on disk keeps archive semantics out of a startup path whose only job is
+# to work.
+extraResources:
+  - from: server-dist
+    to: server-dist
+
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  icon: build/icon.png
+  # Skip signing, keep resource editing — so the .exe carries Keyhole's icon and
+  # version strings rather than Electron's. See desktop/README.md for why signing
+  # is a certificate purchase rather than a build flag.
+  signExecutable: false
+
+portable:
+  artifactName: Keyhole-Sync-Server-${version}-portable.exe
+  requestExecutionLevel: user
+
+compression: maximum
+asar: true

@@ -10,7 +10,8 @@
     "app",
     "desktop",
     "extension",
-    "server"
+    "server",
+    "server-tray"
   ],
   "engines": {
     "node": ">=22"
@@ -24,6 +25,8 @@
     "dev:app": "npm run dev --workspace @keyhole/app",
     "desktop": "npm start --workspace @keyhole/desktop",
     "build:desktop": "npm run build --workspace @keyhole/desktop",
+    "server:tray": "npm start --workspace @keyhole/server-tray",
+    "build:server-tray": "npm run build --workspace @keyhole/server-tray",
     "dev:server": "KEYHOLE_HOST=127.0.0.1 npm start --workspace @keyhole/server",
     "build:extension": "npm run build --workspace @keyhole/extension"
   },

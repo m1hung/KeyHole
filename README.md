@@ -12,6 +12,7 @@ app/         the UI (Vite + React + TypeScript); also runs as an installable web
 desktop/     Electron shell → portable Windows .exe, vault as a real file
 extension/   Chrome MV3 extension (popup, service worker, autofill)
 server/      optional self-hosted sync server
+server-tray/ that server as a one-click tray app (portable .exe, no Node needed)
 examples/    demo vault with a published master password
 docs/        design notes (e.g. local live sync)
 ```
@@ -32,7 +33,9 @@ npm run desktop             # build + run the native desktop app
 npm run build:desktop       # portable .exe → desktop/dist/Keyhole-1.0.0-portable.exe
 npm run app                 # build + serve the web app at http://127.0.0.1:4173
 npm run dev:app             # dev server with HMR at http://127.0.0.1:5173 (next free port if busy)
-npm start --workspace @keyhole/server   # optional sync server at http://127.0.0.1:8787
+npm run server:tray         # sync server as a one-click tray app
+npm run build:server-tray   # portable .exe → server-tray/dist/
+npm start --workspace @keyhole/server   # or run the sync server headless at http://127.0.0.1:8787
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
 
@@ -203,6 +206,18 @@ The build is unsigned, so SmartScreen warns on first run — the executable does
 
 **Coming from the browser build?** They are different origins with separate stores, so the desktop app cannot see a browser vault. On first run it detects that case and offers to copy it across, reading — never deleting — the browser copy.
 
+## Running the sync server, one click
+
+```sh
+npm run build:server-tray   # → server-tray/dist/Keyhole-Sync-Server-1.0.0-portable.exe
+```
+
+Double-click it: a tray icon appears and the server is running at `http://127.0.0.1:8787`. No console window, no command line, and no Node installation — the server runs on the Node that Electron bundles. The tray menu offers the status page, Start/Stop/Restart, and the data folder.
+
+It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults (`0.0.0.0`, and a path relative to the working directory). A service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in. [`server-tray/README.md`](server-tray/README.md) has the reasoning and how to expose it deliberately.
+
+For a headless deployment, run `server/` directly as before — that path is unchanged.
+
 ## Running the web app
 
 ```sh
@@ -268,6 +283,17 @@ Verified in a real browser during development; re-run after any change to crypto
 - [ ] Change the master password → old password rejected, all entries intact, salt/wrappedKey/payload all changed.
 - [ ] Export → delete vault → import → unlocks with the same password, entries intact.
 - [ ] Two saves in a row produce different `payload.ivB64`.
+
+### Sync server tray app
+- [ ] Double-click the `.exe` → tray icon appears, no console window, `http://127.0.0.1:8787` responds.
+- [ ] `netstat -ano | findstr :8787` shows `127.0.0.1:8787`, **not** `0.0.0.0:8787`.
+- [ ] From another machine on the same network, the address is unreachable.
+- [ ] Database lands in `%APPDATA%\Keyhole Sync Server\data\`, not next to the `.exe` or in the launch folder.
+- [ ] Launch it from two different folders → the same database, same accounts, both times.
+- [ ] Start it while port 8787 is already taken → the tray reports the error rather than vanishing.
+- [ ] Quit from the tray, then check port 8787 → released, no orphaned process.
+- [ ] Kill the tray from Task Manager → the server child dies with it. *(Verified: Electron's job object)*
+- [ ] Launch a second copy → it exits instead of fighting over the port and the SQLite file.
 
 ### Desktop app
 - [ ] `npm run build:desktop`, run the `.exe` → window opens, no browser chrome, no menu bar.
