@@ -167,11 +167,15 @@ export function buildApp({ config, store, logger = false, consoleLog }: BuildOpt
   // -------------------------------------------------------------------------
 
   /** Browser-friendly landing page — the API itself has no vault UI. */
-  app.get('/', async (_request, reply) => {
+  app.get('/', async (request, reply) => {
+    const host = request.headers.host;
     const html = renderStatusPage({
       port: config.port,
       accounts: db.accountCount(),
       allowRegistration: config.allowRegistration,
+      // Show the address this request arrived on, so a page opened from another
+      // device on the LAN does not tell the reader to use 127.0.0.1.
+      origin: host ? `${request.protocol}://${host}` : undefined,
     });
     return reply.type('text/html; charset=utf-8').send(html);
   });

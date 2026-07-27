@@ -10,11 +10,31 @@ export interface StatusPageProps {
   port: number;
   accounts: number;
   allowRegistration: boolean;
+  /**
+   * Origin the browser actually used, when known — `127.0.0.1` is wrong to
+   * display to someone who reached this page across a network.
+   */
+  origin?: string | undefined;
 }
 
-export function renderStatusPage({ port, accounts, allowRegistration }: StatusPageProps): string {
+/** The origin comes from a request header, so it is attacker-controlled text. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function renderStatusPage({
+  port,
+  accounts,
+  allowRegistration,
+  origin,
+}: StatusPageProps): string {
   const registration = allowRegistration ? 'Open' : 'Closed';
   const registrationClass = allowRegistration ? 'ok' : 'warn';
+  const serverUrl = escapeHtml(origin ?? `http://127.0.0.1:${port}`);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -363,7 +383,7 @@ export function renderStatusPage({ port, accounts, allowRegistration }: StatusPa
         </ul>
 
         <p class="section-label">Connect from the app</p>
-        <pre class="connect">Server URL   http://127.0.0.1:${port}
+        <pre class="connect">Server URL   ${serverUrl}
 Settings  →  Sync server
 1. Pick an account id
 2. Enter master password

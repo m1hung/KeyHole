@@ -10,6 +10,13 @@
       "autoPort": true
     },
     {
+      "name": "keyhole-sync-server",
+      "//": "The sync server with its own defaults — 0.0.0.0:8787, ./data/keyhole.sqlite — for checking the status page and the bind address. `npm run dev:server` is the loopback-pinned variant.",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start", "--workspace", "@keyhole/server"],
+      "port": 8787
+    },
+    {
       "name": "keyhole-app-standalone",
       "//": "Built output, served the way an installed copy is. The dev server above deliberately has no service worker, so this is the only config where offline and install behaviour can be checked.",
       "runtimeExecutable": "npm",

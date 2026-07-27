@@ -34,6 +34,36 @@ your sync credential.
 
 ---
 
+## Reaching it from another device
+
+The server binds `0.0.0.0` by default, so it accepts external connections as
+soon as your firewall does. That is necessary but not sufficient: **Chromium
+treats only loopback as a trustworthy origin**, so the web app and the extension
+refuse plain `http://` to any other host. `http://192.168.1.x:8787` is rejected
+by the client before this server is ever contacted. Remote clients need TLS.
+
+The compose file ships a proxy for exactly this, behind a profile:
+
+```bash
+KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --profile tls up -d
+```
+
+Caddy obtains and renews the certificate, and reaches the sync server over the
+compose network — the sync container itself stays published on loopback only.
+Ports 80 and 443 must reach the host and `KEYHOLE_DOMAIN` must already resolve
+to it. Clients then use `https://sync.example.com`.
+
+Without a public domain, [`Caddyfile`](Caddyfile) has an internal-CA variant;
+every client device has to trust that CA, which is a real decision rather than a
+formality. The one-click tray app is loopback-only by default and has its own
+notes — see [`../server-tray/README.md`](../server-tray/README.md).
+
+Once your devices are enrolled, set `KEYHOLE_ALLOW_REGISTRATION=false`. An
+exposed server with open registration lets anyone who can reach it create an
+account on your machine.
+
+---
+
 ## Configuration
 
 | Variable | Default | Purpose |
