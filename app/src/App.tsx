@@ -88,20 +88,35 @@ export function App() {
         <div className="spacer" />
 
         {vault.secondsUntilLock !== null && vault.secondsUntilLock < 60 && (
-          <span className="lock-status" role="status">
+          <span className={`lock-status${vault.secondsUntilLock <= 15 ? ' urgent' : ''}`} role="status">
             Locking in {vault.secondsUntilLock}s
           </span>
         )}
-        <button type="button" className="ghost" onClick={() => setView({ kind: 'generator' })}>
-          Generator
-        </button>
-        <button type="button" className="ghost" onClick={() => setView({ kind: 'settings' })}>
-          Settings
-        </button>
+        {/* Duplicated by the mobile tab bar below; CSS shows exactly one. */}
+        <span className="nav-desktop">
+          <button type="button" className="ghost" onClick={() => setView({ kind: 'generator' })}>
+            Generator
+          </button>
+          <button type="button" className="ghost" onClick={() => setView({ kind: 'settings' })}>
+            Settings
+          </button>
+        </span>
         <button type="button" onClick={vault.lock}>
           Lock
         </button>
       </header>
+
+      {/* On mobile the search field gets its own full-width row — inline in the
+          topbar it collapses to an unusable sliver. */}
+      <div className="search-row">
+        <input
+          type="search"
+          placeholder="Search entries…"
+          aria-label="Search entries"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
 
       <div className={`columns${view.kind === 'none' ? '' : ' detail-open'}`}>
         <div className="list-pane">
@@ -146,8 +161,15 @@ export function App() {
           )}
         </div>
 
-        <main className="detail-pane">
+        {/* Keyed on the active view so React remounts the subtree and the
+            fade-up animation replays when you switch entries. */}
+        <main className="detail-pane" key={view.kind === 'entry' ? view.id : view.kind}>
+          <button type="button" className="back-button" onClick={() => setView({ kind: 'none' })}>
+            <span aria-hidden="true">‹</span> All entries
+          </button>
+
           {vault.error && <div className="error">{vault.error}</div>}
+          {clipboard.error && <div className="error">{clipboard.error}</div>}
 
           {view.kind === 'settings' && (
             <SettingsPanel
@@ -190,8 +212,29 @@ export function App() {
         </main>
       </div>
 
+      {/* Mobile primary navigation. Hidden on desktop, where the topbar carries
+          the same actions. */}
+      <nav className="tabbar" aria-label="Main">
+        <button type="button" aria-current={view.kind === 'none' || view.kind === 'entry'} onClick={() => setView({ kind: 'none' })}>
+          <span className="tab-icon" aria-hidden="true">🗝️</span>
+          Vault
+        </button>
+        <button type="button" aria-current={view.kind === 'generator'} onClick={() => setView({ kind: 'generator' })}>
+          <span className="tab-icon" aria-hidden="true">🎲</span>
+          Generator
+        </button>
+        <button type="button" aria-current={view.kind === 'settings'} onClick={() => setView({ kind: 'settings' })}>
+          <span className="tab-icon" aria-hidden="true">⚙️</span>
+          Settings
+        </button>
+      </nav>
+
       {clipboard.lastCopied && (
-        <Toast message={`${clipboard.lastCopied} copied`} countdown={clipboard.secondsRemaining} />
+        <Toast
+          message={`${clipboard.lastCopied} copied`}
+          countdown={clipboard.secondsRemaining}
+          totalSeconds={settings.clipboardClearSeconds}
+        />
       )}
     </div>
   );

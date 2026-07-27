@@ -1,6 +1,6 @@
 /** Small shared UI primitives used by both the app and the extension popup. */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { estimateStrength, strengthFromBits } from '@keyhole/core';
 
 // ------------------------------------------------------------------ secrets
@@ -20,23 +20,48 @@ interface SecretFieldProps {
  * cannot expose it while it is "hidden".
  */
 export function SecretField({ label, value, revealed, onToggleReveal, onCopy, id }: SecretFieldProps) {
+  const [justCopied, setJustCopied] = useState(false);
+
+  const copy = () => {
+    onCopy();
+    setJustCopied(true);
+  };
+
+  // Clear the confirmation pulse without leaving a timer running after unmount.
+  useEffect(() => {
+    if (!justCopied) return;
+    const timer = window.setTimeout(() => setJustCopied(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [justCopied]);
+
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <div className="field-row">
         <input
           id={id}
-          className="mono"
+          className={`mono secret-input${revealed ? ' revealed' : ''}`}
           readOnly
           type="text"
           value={revealed ? value : '•'.repeat(Math.min(value.length, 24))}
           aria-label={revealed ? label : `${label} (hidden)`}
         />
-        <button type="button" className="icon" onClick={onToggleReveal} aria-pressed={revealed} title={revealed ? 'Hide' : 'Show'}>
+        <button
+          type="button"
+          className="icon"
+          onClick={onToggleReveal}
+          aria-pressed={revealed}
+          title={revealed ? 'Hide' : 'Show'}
+        >
           {revealed ? '🙈' : '👁'}
         </button>
-        <button type="button" className="icon" onClick={onCopy} title={`Copy ${label.toLowerCase()}`}>
-          📋
+        <button
+          type="button"
+          className={`icon${justCopied ? ' just-copied' : ''}`}
+          onClick={copy}
+          title={`Copy ${label.toLowerCase()}`}
+        >
+          {justCopied ? '✅' : '📋'}
         </button>
       </div>
     </div>
@@ -135,9 +160,27 @@ export function ConfirmDialog({
 
 // -------------------------------------------------------------------- toast
 
-export function Toast({ message, countdown }: { message: string; countdown: number | null }) {
+interface ToastProps {
+  message: string;
+  /** Seconds left before the clipboard is cleared, or null when not counting. */
+  countdown: number | null;
+  /** The full clipboard-clear window, used to pace the ring. */
+  totalSeconds?: number;
+}
+
+export function Toast({ message, countdown, totalSeconds }: ToastProps) {
+  const showRing = countdown !== null && totalSeconds !== undefined && totalSeconds > 0;
   return (
     <div className="toast" role="status" aria-live="polite">
+      {showRing && (
+        // Drains in step with the countdown so a secret sitting in the
+        // clipboard stays visible peripherally, not just as a number to read.
+        // The CSS keyframe inherits this duration.
+        <svg className="ring" viewBox="0 0 16 16" aria-hidden="true" style={{ animationDuration: `${totalSeconds}s` }}>
+          <circle className="track" cx="8" cy="8" r="6.5" />
+          <circle className="value" cx="8" cy="8" r="6.5" style={{ animationDuration: `${totalSeconds}s` }} />
+        </svg>
+      )}
       <span>{message}</span>
       {countdown !== null && <span className="countdown">clears in {countdown}s</span>}
     </div>

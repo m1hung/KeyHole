@@ -13,7 +13,23 @@
   --danger-bg: #fdeaea;
   --radius: 8px;
 
+  /* Same motion vocabulary as the web app, so the two surfaces feel related. */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
   color-scheme: light dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +54,7 @@
 body {
   margin: 0;
   width: 380px;
+  -webkit-tap-highlight-color: transparent;
   max-height: 580px;
   background: var(--bg);
   color: var(--text);
@@ -58,6 +75,14 @@ button {
   background: var(--surface);
   color: var(--text);
   padding: 6px 10px;
+  transition:
+    background var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 60ms;
 }
 
 button:hover:not(:disabled) {
@@ -79,9 +104,24 @@ button.primary {
 button.icon {
   border-color: transparent;
   background: transparent;
+  /* The popup is mouse-driven, so 32px is enough here — but still a real target
+     rather than the 20px the glyph alone would give. */
+  min-width: 32px;
+  min-height: 32px;
   padding: 4px 6px;
   line-height: 1;
   font-size: 14px;
+}
+
+/* Confirmation pulse mirroring the web app's copy feedback. */
+button.icon.just-copied {
+  animation: pop var(--dur-base) var(--ease-spring);
+}
+
+@keyframes pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.2); }
+  100% { transform: scale(1); }
 }
 
 button.icon:hover {
@@ -112,6 +152,14 @@ label {
   display: flex;
   flex-direction: column;
   max-height: 580px;
+  /* The popup materialises abruptly when Chrome opens it; a short fade softens
+     the transition from the toolbar click. */
+  animation: popup-in var(--dur-base) var(--ease-out) both;
+}
+
+@keyframes popup-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: none; }
 }
 
 .popup-header {
@@ -165,6 +213,21 @@ label {
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+  transition: background var(--dur-fast) ease;
+  /* Staggered so the match list resolves rather than snapping in. Capped at 6:
+     the popup shows few rows and a longer cascade would just feel slow. */
+  animation: row-in var(--dur-base) var(--ease-out) both;
+}
+
+.popup-item:nth-child(1) { animation-delay: 0ms; }
+.popup-item:nth-child(2) { animation-delay: 30ms; }
+.popup-item:nth-child(3) { animation-delay: 60ms; }
+.popup-item:nth-child(4) { animation-delay: 90ms; }
+.popup-item:nth-child(n + 5) { animation-delay: 110ms; }
+
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
 }
 
 .popup-item:hover {
@@ -245,6 +308,7 @@ label {
 }
 
 .popup-error {
+  animation: shake 380ms var(--ease-out);
   margin: 8px 12px;
   padding: 7px 10px;
   background: var(--danger-bg);
@@ -254,7 +318,14 @@ label {
   font-size: 12px;
 }
 
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  30%, 50%, 70% { transform: translateX(-5px); }
+  20%, 40%, 60%, 80% { transform: translateX(5px); }
+}
+
 .popup-toast {
+  animation: toast-in var(--dur-base) var(--ease-spring) both;
   position: fixed;
   bottom: 10px;
   left: 50%;
@@ -264,6 +335,11 @@ label {
   padding: 6px 14px;
   border-radius: 999px;
   font-size: 12px;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .hint {

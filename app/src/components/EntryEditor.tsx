@@ -80,7 +80,7 @@ export function EntryEditor({ entry, generatorDefaults, onSave, onDelete, onCopy
       <div className="detail-header">
         <h2>{draft.title || 'Untitled'}</h2>
         <div className="button-row">
-          <button type="button" className="ghost" onClick={onClose}>
+          <button type="button" className="ghost close-desktop" onClick={onClose}>
             Close
           </button>
           <button type="button" className="primary" onClick={save} disabled={!dirty || draft.title.trim().length === 0}>

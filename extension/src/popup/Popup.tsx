@@ -20,6 +20,8 @@ export function Popup() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tabId, setTabId] = useState<number | null>(null);
+  /** `${entryId}:${field}` of the button that was just used, for the pulse. */
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [tabHost, setTabHost] = useState<string | null>(null);
 
   const refreshState = useCallback(async () => {
@@ -73,7 +75,17 @@ export function Popup() {
       return;
     }
     if (response.type !== 'SECRET') return;
-    await navigator.clipboard.writeText(response.value);
+    // Rejects with NotAllowedError if the popup lost focus or clipboard
+    // permission is denied. Silently skipping the feedback below would leave the
+    // user pasting a stale clipboard value, thinking it was their password.
+    try {
+      await navigator.clipboard.writeText(response.value);
+    } catch {
+      setError('Could not copy — the browser denied clipboard access.');
+      return;
+    }
+    setCopiedKey(`${entryId}:${field}`);
+    window.setTimeout(() => setCopiedKey(null), 900);
     flash(`${field === 'totp' ? 'Code' : field === 'password' ? 'Password' : 'Username'} copied`);
 
     if (response.clipboardClearSeconds > 0) {
@@ -187,14 +199,29 @@ export function Popup() {
                 </div>
               </div>
               <div className="popup-item-actions">
-                <button type="button" className="icon" title="Copy username" onClick={() => void copy(entry.id, 'username')}>
+                <button
+                  type="button"
+                  className={`icon${copiedKey === `${entry.id}:username` ? ' just-copied' : ''}`}
+                  title="Copy username"
+                  onClick={() => void copy(entry.id, 'username')}
+                >
                   👤
                 </button>
-                <button type="button" className="icon" title="Copy password" onClick={() => void copy(entry.id, 'password')}>
+                <button
+                  type="button"
+                  className={`icon${copiedKey === `${entry.id}:password` ? ' just-copied' : ''}`}
+                  title="Copy password"
+                  onClick={() => void copy(entry.id, 'password')}
+                >
                   📋
                 </button>
                 {entry.hasTotp && (
-                  <button type="button" className="icon" title="Copy one-time code" onClick={() => void copy(entry.id, 'totp')}>
+                  <button
+                    type="button"
+                    className={`icon${copiedKey === `${entry.id}:totp` ? ' just-copied' : ''}`}
+                    title="Copy one-time code"
+                    onClick={() => void copy(entry.id, 'totp')}
+                  >
                     🔢
                   </button>
                 )}

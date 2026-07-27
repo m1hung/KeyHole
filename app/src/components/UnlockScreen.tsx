@@ -23,16 +23,20 @@ export function UnlockScreen({ vault }: { vault: VaultController }) {
 
 function Unlock({ vault }: { vault: VaultController }) {
   const [password, setPassword] = useState('');
+  const [attempt, setAttempt] = useState(0);
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     await vault.unlock(password);
+    setAttempt((n) => n + 1);
     setPassword('');
   };
 
   return (
     <div className="center-screen">
-      <form className="card" onSubmit={onSubmit}>
+      {/* `key` forces a remount so the shake replays on every failed attempt,
+          not just the first. */}
+      <form className={`card${vault.error ? ' rejected' : ''}`} key={attempt} onSubmit={onSubmit}>
         <h1>🔑 Keyhole</h1>
         <p className="subtitle">Your vault is locked.</p>
 
@@ -51,7 +55,12 @@ function Unlock({ vault }: { vault: VaultController }) {
           />
         </div>
 
-        <button type="submit" className="primary" style={{ width: '100%' }} disabled={vault.busy || password.length === 0}>
+        <button
+          type="submit"
+          className={`primary${vault.busy ? ' deriving' : ''}`}
+          style={{ width: '100%' }}
+          disabled={vault.busy || password.length === 0}
+        >
           {vault.busy ? 'Deriving key…' : 'Unlock'}
         </button>
 
@@ -168,7 +177,7 @@ function CreateVault({ vault }: { vault: VaultController }) {
 
         <button
           type="submit"
-          className="primary"
+          className={`primary${vault.busy ? ' deriving' : ''}`}
           style={{ width: '100%', marginTop: 8 }}
           disabled={!canSubmit}
           aria-describedby={blocker ? 'submit-blocker' : undefined}

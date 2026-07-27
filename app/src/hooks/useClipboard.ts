@@ -15,11 +15,14 @@ export interface ClipboardController {
   /** Seconds remaining before the clipboard is cleared, or null when idle. */
   secondsRemaining: number | null;
   lastCopied: string | null;
+  /** Set when a copy failed, so the UI never implies success that did not happen. */
+  error: string | null;
 }
 
 export function useClipboard(clearAfterSeconds: number): ClipboardController {
   const [secondsRemaining, setSecondsRemaining] = useState<number | null>(null);
   const [lastCopied, setLastCopied] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const copiedValueRef = useRef<string | null>(null);
   const intervalRef = useRef<number | null>(null);
 
@@ -50,7 +53,26 @@ export function useClipboard(clearAfterSeconds: number): ClipboardController {
 
   const copy = useCallback(
     async (value: string, label: string) => {
-      await navigator.clipboard.writeText(value);
+      setError(null);
+
+      /**
+       * `writeText` rejects on a NotAllowedError when the document is not
+       * focused, or when clipboard permission is denied by policy.
+       *
+       * Before, the rejection propagated into a `void copy(...)` call site and
+       * vanished: no toast, no error, nothing. The user would then paste
+       * whatever was already on the clipboard, believing it was their password.
+       * Failing loudly is the only safe option here.
+       */
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        setLastCopied(null);
+        stopTimer();
+        setError(`Could not copy ${label.toLowerCase()} — the browser denied clipboard access.`);
+        return;
+      }
+
       copiedValueRef.current = value;
       setLastCopied(label);
       stopTimer();
@@ -79,5 +101,5 @@ export function useClipboard(clearAfterSeconds: number): ClipboardController {
     };
   }, []);
 
-  return { copy, secondsRemaining, lastCopied };
+  return { copy, secondsRemaining, lastCopied, error };
 }
