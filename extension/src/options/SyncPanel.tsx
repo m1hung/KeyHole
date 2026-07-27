@@ -254,7 +254,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
 
       <p className="hint" style={{ marginBottom: 16 }}>
         Optional self-hosted sync via the server in <code>server/</code>. Use the same vault that was registered
-        for this account (export/import from the web app if needed). The server stores only your encrypted envelope
+        for this account (export/import from the Keyhole app if needed). The server stores only your encrypted envelope
         — never plaintext.
       </p>
 
@@ -315,7 +315,7 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
         <div className="section" style={{ marginTop: 8 }}>
           <p className="hint" style={{ marginBottom: 10 }}>
             Account <code>{accountId.trim().toLowerCase() || '…'}</code> already has a different vault on the server
-            (usually from the web app). Pick one:
+            (usually from the Keyhole app). Pick one:
           </p>
           <div className="button-row">
             <button

@@ -481,7 +481,7 @@ function SetupOrUnlock({
         </button>
 
         <div className="section" style={{ marginTop: 20, paddingTop: 16 }}>
-          <label htmlFor="opt-import">Import a vault exported from the web app</label>
+          <label htmlFor="opt-import">Import a vault exported from the Keyhole app</label>
           <input
             id="opt-import"
             type="file"

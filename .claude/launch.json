@@ -8,6 +8,14 @@
       "runtimeArgs": ["-c", "PATH=\"$HOME/.local/node/bin:$PATH\" exec npm run dev:app"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "keyhole-app-standalone",
+      "//": "Built output, served the way an installed copy is. The dev server above deliberately has no service worker, so this is the only config where offline and install behaviour can be checked.",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "app"],
+      "port": 4173,
+      "autoPort": true
     }
   ]
 }

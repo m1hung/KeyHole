@@ -1,0 +1,25 @@
+{
+  "name": "@keyhole/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Keyhole desktop app (Electron, portable Windows .exe)",
+  "//author": "Becomes CompanyName in the .exe's version resource. Without it electron-builder leaves Electron's default, and the binary claims to come from GitHub, Inc. — false attribution on an unsigned password manager is worse than a blank field.",
+  "author": "Keyhole",
+  "license": "MIT",
+  "main": "src/main.js",
+  "scripts": {
+    "stage": "node scripts/stage.mjs",
+    "start": "npm run build --workspace @keyhole/app && npm run stage && electron .",
+    "start:staged": "electron .",
+    "build": "npm run build --workspace @keyhole/app && npm run stage && electron-builder --win portable",
+    "//test": "The main process is covered by `typecheck` (checkJs against Electron's own types) plus the manual checklist in README.md; driving a real Electron window in CI is out of scope for v1.",
+    "test": "node -e \"console.log('@keyhole/desktop: no unit tests (see typecheck + manual checklist)')\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "//devDependencies": "Exact pins, matching every other workspace. A floating range on the toolchain that produces a signed-by-nobody password-manager binary is a supply-chain hole: `npm install` on a fresh machine could pull a different builder than the one this .exe was verified with.",
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  }
+}

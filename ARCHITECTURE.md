@@ -15,10 +15,18 @@ graph TD
     totp["totp.ts<br/>RFC 6238"]
   end
 
-  subgraph app["@keyhole/app — local web app"]
+  subgraph app["@keyhole/app — the UI"]
     useVault["useVault.ts<br/>lock state machine"]
-    appStorage["storage.ts<br/>localStorage · File System Access"]
+    appStorage["storage.ts<br/>backend switch · File System Access"]
     appUI["React UI"]
+    pwa["pwa.ts<br/>install · update state"]
+    shell["service-worker.js<br/>precached app shell"]
+  end
+
+  subgraph desktop["@keyhole/desktop — Electron"]
+    main["main.js<br/>app:// server · atomic vault writes"]
+    preload["preload.cjs<br/>7 IPC verbs, no plaintext"]
+    vaultFile[("%APPDATA%\Keyhole\<br/>keyhole-vault.keyhole.json")]
   end
 
   subgraph ext["@keyhole/extension — Chrome MV3"]
@@ -39,6 +47,13 @@ graph TD
   appUI --> useVault
   appUI --> gen
   appUI --> totp
+  appUI --> pwa
+  pwa -.registers.-> shell
+
+  appStorage -.ciphertext only.-> preload
+  preload --> main
+  main --> vaultFile
+  main -.serves app:// .-> appUI
 
   sw --> vault
   sw --> urlmatch
@@ -50,9 +65,15 @@ graph TD
 
   style content fill:#3a1d1d,stroke:#c62828
   style sw fill:#1b3a2a,stroke:#1b7f47
+  style main fill:#1b3a2a,stroke:#1b7f47
+  style vaultFile fill:#3a1d1d,stroke:#c62828
 ```
 
-`core` is imported by both apps and performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the web app and the extension, and what makes it exhaustively unit-testable.
+Note that `@keyhole/desktop` attaches to `storage.ts` and nothing else. It does not fork the UI, import `core`, or participate in encryption — it swaps one persistence backend for another and serves the same bundle over a secure `app://` origin. That is why the desktop build needs no separate crypto review: the only new trust boundary is the preload bridge, across which nothing but sealed ciphertext ever travels.
+
+`core` is imported by every surface and performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the standalone app and the extension, and what makes it exhaustively unit-testable.
+
+Note what `service-worker.js` is *not* connected to. It sits beside the app rather than inside it: it serves the app's own HTML, JS, CSS and icons from a build-time list and nothing else. It has no import of `core`, no access to `localStorage` (service workers are structurally denied it), and no runtime caching path through which a response could become persistent state. `pwa.ts` is the only module that talks to it, and only about installation and updates — never about vault data. The extension's `service-worker.ts` is the opposite: it is the sole holder of the unlocked session. Same platform primitive, deliberately opposite trust levels.
 
 ---
 
@@ -199,7 +220,7 @@ Every transition out of `Unlocked` discards the session. There is no path that l
 
 ## Storage formats
 
-Both apps read and write the identical `VaultFile` envelope, which is what makes export/import between them work with no conversion step.
+Every surface reads and writes the identical `VaultFile` envelope, which is what makes export/import between them work with no conversion step — the desktop app's `%APPDATA%` file, the web app's `localStorage` entry and the extension's `chrome.storage.local` entry all hold the same bytes for the same vault.
 
 ```mermaid
 graph TD

@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Keyhole local web app",
+  "description": "Keyhole standalone app (installable, offline-capable)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "start": "vite build && vite preview",
+    "icons": "node scripts/render-icons.mjs",
+    "//test": "No unit tests here by design: the logic lives in @keyhole/core (175 tests) and this workspace is React glue. Present so `npm test` at the root does not abort — npm 11 fails the whole run on a missing script even with --if-present.",
+    "test": "node -e \"console.log('@keyhole/app: no unit tests (logic is tested in @keyhole/core)')\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

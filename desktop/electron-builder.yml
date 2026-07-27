@@ -1,0 +1,46 @@
+appId: dev.keyhole.desktop
+productName: Keyhole
+copyright: MIT
+
+directories:
+  output: dist
+  buildResources: build
+
+# Only what the app actually runs. The renderer is staged by scripts/stage.mjs;
+# node_modules is absent because there are no runtime dependencies — every line
+# of Keyhole that executes at runtime is either in renderer/ or src/.
+files:
+  - src/**/*
+  - renderer/**/*
+  - package.json
+
+# Portable: one .exe the user can copy anywhere and run without an installer or
+# admin rights. The vault deliberately does NOT live beside it — it goes to
+# %APPDATA%\Keyhole, so moving or deleting the .exe never touches the vault.
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  icon: build/icon.png
+  # Skip Authenticode signing, but STILL edit the executable's resources, so the
+  # icon and version strings are Keyhole's rather than Electron's.
+  #
+  # `signAndEditExecutable: false` would disable both at once, which is the older
+  # and blunter knob — it produced a binary claiming to be "Electron". Splitting
+  # them is what electron-builder 26 added, and it matters here: an unsigned
+  # binary that also misidentifies itself gives a user nothing to check it
+  # against.
+  #
+  # Signing itself needs a code-signing certificate, which is a purchase and a
+  # key-custody decision, not a build flag. See desktop/README.md.
+  signExecutable: false
+
+portable:
+  artifactName: Keyhole-${version}-portable.exe
+  # Unpack to a per-user temp dir rather than a shared one, so a second account
+  # on the same machine cannot read the unpacked bundle.
+  requestExecutionLevel: user
+
+compression: maximum
+asar: true

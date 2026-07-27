@@ -1,16 +1,22 @@
 # 🔑 Keyhole
 
-A local-first, zero-knowledge password manager. Runs as a **local web app** and as a **Chrome extension (Manifest V3)**, sharing one audited crypto core.
+A local-first, zero-knowledge password manager. Runs as a **native desktop app** (a portable Windows `.exe`), as an **installable web app**, and as a **Chrome extension (Manifest V3)** — all sharing one audited crypto core.
 
-No accounts. No cloud sync. No telemetry. Your vault is a single encrypted file that never leaves your device unless you opt in to a **self-hosted sync server** ([`server/README.md`](server/README.md)). (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
+They are for different jobs. The extension lives in the browser, where autofill has to happen. The desktop app is the vault you sit down with — its own window, its own icon, no browser involved, and a vault that is a real file you can back up.
+
+No accounts. No telemetry. Your vault is a single encrypted file that never leaves your device unless you opt in to a **self-hosted sync server** ([`server/README.md`](server/README.md)) — which every surface, desktop included, can talk to. (Local app ↔ extension live sync via a shared vault file is [designed](docs/SYNC.md); manual export/import works today.)
 
 ```
-core/        framework-agnostic crypto + vault (no I/O, 143 tests)
-app/         local web app (Vite + React + TypeScript)
+core/        framework-agnostic crypto + vault (no I/O, 175 tests)
+app/         the UI (Vite + React + TypeScript); also runs as an installable web app
+desktop/     Electron shell → portable Windows .exe, vault as a real file
 extension/   Chrome MV3 extension (popup, service worker, autofill)
+server/      optional self-hosted sync server
 examples/    demo vault with a published master password
 docs/        design notes (e.g. local live sync)
 ```
+
+`desktop/` does not fork the UI — it packages the exact same renderer from `app/`, adding a main process, a preload bridge and Windows packaging.
 
 ---
 
@@ -20,12 +26,19 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 161 tests across core + extension
+npm test                    # 226 tests across core + extension + server
 npm run demo                # end-to-end crypto proof, printed to the terminal
-npm run dev:app             # local web app at http://127.0.0.1:5173 (next free port if busy)
+npm run desktop             # build + run the native desktop app
+npm run build:desktop       # portable .exe → desktop/dist/Keyhole-1.0.0-portable.exe
+npm run app                 # build + serve the web app at http://127.0.0.1:4173
+npm run dev:app             # dev server with HMR at http://127.0.0.1:5173 (next free port if busy)
 npm start --workspace @keyhole/server   # optional sync server at http://127.0.0.1:8787
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
+
+Use `npm run app` to *use* Keyhole and `npm run dev:app` to *work on* it — the
+dev server deliberately registers no service worker, so installing and offline
+launch only work from the built copy.
 
 ### Try the demo vault
 
@@ -34,7 +47,7 @@ RFC 2606 reserved domains.
 
 **Master password: `demo-master-passphrase-2026`**
 
-This password is published deliberately — the file exists to be opened. Open the web app → *Import an existing vault file*, or the extension's options page → *Import*.
+This password is published deliberately — the file exists to be opened. Open the app → *Import an existing vault file*, or the extension's options page → *Import*.
 
 ---
 
@@ -126,10 +139,12 @@ Titles, usernames, passwords, URLs, notes, tags and TOTP secrets are all inside 
 
 | Where | Contents |
 |---|---|
-| `localStorage["keyhole.vault.v1"]` (web app) | The encrypted envelope. Nothing else. |
+| `%APPDATA%\Keyhole\keyhole-vault.keyhole.json` (desktop) | The encrypted envelope, written atomically (temp file + rename), with one `.bak` generation. Never stored beside the `.exe`. |
+| `localStorage["keyhole.vault.v1"]` (web app) | The encrypted envelope. Nothing else. Installing the web app does not move, copy or duplicate it. |
 | `chrome.storage.local["keyhole.vault.v1"]` | The encrypted envelope. 10 MB quota ≈ 40,000 entries; writes above 9 MB are refused with a clear error. |
 | `chrome.storage.local["keyhole.local.v1"]` | Non-secret preferences (auto-lock minutes, theme). |
-| IndexedDB `keyhole-handles` (web app) | A `FileSystemFileHandle`, if you linked the vault to a file on disk. Not secret. |
+| IndexedDB `keyhole-handles` (app) | A `FileSystemFileHandle`, if you linked the vault to a file on disk. Not secret. |
+| Cache Storage `keyhole-shell-<build>` (app) | The app's own HTML, JS, CSS and icons, for offline launch. No vault data — service workers cannot read `localStorage`. |
 | Memory, while unlocked | Non-extractable `CryptoKey` + decrypted entries. Never persisted. |
 
 ### Associated data binding
@@ -173,18 +188,50 @@ The content script is **4.98 KB and imports nothing** — not zod, not the core.
 
 ---
 
-## Running the local web app
+## Running the desktop app
 
 ```sh
-npm run dev:app     # http://127.0.0.1:5173
-npm run build --workspace @keyhole/app
+npm run desktop         # build the renderer and launch it in Electron
+npm run build:desktop   # → desktop/dist/Keyhole-1.0.0-portable.exe (~78 MB)
 ```
 
-The dev server binds to `127.0.0.1` only, on port 5173 or the next free one — set `PORT` to pin it. WebCrypto requires a secure context, so serve any production build over `https://` or `localhost`.
+The portable `.exe` needs no installer and no admin rights — copy it anywhere and run it. Your vault is a real file at `%APPDATA%\Keyhole\keyhole-vault.keyhole.json`, written atomically with one `.bak` generation, and it is deliberately **not** stored beside the executable: moving or deleting the `.exe` never touches your passwords.
+
+The renderer runs on a registered secure `app://` origin with `contextIsolation` on, `nodeIntegration` off and `sandbox` on. The preload bridge exposes seven IPC verbs and nothing else, and no plaintext ever crosses it — encryption happens entirely in the renderer, so the main process only ever sees the sealed envelope. Sync to a self-hosted server works exactly as it does in the browser.
+
+The build is unsigned, so SmartScreen warns on first run — the executable does carry Keyhole's own icon and version metadata, but only a purchased code-signing certificate silences the warning. [`desktop/README.md`](desktop/README.md) has the detail.
+
+**Coming from the browser build?** They are different origins with separate stores, so the desktop app cannot see a browser vault. On first run it detects that case and offers to copy it across, reading — never deleting — the browser copy.
+
+## Running the web app
+
+```sh
+npm run app         # build + serve at http://127.0.0.1:4173
+```
+
+Then install it: Chrome and Edge show an install control in the address bar, or use *Settings → App → Install Keyhole* inside the app itself. Safari uses *Share → Add to Dock*. Firefox does not support installing web apps on the desktop, so it stays a tab there.
+
+Once installed, Keyhole opens in its own window with its own icon, launches with no network, and never shows browser chrome. Right-clicking the icon offers *Password generator* and *Settings* as shortcuts.
+
+Both servers bind to `127.0.0.1` only — 4173 for the built app, 5173 for `npm run dev:app` — on that port or the next free one; set `PORT` to pin it. `127.0.0.1` is a secure context, which is what WebCrypto, service workers and installation all require, so no certificate is needed locally. Serving from anywhere other than loopback requires `https://`.
 
 **First run:** choose *Create vault* (minimum 12 characters, with an explicit no-recovery acknowledgement) or *Import an existing vault file*.
 
 Features: login and secure-note entries, fast search over title/username/URL/tags (and note bodies for secure notes — never over passwords or login notes), password generator with strength meter, TOTP codes, export/import, change master password, configurable auto-lock and clipboard clear, light/dark/system theme, local-storage status, and optional File System Access API linking so edits save straight to a real file on disk.
+
+### What installing does and does not change
+
+Installing is a window, not a data migration. The vault stays exactly where it was — the same encrypted envelope under the same origin's `localStorage` — so an installed Keyhole and the same URL in a tab are one app looking at one vault, not two copies drifting apart.
+
+| | Behaviour |
+|---|---|
+| **Offline** | The app shell (HTML, JS, CSS, icons) is precached at install by `app/src/service-worker.js`, so a cold launch needs no server. Argon2id is WASM inlined into the bundle, so unlocking works offline too. |
+| **Caching policy** | Precache only. The worker caches exactly the files a build produced, from a list fixed at build time, and performs no runtime caching ever. |
+| **The sync server** | A different origin, so its requests are not cached — they are never intercepted at all. Opting in to sync is unaffected by installation, in either direction. |
+| **The vault** | Untouched. Service workers cannot read `localStorage`, so the worker has no path to vault data even in principle. |
+| **Updates** | A new build installs in the background and waits. It applies when every Keyhole window is closed, or immediately via *Settings → App → Update and restart* — which reloads, and therefore locks the vault. Nothing auto-reloads, because a silent reload would drop an unlocked session mid-edit. |
+
+Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app`.
 
 ## Loading the Chrome extension
 
@@ -198,13 +245,13 @@ npm run build:extension
 4. Pin Keyhole to the toolbar
 5. Click the icon, or press <kbd>Cmd/Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>
 
-First run: the popup offers *Set up Keyhole*, which opens the options page to create a vault or import one exported from the web app. Both use the identical file format.
+First run: the popup offers *Set up Keyhole*, which opens the options page to create a vault or import one exported from the app. Both use the identical file format.
 
 ### MV3 notes
 
 - **`'wasm-unsafe-eval'` in the CSP is required**, not optional — MV3 blocks WebAssembly compilation without it, and Argon2id is WASM. The rest of the CSP pins `script-src` to `'self'`; there is no `unsafe-eval`, no remote code, no `eval()`.
 - **Service worker eviction locks the vault.** Chrome terminates idle service workers, which discards the in-memory session. An alarm-driven heartbeat keeps the worker warm while unlocked, but Chrome may still evict under memory pressure. This is fail-closed: you get the unlock screen, never a stale "unlocked" state.
-- **Clipboard auto-clear is best-effort in the popup.** The popup usually closes before the timer fires. The web app, which stays open, clears reliably. Neither can reach OS-level clipboard history or Handoff.
+- **Clipboard auto-clear is best-effort in the popup.** The popup usually closes before the timer fires. The standalone app, which stays open, clears reliably. Neither can reach OS-level clipboard history or Handoff.
 
 ---
 
@@ -221,6 +268,28 @@ Verified in a real browser during development; re-run after any change to crypto
 - [ ] Change the master password → old password rejected, all entries intact, salt/wrappedKey/payload all changed.
 - [ ] Export → delete vault → import → unlocks with the same password, entries intact.
 - [ ] Two saves in a row produce different `payload.ivB64`.
+
+### Desktop app
+- [ ] `npm run build:desktop`, run the `.exe` → window opens, no browser chrome, no menu bar.
+- [ ] DevTools console: `window.require` and `window.process` are both `undefined`; `isSecureContext` is `true`.
+- [ ] `window.keyhole.vault` exposes exactly seven verbs and nothing else.
+- [ ] Create a vault → `%APPDATA%\Keyhole\keyhole-vault.keyhole.json` appears; open it — ciphertext and public header only.
+- [ ] Edit an entry → the file's `payload.ivB64` changes and a `.bak` holds the previous version; no `.tmp` is left behind.
+- [ ] Close and relaunch → the unlock screen appears immediately, never a create-vault flash.
+- [ ] Launch a second instance → it focuses the existing window instead of opening a second one.
+- [ ] With a vault in the browser build and none on disk, first run offers to copy it across; declining leaves the browser copy intact.
+- [ ] *Settings → App* shows the real vault path; *Show in Explorer* opens it.
+- [ ] Configure sync against a local server → *Register & upload* succeeds; the server row holds only the encrypted envelope.
+- [ ] Move the `.exe` to another folder and run it → same vault, because the vault is not stored beside it.
+
+### Installed web app / offline shell
+- [ ] `npm run app`, install it, then stop the server → the installed app still launches and unlocks.
+- [ ] DevTools → Application → Cache Storage → `keyhole-shell-*` holds only app assets; no `keyhole.vault.v1`, no entry data, no sync response.
+- [ ] With sync configured, click *Sync now* → the request appears in the network log as a real request, not a cached response.
+- [ ] Rebuild, reload → *Settings → App* offers *Update and restart*; nothing reloads on its own.
+- [ ] Take *Update and restart* while unlocked → the app returns locked, not unlocked.
+- [ ] Install, edit an entry in the installed window, open the same URL in a tab → the edit is there. One vault, not two.
+- [ ] `npm run dev:app` → DevTools shows no service worker registered.
 
 ### Locking
 - [ ] Set auto-lock to 1 minute, idle → locks; countdown appears under 60s.
@@ -254,11 +323,57 @@ npm run demo:vault --workspace @keyhole/core   # regenerate examples/
 
 TypeScript strict mode throughout, plus `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitReturns` and `noUnusedLocals`.
 
+### About `npm audit`
+
+`npm install` reports **16 high-severity advisories. All of them are dev-only, and none reach the shipped product.**
+
+```sh
+npm audit --omit=dev     # → found 0 vulnerabilities
+```
+
+Every one traces to a single direct dependency, `electron-builder`, and to a single advisory: [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg), a denial-of-service in `brace-expansion`. The 16 "packages" are just the chain — `glob` → `minimatch` → `brace-expansion`, repeated through several parents.
+
+**Why it is not fixed:** the advisory's vulnerable range is `<=5.0.7`. The only patched release, `5.0.8`, changed its CommonJS export from a callable function to an object (`{ expand, … }`). Every consumer here reaches it through `minimatch`, which does `const expand = require('brace-expansion')` and calls it. Forcing the override is verifiable breakage:
+
+```
+TypeError: expand is not a function
+```
+
+So there is no upgrade path until `minimatch` adopts `brace-expansion@5`. `npm audit fix --force` "solves" it by downgrading `electron-builder` to 25.x, which reintroduces a **critical** `tar` path-traversal advisory — strictly worse. Don't take that advice.
+
+**Why it does not matter for the artifact:** `electron-builder` is a build-time tool, and `@keyhole/desktop` has no runtime dependencies whatsoever. The packaged `app.asar` is 20 entries — the renderer bundle, `main.js`, `preload.cjs`, `package.json` — and contains no `node_modules`. Verify it yourself:
+
+```sh
+npx @electron/asar list desktop/dist/win-unpacked/resources/app.asar | grep node_modules   # → no matches
+```
+
+The residual risk is a hostile *input* to your own build machine (a crafted glob pattern during packaging), not something an attacker can reach in a user's installed Keyhole.
+
+This is deliberately **not** silenced with an `audit-level` setting in `.npmrc`. A password manager that teaches its maintainers to ignore audit output is worse off than one with a known, understood, documented finding — the next advisory might be the one that matters.
+
 The extension build validates its own output: manifest correctness, no `<all_urls>`, CSP pins `script-src 'self'`, `wasm-unsafe-eval` present, no bare `unsafe-eval`, every referenced file exists, and the content script is ESM-free and under 25 KB.
 
 ### Explicitly out of scope for v1
 
-Cloud sync to third-party servers, accounts on someone else's infrastructure, vault sharing, biometrics, analytics, and any form of phone-home telemetry. Networking is limited to an **optional self-hosted sync server** you run (`server/`); by default the app makes no network calls. Local live sync between the web app and extension (shared vault file) is also described in [docs/SYNC.md](docs/SYNC.md).
+Cloud sync to third-party servers, accounts on someone else's infrastructure, vault sharing, biometrics, analytics, and any form of phone-home telemetry. Networking is limited to an **optional self-hosted sync server** you run (`server/`); by default no surface makes network calls, and neither installing the web app nor running the desktop `.exe` adds any — the offline shell only ever reads files built into it, and the desktop build ships with no update channel at all. Local live sync between the app and extension (shared vault file) is also described in [docs/SYNC.md](docs/SYNC.md).
+
+Also out of scope for the desktop build specifically: code signing, an auto-updater, macOS and Linux packaging, and OS-keychain integration.
+
+### The desktop build, and what it costs
+
+Earlier versions of this document ruled out an Electron/Tauri wrapper. That is no longer true — `desktop/` ships a portable Windows `.exe` — so here is an honest accounting of what that decision buys and what it costs.
+
+**Electron was chosen over Tauri** because it bundles Chromium: WebCrypto, the Argon2id WASM module and the File System Access API all behave exactly as they do in the browser the crypto was audited against. Tauri's WebView2 does not expose the File System Access API, which would have meant rewriting the vault-file linking against a different set of primitives — new code on the path that touches your vault, to save disk space.
+
+**What it costs, plainly:**
+
+- **You own the Chromium patch cadence.** A browser updates itself; a bundled Chromium does not. An old Keyhole `.exe` is an old Chromium, with whatever is known about it. Rebuild against current Electron periodically — this is the single biggest ongoing security cost of shipping a binary.
+- **~86 MB, versus a few hundred KB of web app.**
+- **No code signing.** The build is unsigned, so SmartScreen warns on first run. See [`desktop/README.md`](desktop/README.md) for why.
+- **A build toolchain with open advisories.** `electron-builder` carries a set of high-severity transitive advisories with no upstream fix available. None of it ships — the packaged `app.asar` contains no `node_modules` at all — but `npm audit` will report them, and that is worth understanding rather than muting. See below.
+- **No auto-update channel.** Deliberate — an auto-updater is a remote-code path into a password manager. Updating means replacing the `.exe` yourself.
+
+**What it does not cost:** a second copy of the vault. The desktop app keeps exactly one vault, in `%APPDATA%\Keyhole`, and the browser build keeps its own. They are separate stores by construction (different origins), which is why the desktop app offers to import a browser vault on first run rather than pretending it found nothing.
 
 ---
 
