@@ -214,11 +214,31 @@ console.log('▸ smoke-testing the service worker');
         set: async (obj) => void Object.assign(store, obj),
         remove: async (key) => void delete store[key],
       },
+      session: {
+        get: async (key) => (store[`session:${key}`] !== undefined ? { [key]: store[`session:${key}`] } : {}),
+        set: async (obj) => {
+          for (const [k, v] of Object.entries(obj)) store[`session:${k}`] = v;
+        },
+        remove: async (key) => void delete store[`session:${key}`],
+      },
     },
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: { addListener: noop } },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
-    tabs: { get: async () => ({ url: 'https://example.com/' }), sendMessage: async () => ({}) },
+    tabs: {
+      get: async () => ({ url: 'https://example.com/' }),
+      sendMessage: async () => ({}),
+      query: async () => [{ id: 1, url: 'https://example.com/', active: true }],
+      onActivated: { addListener: noop },
+      onUpdated: { addListener: noop },
+    },
     scripting: { executeScript: async () => {} },
+    windows: {
+      onRemoved: { addListener: noop },
+      onFocusChanged: { addListener: noop },
+      create: async () => ({}),
+      update: async () => ({}),
+      WINDOW_ID_NONE: -1,
+    },
   };
 
   try {
@@ -245,6 +265,14 @@ console.log('▸ smoke-testing the service worker');
       });
       if (denied?.ok !== false) problems.push('service worker answered a content-script sender!');
       else console.log('  ✓ content-script sender rejected');
+
+      // Content scripts may ask for suggestions, but only for their own tab.
+      const suggest = await new Promise((resolve) => {
+        messageListeners[0]({ type: 'SUGGEST_FOR_PAGE' }, hostile, resolve);
+      });
+      if (suggest?.ok !== true || suggest?.type !== 'SUGGESTIONS' || suggest?.locked !== true) {
+        problems.push('service worker did not handle SUGGEST_FOR_PAGE from a content script');
+      } else console.log('  ✓ content-script SUGGEST_FOR_PAGE handled (vault locked)');
     }
   } catch (err) {
     problems.push(`service worker crashed on load: ${err.message}`);

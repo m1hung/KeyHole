@@ -5,7 +5,20 @@
   "description": "Local-first, zero-knowledge password manager. Your vault never leaves this device.",
   "minimum_chrome_version": "123",
 
-  "permissions": ["storage", "activeTab", "scripting", "alarms", "clipboardWrite"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "clipboardWrite", "tabs"],
+
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
 
   "background": {
     "service_worker": "service-worker.js",
@@ -25,7 +38,7 @@
 
   "options_ui": {
     "page": "options.html",
-    "open_in_tab": true
+    "open_in_tab": false
   },
 
   "icons": {
@@ -36,7 +49,7 @@
   },
 
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* http: https:; base-uri 'none'; form-action 'none'"
   },
 
   "commands": {

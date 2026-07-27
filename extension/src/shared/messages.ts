@@ -8,9 +8,9 @@
  *     more than a single credential. The service worker is the only holder of
  *     the decrypted vault; popup and content script receive the minimum needed.
  *
- *  2. Every handler must call `isTrustedExtensionSender` (for privileged
- *     messages) before acting. `chrome.runtime.onMessage` fires for content
- *     scripts too, and a compromised page can drive its content script.
+ *  2. Privileged handlers require `isTrustedExtensionSender`. Content scripts
+ *     may only send the narrow `contentScriptRequestSchema` types, which never
+ *     accept a client-supplied URL or tab id — the SW always uses `sender.tab`.
  */
 
 import { z } from 'zod';
@@ -36,9 +36,70 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('SAVE_ENTRY'), entry: z.unknown() }).strict(),
   z.object({ type: z.literal('DELETE_ENTRY'), entryId: z.uuid() }).strict(),
   z.object({ type: z.literal('KEEPALIVE') }).strict(),
+  z.object({ type: z.literal('GET_SYNC_CONFIG') }).strict(),
+  z
+    .object({
+      type: z.literal('SET_THEME'),
+      theme: z.enum(['light', 'dark', 'system']),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('SAVE_SYNC_CONFIG'),
+      baseUrl: z.string().max(2048),
+      accountId: z.string().max(256),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('SYNC_REGISTER'),
+      masterPassword: z.string().min(1).max(1024),
+      baseUrl: z.string().max(2048),
+      accountId: z.string().max(256),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('SYNC_NOW'),
+      masterPassword: z.string().min(1).max(1024),
+      baseUrl: z.string().max(2048),
+      accountId: z.string().max(256),
+    })
+    .strict(),
+  /** Replace this device's vault with the one stored on the sync server. */
+  z
+    .object({
+      type: z.literal('SYNC_ADOPT_REMOTE'),
+      masterPassword: z.string().min(1).max(1024),
+      baseUrl: z.string().max(2048),
+      accountId: z.string().max(256),
+    })
+    .strict(),
+  /** Overwrite the sync server account with this device's vault. */
+  z
+    .object({
+      type: z.literal('SYNC_OVERWRITE_REMOTE'),
+      masterPassword: z.string().min(1).max(1024),
+      baseUrl: z.string().max(2048),
+      accountId: z.string().max(256),
+    })
+    .strict(),
 ]);
 
 export type Request = z.infer<typeof requestSchema>;
+
+/**
+ * Messages a content script may send. Deliberately tiny surface:
+ *  - no tabId / URL (matching uses sender.tab from Chrome)
+ *  - no secret reveal / export / unlock
+ *  - FILL_FROM_PAGE only carries an entry id; the SW re-checks host match
+ */
+export const contentScriptRequestSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('SUGGEST_FOR_PAGE') }).strict(),
+  z.object({ type: z.literal('FILL_FROM_PAGE'), entryId: z.uuid() }).strict(),
+]);
+
+export type ContentScriptRequest = z.infer<typeof contentScriptRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -55,11 +116,29 @@ export interface EntrySummary {
 }
 
 export type Response =
-  | { ok: true; type: 'STATE'; locked: boolean; hasVault: boolean; entryCount: number; autoLockMinutes: number }
+  | {
+      ok: true;
+      type: 'STATE';
+      locked: boolean;
+      hasVault: boolean;
+      entryCount: number;
+      autoLockMinutes: number;
+      theme: 'light' | 'dark' | 'system';
+    }
   | { ok: true; type: 'ENTRIES'; entries: EntrySummary[] }
+  | {
+      ok: true;
+      type: 'SUGGESTIONS';
+      locked: boolean;
+      theme: 'light' | 'dark' | 'system';
+      entries: EntrySummary[];
+    }
   | { ok: true; type: 'SECRET'; value: string; clipboardClearSeconds: number }
   | { ok: true; type: 'FILLED'; filledUsername: boolean; filledPassword: boolean }
   | { ok: true; type: 'EXPORT'; file: unknown }
+  | { ok: true; type: 'SYNC_CONFIG'; baseUrl: string | null; accountId: string | null }
+  | { ok: true; type: 'SYNC_RESULT'; message: string }
+  | { ok: true; type: 'SYNC_VAULT_MISMATCH'; message: string }
   | { ok: true; type: 'OK' }
   | { ok: false; error: string };
 
@@ -93,20 +172,29 @@ export const fillResultSchema = z
 /**
  * True only for messages from *our own extension pages* (popup, options).
  *
- * Three checks, all necessary:
- *  - `sender.id === chrome.runtime.id` rejects other extensions.
- *  - `sender.url` starting with our origin rejects content scripts, which carry
- *    the page's URL rather than a chrome-extension:// one.
- *  - `sender.tab === undefined` rejects anything running in a web page context.
- *
- * The second and third are what stop a compromised page from driving its
- * content script into asking us to decrypt the vault.
+ * Accept either `sender.url` or `sender.origin` under our chrome-extension
+ * origin. Content scripts carry the page URL/origin (https://…), never ours.
+ * Options opened via `chrome.windows.create({ type: 'popup' })` still have a
+ * tab — that alone must not disqualify them.
  */
 export function isTrustedExtensionSender(sender: chrome.runtime.MessageSender): boolean {
   if (sender.id !== chrome.runtime.id) return false;
-  if (sender.tab !== undefined) return false;
-  const origin = `chrome-extension://${chrome.runtime.id}/`;
-  return typeof sender.url === 'string' && sender.url.startsWith(origin);
+  const origin = `chrome-extension://${chrome.runtime.id}`;
+  if (typeof sender.origin === 'string' && sender.origin === origin) return true;
+  return typeof sender.url === 'string' && sender.url.startsWith(`${origin}/`);
+}
+
+/**
+ * True for messages from our content script in a web tab.
+ *
+ * Must never overlap with trusted extension pages (including the vault window,
+ * which has a tab but a chrome-extension:// URL).
+ */
+export function isContentScriptSender(sender: chrome.runtime.MessageSender): boolean {
+  if (sender.id !== chrome.runtime.id) return false;
+  if (typeof sender.tab?.id !== 'number') return false;
+  if (isTrustedExtensionSender(sender)) return false;
+  return true;
 }
 
 /** True for messages from a content script we injected. Used by the content script side. */

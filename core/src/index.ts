@@ -15,3 +15,4 @@ export * from './totp.ts';
 export * from './validation.ts';
 export * from './vault.ts';
 export * from './sync.ts';
+export * from './envelope-sync.ts';

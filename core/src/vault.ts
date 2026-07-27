@@ -30,6 +30,7 @@ import {
   type Entry,
   type Folder,
   type Settings,
+  type Tombstone,
   type VaultData,
   type VaultFile,
   type VaultSession,
@@ -62,6 +63,7 @@ export function emptyVaultData(): VaultData {
     schemaVersion: SCHEMA_VERSION,
     entries: [],
     folders: [],
+    tombstones: [],
     settings: structuredClone(DEFAULT_SETTINGS),
     updatedAt: now(),
   };
@@ -239,13 +241,14 @@ export function lockSession(session: VaultSession): void {
 // ---------------------------------------------------------------------------
 
 function migrate(data: VaultData): VaultData {
-  if (data.schemaVersion === SCHEMA_VERSION) return data;
   if (data.schemaVersion > SCHEMA_VERSION) {
     throw new UnsupportedVersionError(`Vault schema ${data.schemaVersion} is newer than this build supports.`);
   }
-  // No historical versions yet. Future steps chain here, e.g.:
-  //   if (data.schemaVersion === 1) { ...; data.schemaVersion = 2; }
-  return data;
+
+  // 1 → 2: sync needs deletions to be recorded rather than merely absent.
+  const tombstones = data.tombstones ?? [];
+
+  return { ...data, tombstones, schemaVersion: SCHEMA_VERSION };
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +317,16 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
 
 export function deleteEntry(data: VaultData, id: string): VaultData {
   if (!data.entries.some((e) => e.id === id)) throw new ValidationError(`No entry with id ${id}.`);
-  return { ...data, entries: data.entries.filter((e) => e.id !== id) };
+  return {
+    ...data,
+    entries: data.entries.filter((e) => e.id !== id),
+    tombstones: recordTombstone(data.tombstones, { id, kind: 'entry', deletedAt: now() }),
+  };
+}
+
+/** Replace any prior tombstone for the same id, so the newest deletion wins. */
+function recordTombstone(existing: Tombstone[], next: Tombstone): Tombstone[] {
+  return [...existing.filter((t) => !(t.id === next.id && t.kind === next.kind)), next];
 }
 
 export function getEntry(data: VaultData, id: string): Entry | undefined {
@@ -334,6 +346,7 @@ export function deleteFolder(data: VaultData, id: string): VaultData {
     ...data,
     folders: data.folders.filter((f) => f.id !== id),
     entries: data.entries.map((e) => (e.folderId === id ? { ...e, folderId: null } : e)),
+    tombstones: recordTombstone(data.tombstones, { id, kind: 'folder', deletedAt: now() }),
   };
 }
 

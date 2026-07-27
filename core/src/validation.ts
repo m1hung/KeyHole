@@ -82,6 +82,14 @@ export const folderSchema = z
   })
   .strict();
 
+export const tombstoneSchema = z
+  .object({
+    id: z.uuid(),
+    kind: z.enum(['entry', 'folder']),
+    deletedAt: isoDate,
+  })
+  .strict();
+
 export const vaultDataSchema = z
   .object({
     // Deliberately permissive: a newer-than-supported version must reach the
@@ -90,6 +98,11 @@ export const vaultDataSchema = z
     schemaVersion: z.int().min(1).max(1_000_000),
     entries: z.array(entrySchema).max(100_000),
     folders: z.array(folderSchema).max(10_000),
+    /*
+     * Optional because this parser runs BEFORE `migrate()`: a schemaVersion-1
+     * vault has no tombstones yet, and `migrate()` back-fills `[]`.
+     */
+    tombstones: z.array(tombstoneSchema).max(100_000).default([]),
     settings: settingsSchema,
     updatedAt: isoDate,
   })

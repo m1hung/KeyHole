@@ -6,7 +6,9 @@ import {
   assertKdfParamsAcceptable,
   decrypt,
   defaultKdfParams,
+  deriveKeyMaterial,
   deriveMasterKey,
+  deriveSyncAuthSecret,
   encrypt,
   generateVaultKeyBytes,
   importAesKey,
@@ -20,6 +22,62 @@ import { DecryptionError, ValidationError } from '../src/errors.ts';
 
 // Fast params for tests. Production defaults are exercised separately below.
 const testKdf = () => ({ ...defaultKdfParams('interactive'), memoryKiB: 16 * 1024, iterations: 2 });
+
+describe('sync auth secret', () => {
+  const aad = () => utf8ToBytes('test');
+
+  it('does NOT change the master key — existing vaults must keep opening', async () => {
+    const kdf = testKdf();
+    const viaOld = await deriveMasterKey('correct horse battery staple', kdf);
+    const { masterKey: viaNew } = await deriveKeyMaterial('correct horse battery staple', kdf);
+
+    const blob = await encrypt(viaOld, utf8ToBytes('cross-path'), aad());
+    expect(new TextDecoder().decode(await decrypt(viaNew, blob, aad()))).toBe('cross-path');
+  });
+
+  it('is deterministic for the same password and parameters', async () => {
+    const kdf = testKdf();
+    expect(await deriveSyncAuthSecret('hunter2-hunter2', kdf)).toBe(await deriveSyncAuthSecret('hunter2-hunter2', kdf));
+  });
+
+  it('differs for a different password', async () => {
+    const kdf = testKdf();
+    expect(await deriveSyncAuthSecret('password-one', kdf)).not.toBe(await deriveSyncAuthSecret('password-two', kdf));
+  });
+
+  it('differs between vaults that share a password, via the salt', async () => {
+    const password = 'shared across vaults';
+    expect(await deriveSyncAuthSecret(password, testKdf())).not.toBe(
+      await deriveSyncAuthSecret(password, testKdf()),
+    );
+  });
+
+  it('is not the Argon2id output, so the server cannot unwrap the vault key', async () => {
+    const kdf = testKdf();
+    const password = 'correct horse battery staple';
+    const root = nobleArgon2id(utf8ToBytes(password), b64ToBytes(kdf.saltB64), {
+      m: kdf.memoryKiB,
+      t: kdf.iterations,
+      p: kdf.parallelism,
+      dkLen: kdf.keyLength,
+    });
+
+    const secret = await deriveSyncAuthSecret(password, kdf);
+    expect(secret).not.toBe(bytesToB64(root));
+    expect(b64ToBytes(secret)).toHaveLength(CRYPTO.KEY_BYTES);
+  });
+
+  it('agrees with the combined derivation', async () => {
+    const kdf = testKdf();
+    const { syncAuthSecretB64 } = await deriveKeyMaterial('one run, two secrets', kdf);
+    expect(syncAuthSecretB64).toBe(await deriveSyncAuthSecret('one run, two secrets', kdf));
+  });
+
+  it('refuses downgraded KDF parameters, so a hostile server cannot cheapen it', async () => {
+    const weak = { ...testKdf(), memoryKiB: 1024 };
+    await expect(deriveSyncAuthSecret('correct horse battery staple', weak)).rejects.toThrow(ValidationError);
+  });
+});
 
 describe('Argon2id derivation', () => {
   it('agrees byte-for-byte with an independent implementation (@noble/hashes)', async () => {

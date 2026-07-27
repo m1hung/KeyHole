@@ -1,107 +1,184 @@
 /**
- * Envelope-level sync decisions.
+ * Vault merge for sync.
  *
- * Pure: no I/O. Both the web app and the extension call these after reading
- * two VaultFile envelopes (local cache vs shared file, or cache vs cache).
- * Decrypted entry merge is intentionally out of scope — see docs/SYNC.md.
+ * The server never sees plaintext, so it cannot merge anything: it stores one
+ * opaque envelope plus a monotonic version and rejects a write whose expected
+ * version is stale. All reconciliation therefore happens here, on a client
+ * that has just decrypted both sides.
+ *
+ * THE RULE THIS FILE MUST NEVER BREAK: a merge may not silently lose a
+ * password. When in doubt it keeps data. The only thing that removes an entry
+ * is an explicit, dated tombstone that is newer than the entry itself.
+ *
+ * CONVERGENCE: two devices merging the same pair in opposite directions must
+ * reach byte-identical results, or they will push conflicting envelopes back
+ * and forth forever. Every rule below is therefore commutative, including the
+ * tie-breaks — which is why equal timestamps fall back to comparing content
+ * rather than preferring "local".
  */
 
-import type { VaultFile } from './types.ts';
+import type { Entry, Folder, Tombstone, VaultData } from './types.ts';
+import { SCHEMA_VERSION } from './types.ts';
 
-/** Result of comparing two encrypted envelopes. */
-export type EnvelopeRelation = 'same' | 'a-newer' | 'b-newer' | 'divergent' | 'unrelated';
+/**
+ * How long a deletion is remembered. A device offline longer than this can
+ * resurrect an entry it never learned was deleted; keeping tombstones forever
+ * would instead grow the vault without bound. Six months is far beyond any
+ * plausible offline window for a password manager.
+ */
+export const TOMBSTONE_TTL_DAYS = 180;
 
-export type SyncAction = 'noop' | 'adopt-remote' | 'push-local' | 'conflict' | 'refuse';
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-export interface SyncDecision {
-  action: SyncAction;
-  relation: EnvelopeRelation;
-  /** Short, UI-safe explanation (no secrets). */
-  reason: string;
+function time(iso: string): number {
+  const t = Date.parse(iso);
+  // An unparseable timestamp sorts oldest, so it can never win a comparison
+  // and overwrite good data with garbage.
+  return Number.isNaN(t) ? 0 : t;
 }
 
-function payloadFingerprint(file: VaultFile): string {
-  // IV + ciphertext(+tag) uniquely identify this encryption of the payload.
-  // wrappedKey is excluded so a master-password change (new wrap, re-encrypted
-  // payload, new updatedAt) still orders correctly via timestamps.
-  return `${file.payload.ivB64}:${file.payload.ctB64}`;
+function latest(a: string, b: string): string {
+  return time(a) >= time(b) ? a : b;
 }
 
 /**
- * Compare two envelopes without decrypting them.
+ * Deterministic tie-break for records with identical timestamps.
  *
- * Ordering uses the authenticated `updatedAt` written by `saveVault`, not the
- * filesystem mtime. Identical timestamps with different payloads are
- * `divergent` (clock collision or torn write) rather than an arbitrary pick.
+ * Comparing serialised content is arbitrary but it is *stable*: both devices
+ * pick the same winner, so they converge. Preferring "mine" would not — each
+ * device would keep its own version and they would never agree.
  */
-export function compareEnvelopes(a: VaultFile, b: VaultFile): EnvelopeRelation {
-  if (a.vaultId !== b.vaultId) return 'unrelated';
+function breakTie<T>(a: T, b: T): T {
+  return JSON.stringify(a) >= JSON.stringify(b) ? a : b;
+}
 
-  if (a.updatedAt === b.updatedAt) {
-    return payloadFingerprint(a) === payloadFingerprint(b) ? 'same' : 'divergent';
+// ---------------------------------------------------------------------------
+// Tombstones
+// ---------------------------------------------------------------------------
+
+function mergeTombstones(a: readonly Tombstone[], b: readonly Tombstone[]): Tombstone[] {
+  const byKey = new Map<string, Tombstone>();
+  for (const t of [...a, ...b]) {
+    const key = `${t.kind}:${t.id}`;
+    const existing = byKey.get(key);
+    if (!existing || time(t.deletedAt) > time(existing.deletedAt)) byKey.set(key, t);
   }
+  return [...byKey.values()].sort((x, y) => `${x.kind}:${x.id}`.localeCompare(`${y.kind}:${y.id}`));
+}
 
-  return a.updatedAt > b.updatedAt ? 'a-newer' : 'b-newer';
+function pruneTombstones(tombstones: readonly Tombstone[], nowMs: number): Tombstone[] {
+  const cutoff = nowMs - TOMBSTONE_TTL_DAYS * DAY_MS;
+  return tombstones.filter((t) => time(t.deletedAt) >= cutoff);
+}
+
+// ---------------------------------------------------------------------------
+// Merge
+// ---------------------------------------------------------------------------
+
+export interface MergeStats {
+  entriesKept: number;
+  entriesDeleted: number;
+  /** Entries that existed on both sides with differing content. */
+  entriesReconciled: number;
+  foldersKept: number;
+  tombstones: number;
+}
+
+export interface MergeResult {
+  data: VaultData;
+  stats: MergeStats;
 }
 
 /**
- * Decide how `local` (this client's cache) should move relative to `remote`
- * (typically the shared on-disk file).
+ * Merge two decrypted vaults into one.
  *
- * Last-write-wins on the whole envelope. Never returns an action that would
- * overwrite across different vaultIds.
+ * Symmetric: `merge(a, b)` and `merge(b, a)` produce identical output. That is
+ * a hard requirement, not a nicety — see the convergence note at the top.
+ *
+ * `nowMs` is injectable so tests can exercise tombstone expiry without waiting
+ * six months.
  */
-export function decideSync(local: VaultFile, remote: VaultFile): SyncDecision {
-  const relation = compareEnvelopes(local, remote);
+export function mergeVaultData(a: VaultData, b: VaultData, nowMs: number = Date.now()): MergeResult {
+  const tombstones = pruneTombstones(mergeTombstones(a.tombstones, b.tombstones), nowMs);
+  const deletedAt = new Map(tombstones.map((t) => [`${t.kind}:${t.id}`, time(t.deletedAt)] as const));
 
-  switch (relation) {
-    case 'same':
-      return { action: 'noop', relation, reason: 'Local cache and remote file already match.' };
-    case 'a-newer':
-      return {
-        action: 'push-local',
-        relation,
-        reason: 'Local cache is newer than the remote file; write local → file.',
-      };
-    case 'b-newer':
-      return {
-        action: 'adopt-remote',
-        relation,
-        reason: 'Remote file is newer than the local cache; adopt file → cache.',
-      };
-    case 'divergent':
-      return {
-        action: 'conflict',
-        relation,
-        reason: 'Same updatedAt but different ciphertext — choose which envelope to keep.',
-      };
-    case 'unrelated':
-      return {
-        action: 'refuse',
-        relation,
-        reason: 'Vault ids differ; refusing to mix two distinct vaults.',
-      };
-  }
-}
+  // -- entries ---------------------------------------------------------------
+  const entryById = new Map<string, Entry>();
+  let entriesReconciled = 0;
 
-/**
- * Apply a non-conflict decision to pick the envelope that should become
- * canonical. Returns null when the caller must stop (noop is fine; conflict /
- * refuse need UI).
- */
-export function pickCanonical(
-  local: VaultFile,
-  remote: VaultFile,
-  decision: SyncDecision = decideSync(local, remote),
-): VaultFile | null {
-  switch (decision.action) {
-    case 'noop':
-    case 'push-local':
-      return local;
-    case 'adopt-remote':
-      return remote;
-    case 'conflict':
-    case 'refuse':
-      return null;
+  for (const entry of [...a.entries, ...b.entries]) {
+    const existing = entryById.get(entry.id);
+    if (!existing) {
+      entryById.set(entry.id, entry);
+      continue;
+    }
+    if (JSON.stringify(existing) !== JSON.stringify(entry)) entriesReconciled++;
+
+    const ta = time(existing.updatedAt);
+    const tb = time(entry.updatedAt);
+    entryById.set(entry.id, ta === tb ? breakTie(existing, entry) : ta > tb ? existing : entry);
   }
+
+  let entriesDeleted = 0;
+  const entries: Entry[] = [];
+  for (const entry of entryById.values()) {
+    const tomb = deletedAt.get(`entry:${entry.id}`);
+    // A tombstone only wins if the entry has not been touched since. Editing
+    // an entry on device A after device B deleted it is a resurrection, and
+    // keeping the edit is the safe reading: the user's later intent was to
+    // have this password.
+    if (tomb !== undefined && tomb >= time(entry.updatedAt)) {
+      entriesDeleted++;
+      continue;
+    }
+    entries.push(entry);
+  }
+
+  // -- folders ---------------------------------------------------------------
+  const folderById = new Map<string, Folder>();
+  for (const folder of [...a.folders, ...b.folders]) {
+    const existing = folderById.get(folder.id);
+    // Folders carry only createdAt, so there is nothing to reconcile beyond
+    // picking one deterministically when names diverge.
+    folderById.set(folder.id, existing ? breakTie(existing, folder) : folder);
+  }
+
+  const folders: Folder[] = [];
+  for (const folder of folderById.values()) {
+    const tomb = deletedAt.get(`folder:${folder.id}`);
+    if (tomb !== undefined && tomb >= time(folder.createdAt)) continue;
+    folders.push(folder);
+  }
+
+  // Deleting a folder unfiles its entries rather than deleting them; a merge
+  // that drops a folder must uphold the same guarantee.
+  const liveFolders = new Set(folders.map((f) => f.id));
+  const reconciledEntries = entries.map((e) =>
+    e.folderId !== null && !liveFolders.has(e.folderId) ? { ...e, folderId: null } : e,
+  );
+
+  reconciledEntries.sort((x, y) => x.id.localeCompare(y.id));
+  folders.sort((x, y) => x.id.localeCompare(y.id));
+
+  // Settings are a single unit — merging them field-by-field could invent a
+  // combination the user never chose. The more recently written vault wins.
+  const newer = time(a.updatedAt) >= time(b.updatedAt) ? a : b;
+
+  return {
+    data: {
+      schemaVersion: SCHEMA_VERSION,
+      entries: reconciledEntries,
+      folders,
+      tombstones,
+      settings: newer.settings,
+      updatedAt: latest(a.updatedAt, b.updatedAt),
+    },
+    stats: {
+      entriesKept: reconciledEntries.length,
+      entriesDeleted,
+      entriesReconciled,
+      foldersKept: folders.length,
+      tombstones: tombstones.length,
+    },
+  };
 }

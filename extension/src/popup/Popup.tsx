@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
+import { openVaultWindow } from '../shared/openVaultWindow.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
@@ -33,6 +34,7 @@ export function Popup() {
       return;
     }
     if (response.type !== 'STATE') return;
+    document.documentElement.dataset['theme'] = response.theme;
     setScreen(!response.hasVault ? 'no-vault' : response.locked ? 'locked' : 'unlocked');
   }, []);
 
@@ -117,7 +119,11 @@ export function Popup() {
         <Header host={tabHost} />
         <div className="popup-center">
           <p>No vault in this browser yet.</p>
-          <button type="button" className="primary" onClick={() => void chrome.runtime.openOptionsPage()}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => void openVaultWindow().then(() => window.close())}
+          >
             Set up Keyhole
           </button>
           <p className="hint">Create a new vault, or import one exported from the Keyhole web app.</p>
@@ -161,7 +167,12 @@ export function Popup() {
         >
           <Icon name="lock" size={18} />
         </button>
-        <button type="button" className="icon" title="Open full vault" onClick={() => void chrome.runtime.openOptionsPage()}>
+        <button
+          type="button"
+          className="icon"
+          title="Open full vault"
+          onClick={() => void openVaultWindow().then(() => window.close())}
+        >
           <Icon name="settings" size={18} />
         </button>
       </Header>

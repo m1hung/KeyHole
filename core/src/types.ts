@@ -8,7 +8,7 @@
  */
 
 /** Current version of the decrypted vault model. Bump when `VaultData` changes shape. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Current version of the on-disk envelope. Bump when `VaultFile` changes shape. */
 export const FORMAT_VERSION = 1;
@@ -49,6 +49,13 @@ export interface Folder {
   createdAt: string;
 }
 
+/** Records a deletion for sync — peers must not resurrect what was removed. */
+export interface Tombstone {
+  id: string;
+  kind: 'entry' | 'folder';
+  deletedAt: string;
+}
+
 export interface GeneratorOptions {
   length: number;
   lowercase: boolean;
@@ -74,6 +81,7 @@ export interface VaultData {
   schemaVersion: number;
   entries: Entry[];
   folders: Folder[];
+  tombstones: Tombstone[];
   settings: Settings;
   updatedAt: string;
 }

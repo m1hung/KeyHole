@@ -10,8 +10,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength, generatePassword, DEFAULT_GENERATOR_OPTIONS } from '@keyhole/core';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
+import { SyncPanel } from './SyncPanel.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
+type View = 'entries' | 'sync';
 
 interface EntryDraft {
   id?: string;
@@ -42,6 +44,12 @@ export function Options() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<View>('entries');
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
+
+  useEffect(() => {
+    document.documentElement.dataset['theme'] = theme;
+  }, [theme]);
 
   const refresh = useCallback(async () => {
     const state = await sendToBackground({ type: 'GET_STATE' });
@@ -49,6 +57,7 @@ export function Options() {
       setScreen('locked');
       return;
     }
+    setTheme(state.theme);
     const next: Screen = !state.hasVault ? 'no-vault' : state.locked ? 'locked' : 'unlocked';
     setScreen(next);
     if (next === 'unlocked') {
@@ -186,6 +195,13 @@ export function Options() {
           onChange={(e) => setQuery(e.target.value)}
         />
         <div className="spacer" />
+        <button
+          type="button"
+          className={view === 'sync' ? 'primary' : 'ghost'}
+          onClick={() => setView((v) => (v === 'sync' ? 'entries' : 'sync'))}
+        >
+          Sync
+        </button>
         <button type="button" className="ghost" onClick={() => void exportVault()}>
           Export
         </button>
@@ -197,59 +213,74 @@ export function Options() {
         </button>
       </header>
 
-      <div className="columns detail-open">
-        <div className="list-pane">
-          <div style={{ padding: 12, borderBottom: '1px solid var(--border)' }}>
-            <button type="button" className="primary" style={{ width: '100%' }} onClick={() => setDraft(blankDraft())}>
-              + New entry
-            </button>
-          </div>
-          {entries.length === 0 ? (
-            <div className="empty-state">
-              <p>{query ? 'No matches.' : 'No entries yet.'}</p>
+      <div className={view === 'sync' ? 'settings-layout' : 'columns detail-open'}>
+        {view === 'entries' ? (
+          <>
+            <div className="list-pane">
+              <div style={{ padding: 12, borderBottom: '1px solid var(--border)' }}>
+                <button type="button" className="primary" style={{ width: '100%' }} onClick={() => setDraft(blankDraft())}>
+                  + New entry
+                </button>
+              </div>
+              {entries.length === 0 ? (
+                <div className="empty-state">
+                  <p>{query ? 'No matches.' : 'No entries yet.'}</p>
+                </div>
+              ) : (
+                <ul className="entry-list">
+                  {entries.map((entry) => (
+                    <li key={entry.id}>
+                      <button
+                        type="button"
+                        className="entry-item"
+                        aria-current={draft?.id === entry.id}
+                        onClick={() => void openEntry(entry.id)}
+                      >
+                        <div className="title">{entry.title}</div>
+                        <div className="meta">
+                          {entry.username || <em>no username</em>}
+                          {entry.host ? ` · ${entry.host}` : ''}
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-          ) : (
-            <ul className="entry-list">
-              {entries.map((entry) => (
-                <li key={entry.id}>
-                  <button
-                    type="button"
-                    className="entry-item"
-                    aria-current={draft?.id === entry.id}
-                    onClick={() => void openEntry(entry.id)}
-                  >
-                    <div className="title">{entry.title}</div>
-                    <div className="meta">
-                      {entry.username || <em>no username</em>}
-                      {entry.host ? ` · ${entry.host}` : ''}
-                    </div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
 
-        <main className="detail-pane">
-          {error && <div className="error">{error}</div>}
-          {notice && <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p>}
+            <main className="detail-pane">
+              {error && <div className="error">{error}</div>}
+              {notice && <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p>}
 
-          {draft ? (
-            <EntryForm
-              draft={draft}
-              busy={busy}
-              onChange={setDraft}
-              onSave={() => void saveDraft()}
-              onCancel={() => setDraft(null)}
-              {...(draft.id ? { onDelete: () => void removeEntry(draft.id!) } : {})}
+              {draft ? (
+                <EntryForm
+                  draft={draft}
+                  busy={busy}
+                  onChange={setDraft}
+                  onSave={() => void saveDraft()}
+                  onCancel={() => setDraft(null)}
+                  {...(draft.id ? { onDelete: () => void removeEntry(draft.id!) } : {})}
+                />
+              ) : (
+                <div className="empty-state">
+                  <p style={{ fontWeight: 600 }}>Select an entry</p>
+                  <p className="hint">Or create a new one.</p>
+                </div>
+              )}
+            </main>
+          </>
+        ) : (
+          <main className="settings-pane">
+            {error && <div className="error">{error}</div>}
+            <SyncPanel
+              theme={theme}
+              onThemeChange={(next) => {
+                setTheme(next);
+                void sendToBackground({ type: 'SET_THEME', theme: next });
+              }}
             />
-          ) : (
-            <div className="empty-state">
-              <p style={{ fontWeight: 600 }}>Select an entry</p>
-              <p className="hint">Or create a new one.</p>
-            </div>
-          )}
-        </main>
+          </main>
+        )}
       </div>
     </div>
   );

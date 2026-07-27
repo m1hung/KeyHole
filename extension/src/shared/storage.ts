@@ -65,16 +65,45 @@ const DEFAULT_PREFS: LocalPrefs = { autoLockMinutes: 15, theme: 'system' };
 export async function loadPrefs(): Promise<LocalPrefs> {
   const stored = await chrome.storage.local.get(SETTINGS_KEY);
   const raw = stored[SETTINGS_KEY] as Partial<LocalPrefs> | undefined;
+  const theme = raw?.theme;
   return {
     autoLockMinutes:
       typeof raw?.autoLockMinutes === 'number' && raw.autoLockMinutes > 0
         ? raw.autoLockMinutes
         : DEFAULT_PREFS.autoLockMinutes,
-    theme: raw?.theme ?? DEFAULT_PREFS.theme,
+    theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : DEFAULT_PREFS.theme,
   };
 }
 
 export async function savePrefs(prefs: Partial<LocalPrefs>): Promise<void> {
   const current = await loadPrefs();
   await chrome.storage.local.set({ [SETTINGS_KEY]: { ...current, ...prefs } });
+}
+
+// ---------------------------------------------------------------------------
+// Sync server config (URL + account id only — never the auth secret)
+// ---------------------------------------------------------------------------
+
+export interface SyncConfig {
+  baseUrl: string;
+  accountId: string;
+}
+
+const SYNC_KEY = 'keyhole.sync.v1';
+
+export async function loadSyncConfig(): Promise<SyncConfig | null> {
+  const stored = await chrome.storage.local.get(SYNC_KEY);
+  const raw = stored[SYNC_KEY] as Partial<SyncConfig> | undefined;
+  if (!raw || typeof raw.baseUrl !== 'string' || typeof raw.accountId !== 'string') return null;
+  if (raw.baseUrl.length === 0 || raw.accountId.length === 0) return null;
+  return { baseUrl: raw.baseUrl.replace(/\/+$/, ''), accountId: raw.accountId.trim().toLowerCase() };
+}
+
+export async function saveSyncConfig(config: SyncConfig): Promise<void> {
+  await chrome.storage.local.set({
+    [SYNC_KEY]: {
+      baseUrl: config.baseUrl.replace(/\/+$/, ''),
+      accountId: config.accountId.trim().toLowerCase(),
+    },
+  });
 }

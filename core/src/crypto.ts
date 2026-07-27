@@ -156,14 +156,8 @@ export function assertKdfParamsAcceptable(params: KdfParams): void {
   }
 }
 
-/**
- * master password → Argon2id → non-extractable AES-256-GCM CryptoKey.
- *
- * The derived bytes are imported and zeroed before returning. The resulting
- * CryptoKey is `extractable: false`, so even a same-origin XSS cannot read the
- * key back out — it can only ask the browser to use it.
- */
-export async function deriveMasterKey(masterPassword: string, params: KdfParams): Promise<CryptoKey> {
+/** Run the KDF and return its raw output. Caller MUST zeroize the result. */
+async function argon2Root(masterPassword: string, params: KdfParams): Promise<Uint8Array> {
   assertKdfParamsAcceptable(params);
   if (masterPassword.length === 0) {
     throw new ValidationError('Master password must not be empty.');
@@ -171,9 +165,8 @@ export async function deriveMasterKey(masterPassword: string, params: KdfParams)
 
   const passwordBytes = utf8ToBytes(masterPassword);
   const salt = b64ToBytes(params.saltB64);
-  let derived: Uint8Array | undefined;
   try {
-    derived = await argon2id({
+    return await argon2id({
       password: passwordBytes,
       salt,
       memorySize: params.memoryKiB,
@@ -182,9 +175,103 @@ export async function deriveMasterKey(masterPassword: string, params: KdfParams)
       hashLength: params.keyLength,
       outputType: 'binary',
     });
+  } finally {
+    zeroize(passwordBytes);
+  }
+}
+
+/**
+ * master password → Argon2id → non-extractable AES-256-GCM CryptoKey.
+ *
+ * The derived bytes are imported and zeroed before returning. The resulting
+ * CryptoKey is `extractable: false`, so even a same-origin XSS cannot read the
+ * key back out — it can only ask the browser to use it.
+ */
+export async function deriveMasterKey(masterPassword: string, params: KdfParams): Promise<CryptoKey> {
+  let derived: Uint8Array | undefined;
+  try {
+    derived = await argon2Root(masterPassword, params);
     return await importAesKey(derived);
   } finally {
-    zeroize(passwordBytes, derived);
+    zeroize(derived);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sync authentication
+// ---------------------------------------------------------------------------
+
+/**
+ * HKDF label for the sync auth secret. Changing this string invalidates every
+ * existing server credential, so it is versioned.
+ */
+const HKDF_INFO_SYNC_AUTH = 'keyhole/sync-auth/v1';
+
+async function hkdfSha256(root: Uint8Array, salt: Uint8Array, info: string, byteLength: number): Promise<Uint8Array> {
+  const key = await subtle().importKey('raw', toBufferSource(root), 'HKDF', false, ['deriveBits']);
+  const bits = await subtle().deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: toBufferSource(salt), info: toBufferSource(utf8ToBytes(info)) },
+    key,
+    byteLength * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+/**
+ * The secret a device presents to a sync server, derived from the same
+ * Argon2id output as the master key.
+ *
+ * WHY THIS SHAPE, and why the master-key path above is untouched:
+ *
+ *  - The master key is still `importAesKey(argon2Output)`, byte for byte what
+ *    it always was. Interposing HKDF there would have changed every derived
+ *    key and made every existing vault — including the published demo vault —
+ *    permanently undecryptable. Sync is not worth bricking saved passwords.
+ *
+ *  - HKDF is one-way, so a server holding this secret cannot recover the
+ *    Argon2id output and therefore cannot unwrap the VEK. Using the root
+ *    directly as one key and as HKDF input for another is sound: HKDF-Extract
+ *    is a PRF, so its output reveals nothing about its input.
+ *
+ *  - It grants the server no new offline advantage. Brute-forcing a password
+ *    against this secret costs one Argon2id run per guess — exactly what
+ *    brute-forcing it against the `wrappedKey` GCM tag already costs, and the
+ *    server holds the envelope anyway.
+ *
+ * The HKDF salt is the vault's own KDF salt, so two vaults sharing a password
+ * still produce unrelated auth secrets.
+ */
+export async function deriveSyncAuthSecret(masterPassword: string, params: KdfParams): Promise<string> {
+  let root: Uint8Array | undefined;
+  let secret: Uint8Array | undefined;
+  try {
+    root = await argon2Root(masterPassword, params);
+    secret = await hkdfSha256(root, b64ToBytes(params.saltB64), HKDF_INFO_SYNC_AUTH, CRYPTO.KEY_BYTES);
+    return bytesToB64(secret);
+  } finally {
+    zeroize(root, secret);
+  }
+}
+
+/**
+ * Both secrets from a single Argon2id run.
+ *
+ * Unlocking with sync enabled needs the master key *and* the auth secret;
+ * deriving them separately would pay the ~105 ms memory-hard cost twice.
+ */
+export async function deriveKeyMaterial(
+  masterPassword: string,
+  params: KdfParams,
+): Promise<{ masterKey: CryptoKey; syncAuthSecretB64: string }> {
+  let root: Uint8Array | undefined;
+  let secret: Uint8Array | undefined;
+  try {
+    root = await argon2Root(masterPassword, params);
+    const masterKey = await importAesKey(root);
+    secret = await hkdfSha256(root, b64ToBytes(params.saltB64), HKDF_INFO_SYNC_AUTH, CRYPTO.KEY_BYTES);
+    return { masterKey, syncAuthSecretB64: bytesToB64(secret) };
+  } finally {
+    zeroize(root, secret);
   }
 }
 

@@ -4,9 +4,9 @@
  * Invariants:
  *  - The session (CryptoKey + decrypted vault) lives in a module-scope variable
  *    and is NEVER written to chrome.storage, IndexedDB, or anywhere persistent.
- *  - Every privileged message is gated on `isTrustedExtensionSender`.
- *  - Content scripts can never ask for a decrypt. They are not senders we trust,
- *    and there is no message type that returns vault contents to a tab.
+ *  - Privileged messages are gated on `isTrustedExtensionSender`.
+ *  - Content scripts may only send SUGGEST_FOR_PAGE / FILL_FROM_PAGE; matching
+ *    always uses sender.tab's URL from Chrome, never a page-supplied URL.
  *  - Autofill re-verifies the target tab's URL immediately before dispatching,
  *    closing the window where a page navigates between the user's click and the
  *    credential arriving.
@@ -25,6 +25,7 @@ import {
   createEntry,
   createVault,
   deleteEntry as coreDeleteEntry,
+  deriveSyncAuthSecret,
   displayHost,
   findMatchingEntries,
   generateTotp,
@@ -37,14 +38,19 @@ import {
   type VaultFile,
   type VaultSession,
 } from '@keyhole/core';
+import { healthCheck, registerAccount, fetchPrelogin, getVault, putVault, SyncClientError } from '../../../app/src/sync/client.ts';
+import { performSync } from '../../../app/src/sync/runSync.ts';
 import {
+  contentScriptRequestSchema,
+  isContentScriptSender,
   isTrustedExtensionSender,
   requestSchema,
+  type ContentScriptRequest,
   type EntrySummary,
   type Request,
   type Response,
 } from '../shared/messages.ts';
-import { clearVaultFile, hasVault, loadPrefs, loadVaultFile, savePrefs, saveVaultFile } from '../shared/storage.ts';
+import { clearVaultFile, hasVault, loadPrefs, loadSyncConfig, loadVaultFile, savePrefs, saveSyncConfig, saveVaultFile } from '../shared/storage.ts';
 
 const AUTO_LOCK_ALARM = 'keyhole-auto-lock';
 const HEARTBEAT_ALARM = 'keyhole-heartbeat';
@@ -65,7 +71,7 @@ function lock(): void {
   vaultFile = null;
   lastActivity = 0;
   void chrome.alarms.clear(HEARTBEAT_ALARM);
-  void chrome.action.setBadgeText({ text: '' });
+  void clearMatchBadge();
 }
 
 async function markUnlocked(newSession: VaultSession, file: VaultFile): Promise<void> {
@@ -73,11 +79,26 @@ async function markUnlocked(newSession: VaultSession, file: VaultFile): Promise<
   vaultFile = file;
   lastActivity = Date.now();
 
-  await savePrefs({ autoLockMinutes: newSession.data.settings.autoLockMinutes });
+  await savePrefs({
+    autoLockMinutes: newSession.data.settings.autoLockMinutes,
+    theme: newSession.data.settings.theme,
+  });
   // 0.5 min is Chrome's practical minimum alarm period.
   await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.4 });
-  await chrome.action.setBadgeText({ text: '🔓' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#4f46e5' });
+  await chrome.action.setBadgeBackgroundColor({ color: '#0f62d0' });
+  try {
+    await chrome.action.setBadgeTextColor({ color: '#ffffff' });
+  } catch {
+    // Older Chromium builds may lack setBadgeTextColor.
+  }
+  await updateMatchBadge();
+  // Warm the content script on the active tab so suggestions work without a reload.
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (typeof tab?.id === 'number') await ensureContentScript(tab.id, tab.url);
+  } catch {
+    // Ignore — no active tab.
+  }
 }
 
 function touch(): void {
@@ -96,32 +117,74 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onStartup.addListener(() => lock());
 chrome.runtime.onInstalled.addListener(() => lock());
 
+/** Forget a closed vault window so the next open creates a fresh one. */
+chrome.windows.onRemoved.addListener((windowId) => {
+  void chrome.storage.session.get('keyhole.vaultWindowId').then((stored) => {
+    if (stored['keyhole.vaultWindowId'] === windowId) {
+      void chrome.storage.session.remove('keyhole.vaultWindowId');
+    }
+  });
+});
+
+// Toolbar badge: matching login count for the active tab while unlocked.
+chrome.tabs.onActivated.addListener((info) => {
+  void updateMatchBadge(info.tabId);
+  void ensureContentScript(info.tabId);
+});
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' || changeInfo.url) {
+    if (tab.active) void updateMatchBadge(tabId);
+    void ensureContentScript(tabId, changeInfo.url ?? tab.url);
+  }
+});
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  void updateMatchBadge();
+});
+
 // ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
-  // Reject anything not from our own extension pages *before* parsing. Content
-  // scripts and other extensions never get past this line.
-  if (!isTrustedExtensionSender(sender)) {
-    sendResponse({ ok: false, error: 'Unauthorized sender.' } satisfies Response);
-    return false;
+  if (isTrustedExtensionSender(sender)) {
+    const parsed = requestSchema.safeParse(raw);
+    if (!parsed.success) {
+      sendResponse({ ok: false, error: 'Malformed request.' } satisfies Response);
+      return false;
+    }
+
+    handle(parsed.data)
+      .then(sendResponse)
+      .catch((err: unknown) => {
+        console.error('Handler failed:', err);
+        sendResponse({ ok: false, error: 'Internal error.' } satisfies Response);
+      });
+
+    return true; // async response
   }
 
-  const parsed = requestSchema.safeParse(raw);
-  if (!parsed.success) {
-    sendResponse({ ok: false, error: 'Malformed request.' } satisfies Response);
-    return false;
+  // Narrow content-script surface: metadata matches + fill of a chosen entry.
+  // Never accept a client-supplied tab id or URL.
+  if (isContentScriptSender(sender)) {
+    const parsed = contentScriptRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      sendResponse({ ok: false, error: 'Unauthorized sender.' } satisfies Response);
+      return false;
+    }
+
+    handleContentScript(parsed.data, sender)
+      .then(sendResponse)
+      .catch((err: unknown) => {
+        console.error('Content-script handler failed:', err);
+        sendResponse({ ok: false, error: 'Internal error.' } satisfies Response);
+      });
+
+    return true;
   }
 
-  handle(parsed.data)
-    .then(sendResponse)
-    .catch((err: unknown) => {
-      console.error('Handler failed:', err);
-      sendResponse({ ok: false, error: 'Internal error.' } satisfies Response);
-    });
-
-  return true; // async response
+  sendResponse({ ok: false, error: 'Unauthorized sender.' } satisfies Response);
+  return false;
 });
 
 /** Reject external messages outright. Keyhole has no public API. */
@@ -148,6 +211,7 @@ async function handle(request: Request): Promise<Response> {
         hasVault: await hasVault(),
         entryCount: session?.data.entries.length ?? 0,
         autoLockMinutes: session?.data.settings.autoLockMinutes ?? prefs.autoLockMinutes,
+        theme: session?.data.settings.theme ?? prefs.theme,
       };
     }
 
@@ -241,8 +305,11 @@ async function handle(request: Request): Promise<Response> {
     case 'FILL':
       return fill(request.entryId, request.tabId);
 
-    case 'SAVE_ENTRY':
-      return saveEntry(request.entry);
+    case 'SAVE_ENTRY': {
+      const result = await saveEntry(request.entry);
+      if (result.ok) void updateMatchBadge();
+      return result;
+    }
 
     case 'DELETE_ENTRY': {
       if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
@@ -250,11 +317,54 @@ async function handle(request: Request): Promise<Response> {
       try {
         session.data = coreDeleteEntry(session.data, request.entryId);
         await persist();
+        void updateMatchBadge();
         return { ok: true, type: 'OK' };
       } catch (err) {
         return { ok: false, error: describe(err) };
       }
     }
+
+    case 'GET_SYNC_CONFIG': {
+      const config = await loadSyncConfig();
+      return {
+        ok: true,
+        type: 'SYNC_CONFIG',
+        baseUrl: config?.baseUrl ?? null,
+        accountId: config?.accountId ?? null,
+      };
+    }
+
+    case 'SET_THEME': {
+      await savePrefs({ theme: request.theme });
+      if (session) {
+        session = {
+          ...session,
+          data: {
+            ...session.data,
+            settings: { ...session.data.settings, theme: request.theme },
+          },
+        };
+        await persist();
+      }
+      return { ok: true, type: 'OK' };
+    }
+
+    case 'SAVE_SYNC_CONFIG': {
+      await saveSyncConfig({ baseUrl: request.baseUrl, accountId: request.accountId });
+      return { ok: true, type: 'OK' };
+    }
+
+    case 'SYNC_REGISTER':
+      return syncRegister(request.baseUrl, request.accountId, request.masterPassword);
+
+    case 'SYNC_NOW':
+      return syncNow(request.baseUrl, request.accountId, request.masterPassword);
+
+    case 'SYNC_ADOPT_REMOTE':
+      return syncAdoptRemote(request.baseUrl, request.accountId, request.masterPassword);
+
+    case 'SYNC_OVERWRITE_REMOTE':
+      return syncOverwriteRemote(request.baseUrl, request.accountId, request.masterPassword);
 
     default: {
       const exhaustive: never = request;
@@ -266,6 +376,38 @@ async function handle(request: Request): Promise<Response> {
 // ---------------------------------------------------------------------------
 // Autofill — the privileged path
 // ---------------------------------------------------------------------------
+
+async function handleContentScript(request: ContentScriptRequest, sender: chrome.runtime.MessageSender): Promise<Response> {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== 'number') return { ok: false, error: 'Cannot read that tab.' };
+
+  switch (request.type) {
+    case 'SUGGEST_FOR_PAGE': {
+      const prefs = await loadPrefs();
+      const theme = session?.data.settings.theme ?? prefs.theme;
+      if (!session) {
+        return { ok: true, type: 'SUGGESTIONS', locked: true, theme, entries: [] };
+      }
+      touch();
+      const url = await tabUrl(tabId);
+      if (!url) return { ok: true, type: 'SUGGESTIONS', locked: false, theme, entries: [] };
+      const matches = findMatchingEntries(session.data.entries, url, 'subdomain');
+      return {
+        ok: true,
+        type: 'SUGGESTIONS',
+        locked: false,
+        theme,
+        entries: matches.map((m) => ({ ...toSummary(m.entry), matchStrength: m.strength })),
+      };
+    }
+    case 'FILL_FROM_PAGE':
+      return fill(request.entryId, tabId);
+    default: {
+      const exhaustive: never = request;
+      return { ok: false, error: `Unhandled request: ${JSON.stringify(exhaustive)}` };
+    }
+  }
+}
 
 async function fill(entryId: string, tabId: number): Promise<Response> {
   if (!session) return { ok: false, error: 'Vault is locked.' };
@@ -360,6 +502,204 @@ async function persist(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Sync
+// ---------------------------------------------------------------------------
+
+function normalizeSyncUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '');
+}
+
+function normalizeAccountId(accountId: string): string {
+  return accountId.trim().toLowerCase();
+}
+
+async function syncRegister(baseUrl: string, accountId: string, masterPassword: string): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const url = normalizeSyncUrl(baseUrl);
+  const id = normalizeAccountId(accountId);
+  if (url.length === 0 || id.length === 0) return { ok: false, error: 'Server URL and account id are required.' };
+
+  try {
+    // Confirm the password before talking to the server — otherwise a typo
+    // surfaces as a cryptic "Unauthorized." from the sync API.
+    await unlockVault(vaultFile, masterPassword);
+
+    const ok = await healthCheck(url);
+    if (!ok) {
+      return {
+        ok: false,
+        error:
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+      };
+    }
+
+    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, vaultFile.kdf);
+    const result = await registerAccount(url, id, syncAuthSecretB64, vaultFile);
+    await saveSyncConfig({ baseUrl: url, accountId: id });
+    return { ok: true, type: 'SYNC_RESULT', message: `Registered as ${result.accountId} (server version ${result.version}).` };
+  } catch (err) {
+    return { ok: false, error: describeSync(err, 'Registration failed.') };
+  }
+}
+
+async function syncNow(baseUrl: string, accountId: string, masterPassword: string): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const url = normalizeSyncUrl(baseUrl);
+  const id = normalizeAccountId(accountId);
+  if (url.length === 0 || id.length === 0) return { ok: false, error: 'Server URL and account id are required.' };
+
+  try {
+    // Confirm the password unlocks *this* device's vault before paying for
+    // network / Argon2 against the account's server-side KDF.
+    await unlockVault(vaultFile, masterPassword);
+
+    const ok = await healthCheck(url);
+    if (!ok) {
+      return {
+        ok: false,
+        error:
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+      };
+    }
+
+    // Auth secret must be derived from the *account's* KDF (via prelogin), not
+    // necessarily this device's local salt — otherwise Sync now 401s when the
+    // account was registered from another vault/device with the same password.
+    const { kdf: accountKdf } = await fetchPrelogin(url, id);
+    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
+    await saveSyncConfig({ baseUrl: url, accountId: id });
+
+    const result = await performSync({
+      baseUrl: url,
+      accountId: id,
+      syncAuthSecretB64,
+      masterPassword,
+      localFile: vaultFile,
+      session,
+    });
+
+    session = result.session;
+    vaultFile = result.file;
+    await saveVaultFile(vaultFile);
+    void updateMatchBadge();
+
+    return { ok: true, type: 'SYNC_RESULT', message: result.message };
+  } catch (err) {
+    if (err instanceof SyncClientError && err.code === 'vault_mismatch') {
+      return { ok: true, type: 'SYNC_VAULT_MISMATCH', message: err.message };
+    }
+    return { ok: false, error: describeSync(err, 'Sync failed.') };
+  }
+}
+
+/**
+ * Replace the vault on this device with the account's server copy.
+ * Use when Sync now reports a vault-id mismatch and this device should follow the server.
+ */
+async function syncAdoptRemote(baseUrl: string, accountId: string, masterPassword: string): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const url = normalizeSyncUrl(baseUrl);
+  const id = normalizeAccountId(accountId);
+  if (url.length === 0 || id.length === 0) return { ok: false, error: 'Server URL and account id are required.' };
+
+  try {
+    const ok = await healthCheck(url);
+    if (!ok) {
+      return {
+        ok: false,
+        error:
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+      };
+    }
+
+    const { kdf: accountKdf } = await fetchPrelogin(url, id);
+    const syncAuthSecretB64 = await deriveSyncAuthSecret(masterPassword, accountKdf);
+    const remote = await getVault(url, id, syncAuthSecretB64);
+    const remoteSession = await unlockVault(remote.envelope, masterPassword);
+
+    await saveVaultFile(remote.envelope);
+    await markUnlocked(remoteSession, remote.envelope);
+    await saveSyncConfig({ baseUrl: url, accountId: id });
+
+    return {
+      ok: true,
+      type: 'SYNC_RESULT',
+      message: `Replaced this device's vault with the server copy (v${remote.version}).`,
+    };
+  } catch (err) {
+    return { ok: false, error: describeSync(err, 'Could not adopt the server vault.') };
+  }
+}
+
+/**
+ * Overwrite the server account with this device's vault (and rotate sync credentials).
+ * Use when Sync now reports a vault-id mismatch and the server should follow this device.
+ */
+async function syncOverwriteRemote(baseUrl: string, accountId: string, masterPassword: string): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const url = normalizeSyncUrl(baseUrl);
+  const id = normalizeAccountId(accountId);
+  if (url.length === 0 || id.length === 0) return { ok: false, error: 'Server URL and account id are required.' };
+
+  try {
+    await unlockVault(vaultFile, masterPassword);
+
+    const ok = await healthCheck(url);
+    if (!ok) {
+      return {
+        ok: false,
+        error:
+          'Sync server is not reachable. Confirm it is running (npm run dev:server) and the URL matches — usually http://127.0.0.1:8787.',
+      };
+    }
+
+    const { kdf: accountKdf } = await fetchPrelogin(url, id);
+    const currentSecret = await deriveSyncAuthSecret(masterPassword, accountKdf);
+    const nextSecret = await deriveSyncAuthSecret(masterPassword, vaultFile.kdf);
+    const remote = await getVault(url, id, currentSecret);
+
+    const uploaded = await putVault(url, id, currentSecret, vaultFile, remote.version, nextSecret);
+    if (uploaded.conflict) {
+      return {
+        ok: false,
+        error: 'Server changed during overwrite. Try again.',
+      };
+    }
+
+    await saveSyncConfig({ baseUrl: url, accountId: id });
+    return {
+      ok: true,
+      type: 'SYNC_RESULT',
+      message: `Replaced the server vault with this device's copy (v${uploaded.result.version}).`,
+    };
+  } catch (err) {
+    return { ok: false, error: describeSync(err, 'Could not overwrite the server vault.') };
+  }
+}
+
+function describeSync(err: unknown, fallback: string): string {
+  if (err instanceof DecryptionError) return 'Wrong master password.';
+  if (err instanceof SyncClientError) {
+    if (err.status === 429) return err.message;
+    if (err.status === 401) return err.message;
+    return err.message;
+  }
+  if (err instanceof TypeError && /fetch|network|load failed/i.test(err.message)) {
+    return 'Could not reach the sync server. Confirm the server is running and host permission was granted.';
+  }
+  if (err instanceof Error) return err.message;
+  return fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -379,6 +719,77 @@ async function tabUrl(tabId: number): Promise<string | null> {
     return tab.url ?? null;
   } catch {
     return null;
+  }
+}
+
+async function clearMatchBadge(): Promise<void> {
+  try {
+    await chrome.action.setBadgeText({ text: '' });
+  } catch {
+    // Ignore — action may be unavailable in tests.
+  }
+}
+
+/**
+ * Inject the content script when we have host access (optional permissions or
+ * localhost). Declarative content_scripts miss some SPA navigations; this keeps
+ * Reddit-style logins covered after unlock / tab changes.
+ */
+async function ensureContentScript(tabId: number, url?: string | undefined): Promise<void> {
+  if (!session) return;
+  const pageUrl = url ?? (await tabUrl(tabId));
+  if (!pageUrl || !/^https?:/i.test(pageUrl)) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      files: ['content.js'],
+    });
+  } catch {
+    // No host permission, chrome:// page, or otherwise blocked.
+  }
+}
+
+/**
+ * Show how many vault logins match the active tab on the toolbar icon.
+ * Empty when locked, or when the tab has no matches / no readable URL.
+ */
+async function updateMatchBadge(tabId?: number): Promise<void> {
+  if (!session) {
+    await clearMatchBadge();
+    return;
+  }
+
+  let id = tabId;
+  if (typeof id !== 'number') {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      id = tab?.id;
+    } catch {
+      await clearMatchBadge();
+      return;
+    }
+  }
+  if (typeof id !== 'number') {
+    await clearMatchBadge();
+    return;
+  }
+
+  const url = await tabUrl(id);
+  if (!url || !parseTarget(url)) {
+    try {
+      await chrome.action.setBadgeText({ tabId: id, text: '' });
+    } catch {
+      await clearMatchBadge();
+    }
+    return;
+  }
+
+  const count = findMatchingEntries(session.data.entries, url, 'subdomain').length;
+  const text = count <= 0 ? '' : count > 99 ? '99+' : String(count);
+  try {
+    await chrome.action.setBadgeText({ tabId: id, text });
+  } catch {
+    await chrome.action.setBadgeText({ text });
   }
 }
 

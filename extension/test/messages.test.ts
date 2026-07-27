@@ -1,5 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { isFromOwnExtension, isTrustedExtensionSender, requestSchema } from '../src/shared/messages.ts';
+import {
+  contentScriptRequestSchema,
+  isContentScriptSender,
+  isFromOwnExtension,
+  isTrustedExtensionSender,
+  requestSchema,
+} from '../src/shared/messages.ts';
 
 const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
 const OTHER_EXTENSION_ID = 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
@@ -33,26 +39,26 @@ describe('isTrustedExtensionSender — the privileged-message gate', () => {
     ).toBe(true);
   });
 
-  it('REJECTS a content script, even one of ours', () => {
-    // This is the critical case: our own content script carries our extension
-    // id, but runs in a tab. It must never be able to request a decrypt.
-    expect(
-      isTrustedExtensionSender(
-        sender({ id: EXTENSION_ID, url: 'https://evil.example/login', tab: { id: 7 } }),
-      ),
-    ).toBe(false);
-  });
-
-  it('REJECTS a content script even when it forges an extension URL', () => {
-    // A compromised page cannot set sender.url, but defence in depth: the
-    // presence of `tab` alone is disqualifying.
+  it('accepts an options page opened in a popup window (has a tab)', () => {
+    // chrome.windows.create({ type: 'popup' }) still attaches a Tab to the
+    // sender. That must not block unlock / import from the vault window.
     expect(
       isTrustedExtensionSender(
         sender({
           id: EXTENSION_ID,
-          url: `chrome-extension://${EXTENSION_ID}/popup.html`,
-          tab: { id: 7 },
+          url: `chrome-extension://${EXTENSION_ID}/options.html`,
+          tab: { id: 7, url: `chrome-extension://${EXTENSION_ID}/options.html` },
         }),
+      ),
+    ).toBe(true);
+  });
+
+  it('REJECTS a content script, even one of ours', () => {
+    // This is the critical case: our own content script carries our extension
+    // id, but runs in a tab with the *page* URL. It must never decrypt.
+    expect(
+      isTrustedExtensionSender(
+        sender({ id: EXTENSION_ID, url: 'https://evil.example/login', tab: { id: 7 } }),
       ),
     ).toBe(false);
   });
@@ -86,9 +92,18 @@ describe('isTrustedExtensionSender — the privileged-message gate', () => {
     ).toBe(false);
   });
 
-  it('REJECTS a missing or non-string url', () => {
-    expect(isTrustedExtensionSender(sender({ id: EXTENSION_ID }))).toBe(false);
-    expect(isTrustedExtensionSender(sender({ id: EXTENSION_ID, url: undefined }))).toBe(false);
+  it('accepts the options page via origin when url is missing', () => {
+    expect(
+      isTrustedExtensionSender(sender({ id: EXTENSION_ID, origin: `chrome-extension://${EXTENSION_ID}` })),
+    ).toBe(true);
+  });
+
+  it('REJECTS a content script origin', () => {
+    expect(
+      isTrustedExtensionSender(
+        sender({ id: EXTENSION_ID, origin: 'https://evil.example', url: 'https://evil.example/login', tab: { id: 7 } }),
+      ),
+    ).toBe(false);
   });
 
   it('REJECTS an empty sender', () => {
@@ -104,6 +119,69 @@ describe('isFromOwnExtension — content script side', () => {
   });
 });
 
+describe('isContentScriptSender — page-injected script gate', () => {
+  it('accepts our content script in a web tab', () => {
+    expect(
+      isContentScriptSender(
+        sender({ id: EXTENSION_ID, url: 'https://example.com/login', tab: { id: 7 } }),
+      ),
+    ).toBe(true);
+  });
+
+  it('REJECTS extension pages even when they have a tab', () => {
+    expect(
+      isContentScriptSender(
+        sender({
+          id: EXTENSION_ID,
+          url: `chrome-extension://${EXTENSION_ID}/options.html`,
+          tab: { id: 7, url: `chrome-extension://${EXTENSION_ID}/options.html` },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('REJECTS messages without a tab id', () => {
+    expect(isContentScriptSender(sender({ id: EXTENSION_ID, url: 'https://example.com/' }))).toBe(false);
+  });
+
+  it('REJECTS another extension', () => {
+    expect(
+      isContentScriptSender(
+        sender({ id: OTHER_EXTENSION_ID, url: 'https://example.com/', tab: { id: 1 } }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('contentScriptRequestSchema', () => {
+  it('accepts suggest and fill-from-page only', () => {
+    expect(contentScriptRequestSchema.safeParse({ type: 'SUGGEST_FOR_PAGE' }).success).toBe(true);
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'FILL_FROM_PAGE',
+        entryId: '11111111-1111-4111-8111-111111111111',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects privileged shapes and smuggled tab/url fields', () => {
+    expect(contentScriptRequestSchema.safeParse({ type: 'EXPORT_VAULT' }).success).toBe(false);
+    expect(contentScriptRequestSchema.safeParse({ type: 'UNLOCK', masterPassword: 'x'.repeat(20) }).success).toBe(
+      false,
+    );
+    expect(
+      contentScriptRequestSchema.safeParse({ type: 'SUGGEST_FOR_PAGE', url: 'https://evil.example/' }).success,
+    ).toBe(false);
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'FILL_FROM_PAGE',
+        entryId: '11111111-1111-4111-8111-111111111111',
+        tabId: 9,
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('requestSchema', () => {
   it('accepts well-formed requests', () => {
     const valid: unknown[] = [
@@ -113,15 +191,33 @@ describe('requestSchema', () => {
       { type: 'MATCH_TAB', tabId: 3 },
       { type: 'FILL', entryId: '11111111-1111-4111-8111-111111111111', tabId: 0 },
       { type: 'REVEAL_SECRET', entryId: '11111111-1111-4111-8111-111111111111', field: 'password' },
+      { type: 'GET_SYNC_CONFIG' },
+      {
+        type: 'SYNC_REGISTER',
+        masterPassword: 'correct horse battery staple',
+        baseUrl: 'http://127.0.0.1:8787',
+        accountId: 'you@home',
+      },
+      {
+        type: 'SYNC_NOW',
+        masterPassword: 'correct horse battery staple',
+        baseUrl: 'http://127.0.0.1:8787',
+        accountId: 'you@home',
+      },
+      {
+        type: 'SAVE_SYNC_CONFIG',
+        baseUrl: 'http://127.0.0.1:8787',
+        accountId: 'you@home',
+      },
     ];
     for (const request of valid) {
       expect(requestSchema.safeParse(request).success).toBe(true);
     }
   });
 
-  it('rejects unknown message types', () => {
-    expect(requestSchema.safeParse({ type: 'DUMP_VAULT' }).success).toBe(false);
-    expect(requestSchema.safeParse({ type: 'EXPORT_KEY' }).success).toBe(false);
+  it('accepts SET_THEME', () => {
+    expect(requestSchema.safeParse({ type: 'SET_THEME', theme: 'dark' }).success).toBe(true);
+    expect(requestSchema.safeParse({ type: 'SET_THEME', theme: 'neon' }).success).toBe(false);
   });
 
   it('rejects extra fields, so a smuggled payload cannot ride along', () => {
