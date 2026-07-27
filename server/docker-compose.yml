@@ -1,0 +1,28 @@
+# Run from the repository root:
+#   docker compose -f server/docker-compose.yml up -d
+#
+# TLS IS NOT OPTIONAL. The auth secret travels in an Authorization header, so
+# put this behind a reverse proxy that terminates HTTPS (Caddy, Traefik,
+# nginx). The vault payload is encrypted either way, but plaintext HTTP hands
+# an eavesdropper your sync credential.
+
+services:
+  keyhole-sync:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: keyhole-sync:latest
+    restart: unless-stopped
+    # Bound to loopback: expose it through your reverse proxy, not directly.
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - keyhole-data:/data
+    environment:
+      KEYHOLE_DB: /data/keyhole.sqlite
+      # Set to "false" once your own devices are enrolled, so nobody else can
+      # create an account on your server.
+      KEYHOLE_ALLOW_REGISTRATION: "true"
+
+volumes:
+  keyhole-data:
