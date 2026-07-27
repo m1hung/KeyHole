@@ -3,7 +3,7 @@
  * search, theme application and the lock countdown.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_GENERATOR_OPTIONS,
   createEntry,
@@ -27,12 +27,42 @@ import { GeneratorPanel } from './components/GeneratorPanel.tsx';
 import { SettingsPanel } from './components/SettingsPanel.tsx';
 import { EmptyState, Toast } from './components/common.tsx';
 import { Icon } from './components/Icon.tsx';
+import { readLegacyBrowserVault } from './storage.ts';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
 type ListFilter = 'all' | EntryKind | { folderId: string };
 
-export function App() {
+/**
+ * Manifest shortcuts — right-click the installed app icon — launch the app at
+ * `?view=generator` or `?view=settings`.
+ *
+ * Read once at module load and stripped from the URL immediately: this is a
+ * launch intent, not application state. Leaving it in place would re-open that
+ * pane on every subsequent reload, and the app has no routing to reconcile it
+ * with. Held until the vault unlocks, since no pane can be shown before that.
+ */
+const LAUNCH_VIEW = readLaunchView();
+
+function readLaunchView(): View | null {
+  const requested = new URLSearchParams(window.location.search).get('view');
+  if (requested !== 'generator' && requested !== 'settings') return null;
+  window.history.replaceState(null, '', window.location.pathname);
+  return { kind: requested };
+}
+
+interface AppProps {
+  /**
+   * Desktop first run with a vault present in this machine's browser build.
+   * See `MigrationOffer` — the two are separate stores, and saying so beats
+   * showing an empty create-vault screen to someone who has a vault.
+   */
+  legacyBrowserVaultAvailable?: boolean;
+}
+
+export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
   const vault = useVault();
+  const pendingLaunchView = useRef<View | null>(LAUNCH_VIEW);
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ListFilter>('all');
   const [view, setView] = useState<View>({ kind: 'none' });
@@ -51,6 +81,14 @@ export function App() {
       setQuery('');
       setFilter('all');
       setNewFolderName('');
+      return;
+    }
+    // First unlock after a shortcut launch: honour it, then forget it, so a
+    // later manual lock/unlock returns to the normal entry list.
+    const pending = pendingLaunchView.current;
+    if (pending) {
+      pendingLaunchView.current = null;
+      setView(pending);
     }
   }, [vault.status]);
 
@@ -58,7 +96,14 @@ export function App() {
     return <div className="center-screen">Loading…</div>;
   }
   if (vault.status !== 'unlocked' || !vault.data || !settings) {
-    return <UnlockScreen vault={vault} />;
+    return (
+      <>
+        {legacyBrowserVaultAvailable && !migrationDismissed && vault.status === 'no-vault' && (
+          <MigrationOffer vault={vault} onDismiss={() => setMigrationDismissed(true)} />
+        )}
+        <UnlockScreen vault={vault} />
+      </>
+    );
   }
 
   const data = vault.data;
@@ -388,6 +433,57 @@ function FilterChip({
       {children}
       <span className="filter-count">{count}</span>
     </button>
+  );
+}
+
+/**
+ * Shown once, on a desktop first run, when this machine's browser build has a
+ * vault the desktop app cannot see.
+ *
+ * The two builds are different origins with different stores, so "your vault is
+ * gone" is the natural but wrong conclusion for a user to reach here. Copying is
+ * strictly additive: the browser copy is read, never deleted, so declining this
+ * or having it fail leaves the original exactly where it was.
+ */
+function MigrationOffer({ vault, onDismiss }: { vault: ReturnType<typeof useVault>; onDismiss: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const copyOver = async () => {
+    setBusy(true);
+    setFailed(null);
+    try {
+      const legacy = readLegacyBrowserVault();
+      if (!legacy) throw new Error('The browser vault could not be read.');
+      await vault.importVault(legacy);
+      onDismiss();
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : 'Could not copy the vault.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="banner" role="status">
+      <Icon name="vault" size={18} />
+      <div>
+        <strong>A vault from Keyhole in your browser was found on this machine.</strong>
+        <p className="hint" style={{ margin: '4px 0 0' }}>
+          The desktop app keeps its vault as a file instead, so it starts empty. Copy the existing one across to carry
+          on where you left off — the browser copy is left untouched either way.
+        </p>
+        {failed && <p className="hint">{failed}</p>}
+      </div>
+      <div className="button-row">
+        <button type="button" className="primary" disabled={busy} onClick={() => void copyOver()}>
+          {busy ? 'Copying…' : 'Copy it across'}
+        </button>
+        <button type="button" disabled={busy} onClick={onDismiss}>
+          Start fresh
+        </button>
+      </div>
+    </div>
   );
 }
 

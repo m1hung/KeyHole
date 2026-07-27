@@ -1,6 +1,6 @@
 /** Settings: lock behaviour, theme, local storage, export/import, master password, delete vault. */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   MIN_MASTER_PASSWORD_LENGTH,
   applyMigration,
@@ -19,15 +19,19 @@ import {
   downloadVaultFile,
   forgetStoredHandle,
   hasWritePermission,
+  isDesktop,
   loadStoredHandle,
   pickSaveHandle,
   readVaultFromBlob,
+  revealVaultFile,
   supportsFileSystemAccess,
+  vaultFilePath,
   writeToHandle,
 } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
 import { healthCheck, registerAccount, SyncClientError } from '../sync/client.ts';
 import { loadSyncConfig, saveSyncConfig } from '../sync/storage.ts';
+import { activateUpdate, getAppShellState, promptInstall, subscribeAppShell } from '../pwa.ts';
 
 interface SettingsPanelProps {
   settings: Settings;
@@ -80,7 +84,9 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
             checked={settings.lockOnHide}
             onChange={(e) => onSettingsChange({ lockOnHide: e.target.checked })}
           />
-          <label htmlFor="lock-on-hide">Lock immediately when this tab is hidden</label>
+          <label htmlFor="lock-on-hide">
+            Lock immediately when this {isDesktop() ? 'window is hidden' : 'tab is hidden'}
+          </label>
         </div>
       </div>
 
@@ -100,6 +106,7 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
         </div>
       </div>
 
+      <AppSection />
       <LocalStorageSection vault={vault} />
       <SyncSection vault={vault} />
       <MigrateSection vault={vault} />
@@ -107,6 +114,148 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
       <BackupSection vault={vault} entryCount={entryCount} />
       <ChangeMasterPassword vault={vault} />
       <DangerZone vault={vault} entryCount={entryCount} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Installation, offline availability and updates.
+ *
+ * The install offer lives here rather than as a browser banner because what
+ * "install" means for a password manager is worth one sentence of context: it
+ * is the same code in its own window, not a second copy of the vault.
+ */
+function AppSection() {
+  const shell = useSyncExternalStore(subscribeAppShell, getAppShellState);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const install = async () => {
+    const outcome = await promptInstall();
+    if (outcome === 'accepted') setStatus('Installed. Keyhole now opens in its own window.');
+    else if (outcome === 'dismissed') setStatus('Installation cancelled.');
+    else setStatus('This browser did not offer an install prompt.');
+  };
+
+  // The desktop build has no install prompt, no offline shell and no in-app
+  // update channel, so none of the machinery below applies to it.
+  if (shell.desktop) return <DesktopAppSection />;
+
+  return (
+    <div className="section">
+      <h3>App</h3>
+      <div className="storage-card">
+        <div className="storage-card-icon" aria-hidden="true">
+          <Icon name="vault" size={28} />
+        </div>
+        <div className="storage-card-body">
+          <div className="storage-card-title">
+            {shell.standalone ? 'Running as an installed app' : 'Running in a browser tab'}
+          </div>
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            Installing gives Keyhole its own window and launcher icon. It is the same app and the same vault in the
+            same place — nothing is copied, and nothing new is sent anywhere.
+          </p>
+          <ul className="storage-facts">
+            <li>
+              <strong>Window</strong>
+              <span>{shell.standalone ? 'Standalone' : 'Browser tab'}</span>
+            </li>
+            <li>
+              <strong>Offline</strong>
+              <span>
+                {shell.offlineReady
+                  ? 'Ready — the app opens with no network'
+                  : 'Not active in this build (available once installed from a built copy)'}
+              </span>
+            </li>
+          </ul>
+
+          {!shell.standalone && shell.installable && (
+            <div className="button-row" style={{ marginTop: 12 }}>
+              <button type="button" className="primary" onClick={() => void install()}>
+                Install Keyhole
+              </button>
+            </div>
+          )}
+          {!shell.standalone && !shell.installable && (
+            <p className="hint">
+              No install prompt available here. Chrome and Edge offer one from the address bar or the browser menu on a
+              built copy; Safari uses <em>Share → Add to Dock</em>. Firefox does not support installing web apps on
+              the desktop.
+            </p>
+          )}
+          {status && <p className="hint">{status}</p>}
+        </div>
+      </div>
+
+      {shell.updateWaiting && (
+        <div style={{ marginTop: 12 }}>
+          <p className="hint">
+            A newer version of Keyhole is downloaded and ready. It applies the next time every Keyhole window is
+            closed, or now — restarting <strong>locks the vault</strong>, so finish anything in progress first.
+          </p>
+          <button type="button" onClick={() => void activateUpdate()}>
+            Update and restart
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The desktop build's equivalent: where the vault file actually is.
+ *
+ * Showing the real path is the point. The whole reason the desktop app writes a
+ * file instead of using the browser's storage is that a password vault should be
+ * something you can find, copy and back up — a path you cannot see is barely
+ * better than an opaque profile directory.
+ */
+function DesktopAppSection() {
+  const [path, setPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void vaultFilePath().then((value) => {
+      if (active) setPath(value);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return (
+    <div className="section">
+      <h3>App</h3>
+      <div className="storage-card">
+        <div className="storage-card-icon" aria-hidden="true">
+          <Icon name="vault" size={28} />
+        </div>
+        <div className="storage-card-body">
+          <div className="storage-card-title">Running as the desktop app</div>
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            Your vault is a real file on this machine. Back it up like any other file — it is encrypted, so a copy on a
+            USB stick or in cloud storage reveals nothing without your master password.
+          </p>
+          <ul className="storage-facts">
+            <li>
+              <strong>Vault file</strong>
+              <span style={{ wordBreak: 'break-all' }}>{path ?? 'Locating…'}</span>
+            </li>
+            <li>
+              <strong>Updates</strong>
+              <span>Replace the .exe — there is no auto-updater and nothing phones home</span>
+            </li>
+          </ul>
+          <div className="button-row" style={{ marginTop: 12 }}>
+            <button type="button" onClick={() => void revealVaultFile()}>
+              Show in Explorer
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -151,7 +300,7 @@ function LocalStorageSection({ vault }: { vault: VaultController }) {
 
   const unlink = async () => {
     await forgetStoredHandle();
-    setStatus('Unlinked. The vault remains in this browser; the file on disk is unchanged.');
+    setStatus('Unlinked. The vault remains on this device; the file on disk is unchanged.');
     await refresh();
   };
 
@@ -165,19 +314,22 @@ function LocalStorageSection({ vault }: { vault: VaultController }) {
         <div className="storage-card-body">
           <div className="storage-card-title">Stored on this device</div>
           <p className="hint" style={{ margin: '4px 0 0' }}>
-            Keyhole never phones home. The encrypted vault lives in this browser
+            Keyhole never phones home. The encrypted vault lives{' '}
+            {isDesktop() ? 'in a file on this machine' : 'in this browser'}
             {linkedName ? ', and mirrors to a file you chose.' : '.'}
           </p>
           <ul className="storage-facts">
             <li>
-              <strong>Browser</strong>
-              <span>Encrypted envelope in local storage</span>
+              <strong>{isDesktop() ? 'Primary copy' : 'Browser'}</strong>
+              <span>
+                {isDesktop() ? 'Encrypted envelope in %APPDATA%\\Keyhole' : 'Encrypted envelope in local storage'}
+              </span>
             </li>
             <li>
-              <strong>Disk file</strong>
+              <strong>{isDesktop() ? 'Mirror file' : 'Disk file'}</strong>
               <span>
                 {!canLink
-                  ? 'Not available in this browser'
+                  ? 'Not available in this runtime'
                   : linkedName
                     ? `${linkedName}${linkWritable ? '' : ' (re-grant write on next save)'}`
                     : 'Not linked'}
@@ -533,12 +685,12 @@ function BackupSection({ vault, entryCount }: { vault: VaultController; entryCou
         danger
         onCancel={() => setPendingImport(null)}
         onConfirm={() => {
-          if (pendingImport) vault.importVault(pendingImport);
+          if (pendingImport) void vault.importVault(pendingImport);
           setPendingImport(null);
         }}
       >
         <p>
-          This replaces the vault stored in this browser with the imported file. Your current vault will be gone
+          This replaces the vault stored on this device with the imported file. Your current vault will be gone
           unless you exported it first.
         </p>
         <p className="hint">You will need the imported vault's master password to unlock it.</p>
@@ -645,7 +797,7 @@ function DangerZone({ vault, entryCount }: { vault: VaultController; entryCount:
     <div className="section">
       <h3 style={{ color: 'var(--danger)' }}>Danger zone</h3>
       <p className="hint" style={{ marginBottom: 12 }}>
-        Deleting removes the encrypted vault from this browser so you can create a new one with a new master password.
+        Deleting removes the encrypted vault from this device so you can create a new one with a new master password.
         Exported files are unaffected.
       </p>
       <button type="button" className="danger" onClick={() => setConfirming(true)}>
@@ -665,11 +817,11 @@ function DangerZone({ vault, entryCount }: { vault: VaultController; entryCount:
         onConfirm={() => {
           setConfirming(false);
           setTyped('');
-          vault.deleteVault();
+          void vault.deleteVault();
         }}
       >
         <p>
-          All <strong>{entryCount}</strong> entries will be removed from this browser. You will return to the create-vault
+          All <strong>{entryCount}</strong> entries will be removed from this device. You will return to the create-vault
           screen to pick a new master password.
         </p>
         <p className="hint">Without an exported backup, the old vault cannot be recovered.</p>

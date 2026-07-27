@@ -17,3 +17,10 @@ When the mark changes, also update:
 2. `docs/icons/vault.svg` and `docs/icons/sprite.svg`
 3. `server/src/status-page.ts`
 4. Extension icons via `npm run icons -w extension`
+5. Installed-app icons via `npm run icons -w @keyhole/app`
+
+The two icon scripts are independent on purpose. The extension's rasterises this
+SVG with `sharp`; the app's redraws the same geometry from scratch in
+`app/scripts/render-icons.mjs` rather than add an image dependency to the
+workspace users audit most. That means **the geometry is transcribed in two
+places** — change the mark here and the app script needs the same edit by hand.

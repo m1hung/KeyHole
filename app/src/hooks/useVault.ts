@@ -23,12 +23,12 @@ import {
   type VaultSession,
 } from '@keyhole/core';
 import {
-  clearLocalStorage,
+  clearStoredVault,
   forgetStoredHandle,
   hasWritePermission,
-  loadFromLocalStorage,
   loadStoredHandle,
-  saveToLocalStorage,
+  loadStoredVault,
+  storeVault,
   writeToHandle,
 } from '../storage.ts';
 
@@ -47,10 +47,12 @@ export interface VaultController {
   lock: () => void;
   mutate: (recipe: (data: VaultData) => VaultData) => Promise<void>;
   changeMasterPassword: (current: string, next: string) => Promise<void>;
-  importVault: (file: VaultFile) => void;
+  /** Resolves once stored. Never rejects — failures surface through `error`. */
+  importVault: (file: VaultFile) => Promise<void>;
   exportVault: () => VaultFile | null;
   applySyncedSession: (file: VaultFile, session: VaultSession) => Promise<void>;
-  deleteVault: () => void;
+  /** Resolves once removed. Never rejects — failures surface through `error`. */
+  deleteVault: () => Promise<void>;
   clearError: () => void;
   registerActivity: () => void;
   /** Run sync using the unlocked session; caches syncAuthSecret until lock. */
@@ -79,7 +81,7 @@ export function useVault(): VaultController {
   const syncAuthSecretRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setStatus(loadFromLocalStorage() ? 'locked' : 'no-vault');
+    setStatus(loadStoredVault() ? 'locked' : 'no-vault');
   }, []);
 
   const lock = useCallback(() => {
@@ -87,17 +89,17 @@ export function useVault(): VaultController {
     syncAuthSecretRef.current = null;
     setData(null);
     setSecondsUntilLock(null);
-    setStatus(fileRef.current || loadFromLocalStorage() ? 'locked' : 'no-vault');
+    setStatus(fileRef.current || loadStoredVault() ? 'locked' : 'no-vault');
   }, []);
 
   const registerActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
   }, []);
 
-  /** Persist to localStorage and, when linked, to the on-disk file. */
+  /** Persist to the primary store and, when linked, to the user's own file. */
   const persist = useCallback(async (file: VaultFile) => {
     fileRef.current = file;
-    saveToLocalStorage(file);
+    await storeVault(file);
     const handle = await loadStoredHandle();
     if (handle && (await hasWritePermission(handle))) {
       await writeToHandle(handle, file);
@@ -129,7 +131,7 @@ export function useVault(): VaultController {
       setBusy(true);
       setError(null);
       try {
-        const file = fileRef.current ?? loadFromLocalStorage();
+        const file = fileRef.current ?? loadStoredVault();
         if (!file) {
           setStatus('no-vault');
           return;
@@ -203,20 +205,24 @@ export function useVault(): VaultController {
     [persist, registerActivity],
   );
 
-  const importVault = useCallback(
-    (file: VaultFile) => {
-      sessionRef.current = null;
-      syncAuthSecretRef.current = null;
+  const importVault = useCallback(async (file: VaultFile) => {
+    sessionRef.current = null;
+    syncAuthSecretRef.current = null;
+    setData(null);
+    setError(null);
+    try {
+      // Store before adopting it: if the write fails, the app must not claim to
+      // hold a vault it could not persist.
+      await storeVault(file);
       fileRef.current = file;
-      saveToLocalStorage(file);
-      setData(null);
-      setError(null);
       setStatus('locked');
-    },
-    [],
-  );
+    } catch (err) {
+      setError(messageFor(err));
+      setStatus(loadStoredVault() ? 'locked' : 'no-vault');
+    }
+  }, []);
 
-  const exportVault = useCallback(() => fileRef.current ?? loadFromLocalStorage(), []);
+  const exportVault = useCallback(() => fileRef.current ?? loadStoredVault(), []);
 
   const applySyncedSession = useCallback(
     async (file: VaultFile, session: VaultSession) => {
@@ -229,14 +235,21 @@ export function useVault(): VaultController {
     [persist, registerActivity],
   );
 
-  const deleteVault = useCallback(() => {
+  const deleteVault = useCallback(async () => {
     sessionRef.current = null;
-    fileRef.current = null;
-    clearLocalStorage();
-    void forgetStoredHandle();
     setData(null);
     setError(null);
-    setStatus('no-vault');
+    try {
+      await clearStoredVault();
+      fileRef.current = null;
+      void forgetStoredHandle();
+      setStatus('no-vault');
+    } catch (err) {
+      // The vault is still there. Say so, rather than showing onboarding over a
+      // vault that was never actually removed.
+      setError(messageFor(err));
+      setStatus('locked');
+    }
   }, []);
 
   // -------------------------------------------------------------------------

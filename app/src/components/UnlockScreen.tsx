@@ -90,7 +90,7 @@ function Unlock({ vault }: { vault: VaultController }) {
             Delete vault and start over
           </button>
           <p className="hint" style={{ textAlign: 'center', marginTop: 8 }}>
-            Forgot the password, or want a fresh vault? This erases the encrypted copy in this browser.
+            Forgot the password, or want a fresh vault? This erases the encrypted copy on this device.
           </p>
         </div>
       </form>
@@ -104,11 +104,11 @@ function Unlock({ vault }: { vault: VaultController }) {
         onCancel={closePurge}
         onConfirm={() => {
           closePurge();
-          vault.deleteVault();
+          void vault.deleteVault();
         }}
       >
         <p>
-          The encrypted vault in this browser will be removed. You can then create a new vault with a new master
+          The encrypted vault on this device will be removed. You can then create a new vault with a new master
           password.
         </p>
         <p className="hint">
@@ -270,7 +270,7 @@ function ImportControl({ vault, label }: { vault: VaultController; label: string
     if (!file) return;
     setImportError(null);
     try {
-      vault.importVault(await readVaultFromBlob(file));
+      await vault.importVault(await readVaultFromBlob(file));
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Could not read that file.');
     }

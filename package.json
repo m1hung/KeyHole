@@ -2,12 +2,13 @@
   "name": "keyhole",
   "version": "1.0.0",
   "private": true,
-  "description": "Keyhole - local-first, zero-knowledge password manager (web app + Chrome MV3 extension)",
+  "description": "Keyhole - local-first, zero-knowledge password manager (installable standalone app + Chrome MV3 extension)",
   "license": "MIT",
   "type": "module",
   "workspaces": [
     "core",
     "app",
+    "desktop",
     "extension",
     "server"
   ],
@@ -19,7 +20,10 @@
     "demo": "npm run demo --workspace @keyhole/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
+    "app": "npm start --workspace @keyhole/app",
     "dev:app": "npm run dev --workspace @keyhole/app",
+    "desktop": "npm start --workspace @keyhole/desktop",
+    "build:desktop": "npm run build --workspace @keyhole/desktop",
     "dev:server": "KEYHOLE_HOST=127.0.0.1 npm start --workspace @keyhole/server",
     "build:extension": "npm run build --workspace @keyhole/extension"
   },

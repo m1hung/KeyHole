@@ -126,7 +126,7 @@ export function Popup() {
           >
             Set up Keyhole
           </button>
-          <p className="hint">Create a new vault, or import one exported from the Keyhole web app.</p>
+          <p className="hint">Create a new vault, or import one exported from the Keyhole app.</p>
         </div>
       </div>
     );
