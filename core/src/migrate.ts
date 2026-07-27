@@ -40,7 +40,7 @@ export function parseMigrationPayload(text: string, filenameHint = ''): Migratio
     return parseBitwardenJson(trimmed);
   }
   if (looksLikeCsv(trimmed)) return parseCsvMigration(trimmed);
-  throw new ValidationError('Unrecognized import format. Use Bitwarden JSON or a CSV export.');
+  throw new ValidationError('Unrecognized import format. Use a .csv or .json export.');
 }
 
 function looksLikeCsv(text: string): boolean {
@@ -60,13 +60,13 @@ export function parseBitwardenJson(text: string): MigrationResult {
   try {
     raw = JSON.parse(text);
   } catch {
-    throw new ValidationError('Bitwarden JSON could not be parsed.');
+    throw new ValidationError('The .json file could not be parsed.');
   }
 
-  if (!raw || typeof raw !== 'object') throw new ValidationError('Bitwarden JSON root must be an object.');
+  if (!raw || typeof raw !== 'object') throw new ValidationError('The .json file must contain an object at its root.');
   const root = raw as Record<string, unknown>;
   if (root['encrypted'] === true) {
-    throw new ValidationError('Encrypted Bitwarden exports are not supported. Export again without a password.');
+    throw new ValidationError('Encrypted exports are not supported. Export again without a password.');
   }
 
   const warnings: string[] = [];

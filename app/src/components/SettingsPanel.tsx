@@ -534,9 +534,14 @@ function MigrateSection({ vault }: { vault: VaultController }) {
       let summary = '';
       await vault.mutate((current) => {
         const applied = applyMigration(current, migration, { createFolder, createEntry });
-        summary = `Imported ${applied.entryCount} entries` +
-          (applied.folderCount > 0 ? ` and ${applied.folderCount} folders` : '') +
-          ` from ${migration.format}.`;
+        // `migration.format` names the schema the parser targets, which is a
+        // maintainer detail — report the file type the user actually chose.
+        const fileType = migration.format === 'csv' ? '.csv' : '.json';
+        const entryText = applied.entryCount === 1 ? '1 entry' : `${applied.entryCount} entries`;
+        const folderText = applied.folderCount === 1 ? '1 folder' : `${applied.folderCount} folders`;
+        summary = `Imported ${entryText}` +
+          (applied.folderCount > 0 ? ` and ${folderText}` : '') +
+          ` from the ${fileType} file.`;
         if (migration.warnings.length > 0) {
           summary += ` (${migration.warnings.length} skipped)`;
         }
@@ -553,13 +558,13 @@ function MigrateSection({ vault }: { vault: VaultController }) {
 
   return (
     <div className="section">
-      <h3>Import from another password manager</h3>
+      <h3>Import entries</h3>
       <p className="hint" style={{ marginBottom: 12 }}>
-        Merge an unencrypted Bitwarden JSON export or a CSV (Bitwarden / Chrome / generic) into this unlocked vault.
-        Encrypted Bitwarden exports are not supported — export without a password.
+        Merge a <strong>.csv</strong> or <strong>.json</strong> export into this unlocked vault. The file must be
+        unencrypted — export it without a password.
       </p>
       <button type="button" disabled={busy || vault.busy} onClick={() => inputRef.current?.click()}>
-        {busy ? 'Importing…' : 'Choose CSV or Bitwarden JSON'}
+        {busy ? 'Importing…' : 'Choose a .csv or .json file'}
       </button>
       <input
         ref={inputRef}
