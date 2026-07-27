@@ -1,10 +1,14 @@
-/** Settings: lock behaviour, theme, export/import, master password, delete vault. */
+/** Settings: lock behaviour, theme, local storage, export/import, master password, delete vault. */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, type Settings, type VaultFile } from '@keyhole/core';
 import { ConfirmDialog, StrengthMeter } from './common.tsx';
+import { Icon } from './Icon.tsx';
 import {
   downloadVaultFile,
+  forgetStoredHandle,
+  hasWritePermission,
+  loadStoredHandle,
   pickSaveHandle,
   readVaultFromBlob,
   supportsFileSystemAccess,
@@ -82,9 +86,102 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount }:
         </div>
       </div>
 
+      <LocalStorageSection vault={vault} />
       <BackupSection vault={vault} entryCount={entryCount} />
       <ChangeMasterPassword vault={vault} />
       <DangerZone vault={vault} entryCount={entryCount} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function LocalStorageSection({ vault }: { vault: VaultController }) {
+  const [linkedName, setLinkedName] = useState<string | null>(null);
+  const [linkWritable, setLinkWritable] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const canLink = supportsFileSystemAccess();
+
+  const refresh = async () => {
+    if (!canLink) {
+      setLinkedName(null);
+      setLinkWritable(false);
+      return;
+    }
+    const handle = await loadStoredHandle();
+    if (!handle) {
+      setLinkedName(null);
+      setLinkWritable(false);
+      return;
+    }
+    setLinkedName(handle.name);
+    setLinkWritable(await hasWritePermission(handle));
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, [canLink]);
+
+  const linkFile = async () => {
+    const file = vault.exportVault();
+    if (!file) return;
+    const handle = await pickSaveHandle();
+    if (!handle) return;
+    await writeToHandle(handle, file);
+    setStatus('Linked. Future saves write to this file as well as browser storage.');
+    await refresh();
+  };
+
+  const unlink = async () => {
+    await forgetStoredHandle();
+    setStatus('Unlinked. The vault remains in this browser; the file on disk is unchanged.');
+    await refresh();
+  };
+
+  return (
+    <div className="section">
+      <h3>Local storage</h3>
+      <div className="storage-card">
+        <div className="storage-card-icon" aria-hidden="true">
+          <Icon name="localServer" size={28} />
+        </div>
+        <div className="storage-card-body">
+          <div className="storage-card-title">Stored on this device</div>
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            Keyhole never phones home. The encrypted vault lives in this browser
+            {linkedName ? ', and mirrors to a file you chose.' : '.'}
+          </p>
+          <ul className="storage-facts">
+            <li>
+              <strong>Browser</strong>
+              <span>Encrypted envelope in local storage</span>
+            </li>
+            <li>
+              <strong>Disk file</strong>
+              <span>
+                {!canLink
+                  ? 'Not available in this browser'
+                  : linkedName
+                    ? `${linkedName}${linkWritable ? '' : ' (re-grant write on next save)'}`
+                    : 'Not linked'}
+              </span>
+            </li>
+          </ul>
+          {canLink && (
+            <div className="button-row" style={{ marginTop: 12 }}>
+              <button type="button" onClick={() => void linkFile()}>
+                {linkedName ? 'Choose a different file' : 'Link a vault file'}
+              </button>
+              {linkedName && (
+                <button type="button" className="ghost" onClick={() => void unlink()}>
+                  Unlink file
+                </button>
+              )}
+            </div>
+          )}
+          {status && <p className="hint">{status}</p>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -101,15 +198,6 @@ function BackupSection({ vault, entryCount }: { vault: VaultController; entryCou
     if (!file) return;
     downloadVaultFile(file);
     setStatus(`Exported ${entryCount} entries (encrypted).`);
-  };
-
-  const saveToDisk = async () => {
-    const file = vault.exportVault();
-    if (!file) return;
-    const handle = await pickSaveHandle();
-    if (!handle) return;
-    await writeToHandle(handle, file);
-    setStatus('Linked to a file on disk. Future changes save there automatically.');
   };
 
   const onFile = async (file: File | undefined) => {
@@ -133,11 +221,6 @@ function BackupSection({ vault, entryCount }: { vault: VaultController; entryCou
         <button type="button" onClick={exportNow}>
           Export vault file
         </button>
-        {supportsFileSystemAccess() && (
-          <button type="button" onClick={() => void saveToDisk()}>
-            Link to a file on disk
-          </button>
-        )}
         <button type="button" onClick={() => inputRef.current?.click()}>
           Import vault file
         </button>

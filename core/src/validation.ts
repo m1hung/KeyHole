@@ -58,6 +58,8 @@ export const settingsSchema = z
 export const entrySchema = z
   .object({
     id: z.uuid(),
+    // Missing on vaults written before kinds existed; treat as login.
+    kind: z.enum(['login', 'note']).default('login'),
     title: z.string().max(512),
     username: z.string().max(512),
     password: z.string().max(4096),

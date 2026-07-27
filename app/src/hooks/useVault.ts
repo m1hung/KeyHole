@@ -24,6 +24,7 @@ import {
 } from '@keyhole/core';
 import {
   clearLocalStorage,
+  forgetStoredHandle,
   hasWritePermission,
   loadFromLocalStorage,
   loadStoredHandle,
@@ -208,6 +209,7 @@ export function useVault(): VaultController {
     sessionRef.current = null;
     fileRef.current = null;
     clearLocalStorage();
+    void forgetStoredHandle();
     setData(null);
     setStatus('no-vault');
   }, []);

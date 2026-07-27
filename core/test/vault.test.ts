@@ -18,6 +18,7 @@ import { DecryptionError, UnsupportedVersionError, ValidationError, VaultFormatE
 import type { VaultFile } from '../src/types.ts';
 import { bytesToB64 } from '../src/encoding.ts';
 import { randomBytes } from '../src/crypto.ts';
+import { parseVaultData } from '../src/validation.ts';
 
 const PASSWORD = 'correct horse battery staple';
 const WRONG = 'correct horse battery stapl3';
@@ -216,6 +217,7 @@ describe('entry CRUD', () => {
     const { data: added, entry } = createEntry(original, { title: 'Site', password: 'a' });
     expect(original.entries).toHaveLength(0); // input untouched
     expect(added.entries).toHaveLength(1);
+    expect(entry.kind).toBe('login');
 
     const updated = updateEntry(added, entry.id, { title: 'Renamed', password: 'b' });
     expect(added.entries[0]?.title).toBe('Site');
@@ -224,6 +226,51 @@ describe('entry CRUD', () => {
     const deleted = deleteEntry(updated, entry.id);
     expect(deleted.entries).toHaveLength(0);
     expect(updated.entries).toHaveLength(1);
+  });
+
+  it('creates a secure note with kind note', () => {
+    const { entry } = createEntry(emptyVaultData(), { title: 'Safe deposit', kind: 'note', notes: 'box 12' });
+    expect(entry.kind).toBe('note');
+    expect(entry.password).toBe('');
+  });
+
+  it('defaults missing kind to login when parsing vault data', () => {
+    const raw = {
+      schemaVersion: 1,
+      entries: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'Legacy',
+          username: 'a',
+          password: 'b',
+          urls: [],
+          notes: '',
+          tags: [],
+          folderId: null,
+          totpSecret: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          passwordUpdatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      folders: [],
+      settings: {
+        autoLockMinutes: 15,
+        clipboardClearSeconds: 30,
+        generator: {
+          length: 20,
+          lowercase: true,
+          uppercase: true,
+          digits: true,
+          symbols: true,
+          excludeAmbiguous: false,
+        },
+        theme: 'system' as const,
+        lockOnHide: false,
+      },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(parseVaultData(raw).entries[0]?.kind).toBe('login');
   });
 
   it('tracks passwordUpdatedAt only when the password actually changes', async () => {
@@ -282,10 +329,17 @@ describe('search', () => {
     expect(searchEntries(data, 'dev')).toHaveLength(2);
   });
 
-  it('never matches on password or notes', () => {
+  it('never matches on password or login notes', () => {
     const data = build();
     expect(searchEntries(data, 'uniquepassword123')).toHaveLength(0);
     expect(searchEntries(data, 'secret memo')).toHaveLength(0);
+  });
+
+  it('matches notes on secure-note entries only', () => {
+    let data = emptyVaultData();
+    data = createEntry(data, { title: 'Wifi', kind: 'note', notes: 'router passphrase north-wind' }).data;
+    data = createEntry(data, { title: 'Bank', password: 'x', notes: 'router passphrase north-wind' }).data;
+    expect(searchEntries(data, 'north-wind').map((e) => e.title)).toEqual(['Wifi']);
   });
 
   it('returns everything, sorted, for an empty query', () => {

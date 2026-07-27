@@ -13,6 +13,7 @@ import {
   updateEntry,
   updateSettings,
   type Entry,
+  type EntryKind,
   type GeneratorOptions,
   type Settings,
 } from '@keyhole/core';
@@ -26,10 +27,12 @@ import { EmptyState, Toast } from './components/common.tsx';
 import { Icon } from './components/Icon.tsx';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
+type ListFilter = 'all' | EntryKind;
 
 export function App() {
   const vault = useVault();
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<ListFilter>('all');
   const [view, setView] = useState<View>({ kind: 'none' });
 
   const settings = vault.data?.settings;
@@ -43,6 +46,7 @@ export function App() {
     if (vault.status !== 'unlocked') {
       setView({ kind: 'none' });
       setQuery('');
+      setFilter('all');
     }
   }, [vault.status]);
 
@@ -54,17 +58,27 @@ export function App() {
   }
 
   const data = vault.data;
-  const results = searchEntries(data, query);
+  const results = searchEntries(data, query).filter((e) => filter === 'all' || e.kind === filter);
   const selected = view.kind === 'entry' ? data.entries.find((e) => e.id === view.id) : undefined;
+  const loginCount = data.entries.filter((e) => e.kind === 'login').length;
+  const noteCount = data.entries.filter((e) => e.kind === 'note').length;
 
-  const addEntry = async () => {
+  const addEntry = async (kind: EntryKind) => {
     let created: Entry | undefined;
     await vault.mutate((current) => {
-      const result = createEntry(current, { title: 'New entry', username: '', password: '' });
+      const result = createEntry(current, {
+        title: kind === 'note' ? 'New secure note' : 'New entry',
+        kind,
+        username: '',
+        password: '',
+      });
       created = result.entry;
       return result.data;
     });
-    if (created) setView({ kind: 'entry', id: created.id });
+    if (created) {
+      if (filter !== 'all' && filter !== kind) setFilter(kind);
+      setView({ kind: 'entry', id: created.id });
+    }
   };
 
   const patchSettings = (patch: Partial<Settings>) => vault.mutate((current) => updateSettings(current, patch));
@@ -124,15 +138,44 @@ export function App() {
 
       <div className={`columns${view.kind === 'none' ? '' : ' detail-open'}`}>
         <div className="list-pane">
-          <div style={{ padding: 12, borderBottom: '1px solid var(--border)' }}>
-            <button type="button" className="primary" style={{ width: '100%' }} onClick={() => void addEntry()}>
-              + New entry
-            </button>
+          <div className="list-toolbar">
+            <div className="filter-row" role="tablist" aria-label="Entry type">
+              <FilterChip active={filter === 'all'} onClick={() => setFilter('all')} count={data.entries.length}>
+                All
+              </FilterChip>
+              <FilterChip active={filter === 'login'} onClick={() => setFilter('login')} count={loginCount} icon="key">
+                Logins
+              </FilterChip>
+              <FilterChip
+                active={filter === 'note'}
+                onClick={() => setFilter('note')}
+                count={noteCount}
+                icon="secureNote"
+              >
+                Notes
+              </FilterChip>
+            </div>
+            <div className="new-entry-row">
+              <button type="button" className="primary" onClick={() => void addEntry('login')}>
+                <Icon name="key" size={16} />
+                New login
+              </button>
+              <button type="button" className="ghost" onClick={() => void addEntry('note')}>
+                <Icon name="secureNote" size={16} />
+                New note
+              </button>
+            </div>
           </div>
 
           {results.length === 0 ? (
-            <EmptyState title={query ? 'No matches' : 'Your vault is empty'}>
-              <p className="hint">{query ? 'Try a different search.' : 'Add your first entry to get started.'}</p>
+            <EmptyState title={query || filter !== 'all' ? 'No matches' : 'Your vault is empty'}>
+              <p className="hint">
+                {query
+                  ? 'Try a different search.'
+                  : filter === 'note'
+                    ? 'Create a secure note for secrets that are not a login.'
+                    : 'Add your first login or secure note to get started.'}
+              </p>
             </EmptyState>
           ) : (
             <ul className="entry-list">
@@ -144,20 +187,35 @@ export function App() {
                     aria-current={selected?.id === entry.id}
                     onClick={() => setView({ kind: 'entry', id: entry.id })}
                   >
-                    <div className="title">{entry.title}</div>
-                    <div className="meta">
-                      {entry.username || <em>no username</em>}
-                      {entry.urls[0] ? ` · ${displayHost(entry.urls[0])}` : ''}
-                    </div>
-                    {entry.tags.length > 0 && (
-                      <div style={{ marginTop: 4 }}>
-                        {entry.tags.map((tag) => (
-                          <span className="tag" key={tag}>
-                            {tag}
-                          </span>
-                        ))}
+                    <span className="entry-icon" aria-hidden="true">
+                      <Icon name={entry.kind === 'note' ? 'secureNote' : 'key'} size={18} />
+                    </span>
+                    <span className="entry-body">
+                      <div className="title">{entry.title}</div>
+                      <div className="meta">
+                        {entry.kind === 'note' ? (
+                          entry.notes.trim() ? (
+                            entry.notes.trim().split('\n')[0]
+                          ) : (
+                            <em>empty note</em>
+                          )
+                        ) : (
+                          <>
+                            {entry.username || <em>no username</em>}
+                            {entry.urls[0] ? ` · ${displayHost(entry.urls[0])}` : ''}
+                          </>
+                        )}
                       </div>
-                    )}
+                      {entry.tags.length > 0 && (
+                        <div style={{ marginTop: 4 }}>
+                          {entry.tags.map((tag) => (
+                            <span className="tag" key={tag}>
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -210,7 +268,7 @@ export function App() {
 
           {view.kind === 'none' && (
             <EmptyState title="Select an entry">
-              <p className="hint">Or create a new one to get started.</p>
+              <p className="hint">Or create a new login or secure note to get started.</p>
             </EmptyState>
           )}
         </main>
@@ -245,6 +303,28 @@ export function App() {
 }
 
 // ---------------------------------------------------------------------------
+
+function FilterChip({
+  active,
+  onClick,
+  count,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  icon?: 'key' | 'secureNote';
+  children: string;
+}) {
+  return (
+    <button type="button" role="tab" aria-selected={active} className={`filter-chip${active ? ' active' : ''}`} onClick={onClick}>
+      {icon && <Icon name={icon} size={14} />}
+      {children}
+      <span className="filter-count">{count}</span>
+    </button>
+  );
+}
 
 function useTheme(theme: Settings['theme']): void {
   useEffect(() => {

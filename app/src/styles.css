@@ -605,7 +605,9 @@ label {
 }
 
 .entry-item {
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   width: 100%;
   text-align: left;
   border: none;
@@ -616,6 +618,21 @@ label {
   min-height: 60px;
   position: relative;
   transition: background var(--dur-fast) ease;
+}
+
+.entry-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-dim);
+}
+
+.entry-item[aria-current='true'] .entry-icon {
+  color: var(--accent);
+}
+
+.entry-body {
+  min-width: 0;
+  flex: 1;
 }
 
 .entry-item:hover {
@@ -934,6 +951,128 @@ dialog h2 {
   margin: 0;
   font-size: 20px;
   word-break: break-word;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-kind {
+  display: inline-flex;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.note-body {
+  min-height: 220px;
+  font-family: var(--font);
+  line-height: 1.5;
+}
+
+.list-toolbar {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  min-height: 30px;
+}
+
+.filter-chip.active {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.filter-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.new-entry-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.new-entry-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.storage-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.storage-card-icon {
+  color: var(--accent);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.storage-card-title {
+  font-weight: 600;
+}
+
+.storage-facts {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.storage-facts li {
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.storage-facts strong {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.local-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .button-row {

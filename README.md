@@ -183,7 +183,7 @@ The dev server binds to `127.0.0.1` only, on port 5173 or the next free one — 
 
 **First run:** choose *Create vault* (minimum 12 characters, with an explicit no-recovery acknowledgement) or *Import an existing vault file*.
 
-Features: entry CRUD, fast search over title/username/URL/tags (never over passwords or notes), password generator with strength meter, TOTP codes, export/import, change master password, configurable auto-lock and clipboard clear, light/dark/system theme, and optional File System Access API linking so edits save straight to a real file on disk.
+Features: login and secure-note entries, fast search over title/username/URL/tags (and note bodies for secure notes — never over passwords or login notes), password generator with strength meter, TOTP codes, export/import, change master password, configurable auto-lock and clipboard clear, light/dark/system theme, local-storage status, and optional File System Access API linking so edits save straight to a real file on disk.
 
 ## Loading the Chrome extension
 

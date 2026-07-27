@@ -10,11 +10,11 @@ If you change one of these files, mirror the edit into `Icon.tsx`.
 | File | `IconName` | Used for |
 |---|---|---|
 | `vault.svg` | `vault` | Brand mark, Vault tab, extension toolbar icon |
-| `login.svg` | `key` | Available; entry/credential contexts |
+| `login.svg` | `key` | Login entries, Logins filter, New login |
 | `generator.svg` | `generator` | Generator tab |
 | `settings.svg` | `settings` | Settings tab, popup options |
-| `secure-note.svg` | `secureNote` | Available; notes contexts |
-| `local-server.svg` | `localServer` | Available; local-first / storage contexts |
+| `secure-note.svg` | `secureNote` | Secure notes, Notes filter, New note |
+| `local-server.svg` | `localServer` | Local storage status, unlock “stays on device” badge |
 | `sprite.svg` | — | Combined `<symbol>` sheet, kept for reference |
 
 `Icon.tsx` additionally defines copy, check, eye, eyeOff, lock, user, refresh,

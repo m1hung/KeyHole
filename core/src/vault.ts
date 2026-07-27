@@ -254,6 +254,7 @@ function migrate(data: VaultData): VaultData {
 
 export interface EntryInput {
   title: string;
+  kind?: Entry['kind'];
   username?: string;
   password?: string;
   urls?: string[];
@@ -268,6 +269,7 @@ export function createEntry(data: VaultData, input: EntryInput): { data: VaultDa
   const timestamp = now();
   const entry: Entry = {
     id: randomUuid(),
+    kind: input.kind ?? 'login',
     title: input.title.trim(),
     username: input.username ?? '',
     password: input.password ?? '',
@@ -291,6 +293,7 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
   const passwordChanged = patch.password !== undefined && patch.password !== existing.password;
   const updated: Entry = {
     ...existing,
+    ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
     ...(patch.username !== undefined ? { username: patch.username } : {}),
     ...(patch.password !== undefined ? { password: patch.password } : {}),
@@ -342,7 +345,11 @@ export function updateSettings(data: VaultData, patch: Partial<Settings>): Vault
 // Search
 // ---------------------------------------------------------------------------
 
-/** Substring match over title, username, URLs and tags. Never searches passwords or notes. */
+/**
+ * Substring match over title, username, URLs and tags.
+ * Passwords are never searched. Notes are searched only for `kind: 'note'`
+ * entries — that is their primary content — not for login credentials.
+ */
 export function searchEntries(data: VaultData, query: string): Entry[] {
   const q = query.trim().toLowerCase();
   if (q.length === 0) return [...data.entries].sort(byTitle);
@@ -352,7 +359,8 @@ export function searchEntries(data: VaultData, query: string): Entry[] {
         e.title.toLowerCase().includes(q) ||
         e.username.toLowerCase().includes(q) ||
         e.tags.some((t) => t.toLowerCase().includes(q)) ||
-        e.urls.some((u) => u.toLowerCase().includes(q))
+        e.urls.some((u) => u.toLowerCase().includes(q)) ||
+        (e.kind === 'note' && e.notes.toLowerCase().includes(q))
       );
     })
     .sort(byTitle);

@@ -20,8 +20,13 @@ export const VAULT_FORMAT_ID = 'keyhole.vault';
 // Decrypted model
 // ---------------------------------------------------------------------------
 
+/** Login credentials vs a free-form encrypted note (no autofill target). */
+export type EntryKind = 'login' | 'note';
+
 export interface Entry {
   id: string;
+  /** Defaults to `login` for vaults created before this field existed. */
+  kind: EntryKind;
   title: string;
   username: string;
   password: string;

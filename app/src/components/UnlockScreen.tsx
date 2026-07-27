@@ -43,6 +43,10 @@ function Unlock({ vault }: { vault: VaultController }) {
           Keyhole
         </h1>
         <p className="subtitle">Your vault is locked.</p>
+        <p className="local-badge">
+          <Icon name="localServer" size={14} />
+          Encrypted vault stays on this device
+        </p>
 
         {vault.error && <div className="error">{vault.error}</div>}
 
@@ -124,6 +128,10 @@ function CreateVault({ vault }: { vault: VaultController }) {
           Keyhole
         </h1>
         <p className="subtitle">Create a vault. Everything stays on this device.</p>
+        <p className="local-badge">
+          <Icon name="localServer" size={14} />
+          No accounts · No cloud · No telemetry
+        </p>
 
         {vault.error && <div className="error">{vault.error}</div>}
 
