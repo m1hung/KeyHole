@@ -338,11 +338,70 @@ function createWindow() {
   });
 
   /**
-   * Keyhole asks for no OS permissions — no camera, microphone, geolocation or
-   * notifications. Denying the lot means a prompt can never be used to phish a
-   * user inside an app they trust.
+   * Deny every OS permission except the clipboard.
+   *
+   * Keyhole wants no camera, microphone, geolocation or notifications, and a
+   * permission prompt inside an app you trust is a phishing surface — so the
+   * default is "no".
+   *
+   * The clipboard is the exception, because in Chromium it *is* a permission:
+   * `navigator.clipboard.writeText()` requires `clipboard-sanitized-write`, and
+   * a blanket denial turns every Copy button in the app into
+   * "NotAllowedError: Write permission denied" — which is exactly what an
+   * earlier revision of this file did. Copying a password is the single most
+   * common thing anyone does with a password manager.
+   *
+   * `clipboard-read` is granted too, and it earns its place: `useClipboard`
+   * reads the clipboard before the auto-clear timer fires, to confirm it still
+   * holds the value Keyhole put there. Without read access that check silently
+   * fails open and the timer wipes whatever the user copied in the meantime.
+   *
+   * The renderer is our own bundle on our own origin, and navigation off that
+   * origin is refused above — so clipboard access is not reachable by anything
+   * we did not ship.
    */
-  window.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  const ALLOWED_PERMISSIONS = new Set(['clipboard-read', 'clipboard-sanitized-write']);
+
+  const APP_URL = new URL(APP_ORIGIN);
+
+  /**
+   * True when `value` belongs to our own origin.
+   *
+   * The two callbacks below hand us different shapes — a bare origin
+   * (`app://keyhole`) from the check handler, a full URL
+   * (`app://keyhole/index.html`) from the request handler — so parse rather than
+   * string-compare.
+   *
+   * Compare protocol and host, NOT `.origin`. `registerSchemesAsPrivileged`
+   * teaches Chromium that `app:` is a standard scheme, but this code runs in the
+   * main process, where Node's own URL parser knows nothing about it and reports
+   * `origin` as the string "null" for every `app://` URL. An `.origin`
+   * comparison here therefore rejects everything, clipboard included.
+   *
+   * @param {string | undefined} value
+   */
+  const isOwnOrigin = (value) => {
+    if (typeof value !== 'string' || value.length === 0) return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === APP_URL.protocol && url.host === APP_URL.host;
+    } catch {
+      return false;
+    }
+  };
+
+  window.webContents.session.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    callback(ALLOWED_PERMISSIONS.has(permission) && isOwnOrigin(details?.requestingUrl));
+  });
+
+  /**
+   * The synchronous counterpart. Chromium consults this for `permissions.query()`
+   * and for some internal gating; leaving it at the default while the async
+   * handler says yes produces inconsistent answers between the two.
+   */
+  window.webContents.session.setPermissionCheckHandler((_wc, permission, requestingOrigin) =>
+    ALLOWED_PERMISSIONS.has(permission) && isOwnOrigin(requestingOrigin),
+  );
 
   void window.loadURL(`${APP_ORIGIN}/index.html`);
   return window;

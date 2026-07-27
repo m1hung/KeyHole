@@ -305,6 +305,9 @@ Verified in a real browser during development; re-run after any change to crypto
 - [ ] Launch a second instance → it focuses the existing window instead of opening a second one.
 - [ ] With a vault in the browser build and none on disk, first run offers to copy it across; declining leaves the browser copy intact.
 - [ ] *Settings → App* shows the real vault path; *Show in Explorer* opens it.
+- [ ] Copy a generated password → it lands on the clipboard, with no "denied clipboard access" error. *(Chromium gates `writeText` behind `clipboard-sanitized-write`; a blanket permission denial in the main process breaks every Copy button.)*
+- [ ] Wait past the clear timer → the clipboard is emptied. *(Needs `clipboard-read`: without it the timer cannot tell whether the clipboard still holds Keyhole's value, and clears whatever is there.)*
+- [ ] DevTools console: `navigator.permissions.query({name:'geolocation'})` still reports `denied`.
 - [ ] Configure sync against a local server → *Register & upload* succeeds; the server row holds only the encrypted envelope.
 - [ ] Move the `.exe` to another folder and run it → same vault, because the vault is not stored beside it.
 
