@@ -19,7 +19,7 @@ Right-click (or left-click) the tray icon for: status, **Open status page**,
 
 | | Value | Why |
 |---|---|---|
-| Address | `http://127.0.0.1:8787` | **Loopback only.** Not reachable from other machines. |
+| Address | `http://127.0.0.1:8787` | **Loopback only**, until you tick *Allow access from other devices*. |
 | Database | `%APPDATA%\Keyhole Sync Server\data\keyhole.sqlite` | An absolute path, pinned by the tray app. |
 | Registration | Open | The server's own default; close it once your accounts exist. |
 
@@ -29,8 +29,9 @@ Both of the first two **override the server's own defaults**, deliberately:
   a deliberate deployment behind a firewall, and a bad one for something you
   launch by double-clicking — it would publish a password-sync service to every
   network you join, including untrusted Wi-Fi. Putting it on the LAN should be a
-  decision, not a side effect. The tray app forces `127.0.0.1` and does not read
-  `KEYHOLE_HOST`.
+  decision, not a side effect. So the tray app ignores `KEYHOLE_HOST` entirely
+  and takes the bind address from the menu tick below: exposure is something you
+  can see in the UI, not an environment variable you set once and forget.
 - `KEYHOLE_DB` normally defaults to `./data/keyhole.sqlite`, **relative to the
   working directory** — and the working directory of a double-clicked executable
   is wherever Explorer happened to be. Left alone, launching from two folders
@@ -40,14 +41,53 @@ Both of the first two **override the server's own defaults**, deliberately:
 `KEYHOLE_PORT` *is* still honoured, since a port clash is a real problem with no
 security dimension.
 
-### Using it from another device
+---
 
-You can't, by design, without a deliberate change. If you want the extension on
-another machine to sync, either run the server the normal way
-(`npm start -w @keyhole/server`, which binds `0.0.0.0`) behind a firewall you
-control, or put a reverse proxy with TLS in front of it. Chromium only allows
-plain `http://` to a *loopback* origin — any other host must be `https://`, so a
-bare LAN IP will be refused by the browser regardless.
+## Using it from another device
+
+Tray menu → **Allow access from other devices**. It is off by default, asks for
+confirmation once, remembers the answer in
+`%APPDATA%\Keyhole Sync Server\settings.json`, and restarts the server on
+`0.0.0.0`. The tray then shows the LAN URL, and **Copy server URL** copies that
+instead of the loopback one. Untick it to go back to loopback.
+
+**The tick alone is not enough to make a browser connect.** Chromium treats only
+loopback as a trustworthy origin, so the web app and the extension refuse plain
+`http://` to any other host. A bare `http://192.168.1.x:8787` will be rejected by
+the client before the server is ever contacted. You also do not *want* it: the
+vault payload is encrypted end-to-end, but the sync credential travels in an
+`Authorization` header and plain HTTP hands it to anyone on the network.
+
+So the tick is step one of two. Step two is TLS:
+
+**With a domain you control** — run the server under Docker instead, with the
+bundled proxy profile:
+
+```bash
+KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --profile tls up -d
+```
+
+Caddy gets and renews the certificate; clients use `https://sync.example.com`.
+
+**LAN only, no domain** — install Caddy on this machine and put it in front of
+the tray app, which keeps running exactly as it does now:
+
+```bash
+caddy reverse-proxy --from keyhole.local --to 127.0.0.1:8787 --internal-certs
+```
+
+`--internal-certs` issues from Caddy's own CA, so every client device must trust
+that root certificate and resolve `keyhole.local` to this machine. Trusting a
+private CA on each device is a real decision — if you have a domain, the first
+option is far less surprising. Note that with a proxy on loopback in front, the
+tray tick can stay **off**: only Caddy needs to reach the server.
+
+Either way: close registration once your devices are enrolled. The tray app
+passes its environment through to the server, so a user-level
+`KEYHOLE_ALLOW_REGISTRATION=false` in Windows' environment variables takes effect
+on the next launch. And check that the Windows firewall profile for the network
+in question is one you actually trust — an exposed server is only as private as
+the network it is exposed on.
 
 ---
 

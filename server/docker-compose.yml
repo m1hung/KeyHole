@@ -5,6 +5,14 @@
 # put this behind a reverse proxy that terminates HTTPS (Caddy, Traefik,
 # nginx). The vault payload is encrypted either way, but plaintext HTTP hands
 # an eavesdropper your sync credential.
+#
+# The "tls" profile below is that proxy, ready to run:
+#   KEYHOLE_DOMAIN=sync.example.com \
+#     docker compose -f server/docker-compose.yml --profile tls up -d
+#
+# Caddy obtains and renews the certificate itself; ports 80 and 443 must reach
+# it and KEYHOLE_DOMAIN must already resolve here. See ./Caddyfile for the
+# LAN-only variant.
 
 services:
   keyhole-sync:
@@ -24,5 +32,29 @@ services:
       # create an account on your server.
       KEYHOLE_ALLOW_REGISTRATION: "true"
 
+  # Only started with `--profile tls`. Without it, `up -d` behaves exactly as
+  # before: sync server on loopback, no proxy, no ports 80/443 claimed.
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # No default: an unset domain would silently produce a proxy that answers
+      # for nothing, which looks like the server being broken.
+      KEYHOLE_DOMAIN: ${KEYHOLE_DOMAIN:?set KEYHOLE_DOMAIN to the hostname clients will use}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and account keys. Losing this volume means re-issuing on
+      # every restart, which will hit Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - keyhole-sync
+
 volumes:
   keyhole-data:
+  caddy-data:
+  caddy-config:

@@ -214,7 +214,9 @@ npm run build:server-tray   # → server-tray/dist/Keyhole-Sync-Server-1.0.0-por
 
 Double-click it: a tray icon appears and the server is running at `http://127.0.0.1:8787`. No console window, no command line, and no Node installation — the server runs on the Node that Electron bundles. The tray menu offers the status page, Start/Stop/Restart, and the data folder.
 
-It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults (`0.0.0.0`, and a path relative to the working directory). A service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in. [`server-tray/README.md`](server-tray/README.md) has the reasoning and how to expose it deliberately.
+It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults (`0.0.0.0`, and a path relative to the working directory). A service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in.
+
+To sync from another device, tick **Allow access from other devices** in the tray menu — off by default, confirmed once, remembered. That is half of it: browsers refuse plain `http://` to anything but loopback, so a remote client also needs TLS in front of the server. [`server-tray/README.md`](server-tray/README.md) walks through both halves; `server/docker-compose.yml` ships a Caddy profile that does the TLS part.
 
 For a headless deployment, run `server/` directly as before — that path is unchanged.
 
@@ -288,6 +290,10 @@ Verified in a real browser during development; re-run after any change to crypto
 - [ ] Double-click the `.exe` → tray icon appears, no console window, `http://127.0.0.1:8787` responds.
 - [ ] `netstat -ano | findstr :8787` shows `127.0.0.1:8787`, **not** `0.0.0.0:8787`.
 - [ ] From another machine on the same network, the address is unreachable.
+- [ ] *Allow access from other devices* → Cancel → the checkbox stays unticked and the binding is unchanged.
+- [ ] *Allow access from other devices* → confirm → `netstat` now shows `0.0.0.0:8787`, the tray shows the LAN URL, and *Copy server URL* copies it.
+- [ ] Quit and relaunch → the tick survived; untick it → back to `127.0.0.1:8787` after the restart.
+- [ ] Delete `%APPDATA%\Keyhole Sync Server\settings.json`, or corrupt it → starts loopback-only rather than exposed.
 - [ ] Database lands in `%APPDATA%\Keyhole Sync Server\data\`, not next to the `.exe` or in the launch folder.
 - [ ] Launch it from two different folders → the same database, same accounts, both times.
 - [ ] Start it while port 8787 is already taken → the tray reports the error rather than vanishing.

@@ -14,12 +14,14 @@
  *     double-click and no way to see why. Out-of-process, a crash is a status
  *     line and a Restart button.
  *
- *  2. **The bind address is forced to 127.0.0.1 here**, overriding whatever is in
- *     the environment. The server's own default is `0.0.0.0` (sensible for a
- *     deliberate deployment behind a firewall), but a thing you launch by
- *     double-clicking must not quietly publish a password-sync service to every
- *     network you join. Exposing it on a LAN should be an explicit act, not the
- *     consequence of a default.
+ *  2. **The bind address is decided here, not by the environment.** It is
+ *     127.0.0.1 unless you tick "Allow access from other devices" in the tray
+ *     menu, which is off until you turn it on and confirm a warning. The server's
+ *     own default is `0.0.0.0` (sensible for a deliberate deployment behind a
+ *     firewall), but a thing you launch by double-clicking must not quietly
+ *     publish a password-sync service to every network you join. `KEYHOLE_HOST`
+ *     is still ignored: exposure is a menu tick you can see, not an environment
+ *     variable you can forget.
  *
  *  3. **The database path is pinned to userData**, never the working directory.
  *     `KEYHOLE_DB` defaults to `./data/keyhole.sqlite`, relative to cwd — and the
@@ -29,8 +31,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, clipboard, dialog, Menu, nativeImage, shell, Tray } from 'electron';
@@ -39,10 +42,72 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 app.setName('Keyhole Sync Server');
 
-/** Loopback only. See the header — this is deliberately not configurable here. */
-const HOST = '127.0.0.1';
+const LOOPBACK = '127.0.0.1';
+const ANY_INTERFACE = '0.0.0.0';
 const PORT = Number(process.env['KEYHOLE_PORT']) || 8787;
-const BASE_URL = `http://${HOST}:${PORT}`;
+/** Always reachable from this machine, whichever interface the server is on. */
+const LOCAL_URL = `http://${LOOPBACK}:${PORT}`;
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/**
+ * One tick, persisted next to the database. Off means loopback; on means every
+ * interface. Deliberately not read from `KEYHOLE_HOST` — see the header.
+ */
+let allowLan = false;
+
+function settingsPath() {
+  return join(app.getPath('userData'), 'settings.json');
+}
+
+function loadSettings() {
+  try {
+    // Strip a BOM: we never write one, but Notepad and PowerShell's
+    // `Set-Content -Encoding utf8` do, and JSON.parse rejects it. Without this,
+    // hand-editing the file makes the setting silently revert to off.
+    const text = readFileSync(settingsPath(), 'utf8').replace(/^\uFEFF/, '');
+    const raw = JSON.parse(text);
+    allowLan = raw?.allowLan === true;
+  } catch {
+    // Missing or corrupt settings must not expose the server: the safe value is
+    // also the default value, so falling through with allowLan = false is right.
+    allowLan = false;
+  }
+}
+
+function saveSettings() {
+  try {
+    writeFileSync(settingsPath(), `${JSON.stringify({ allowLan }, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    lastError = `Could not save settings: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+function bindHost() {
+  return allowLan ? ANY_INTERFACE : LOOPBACK;
+}
+
+/**
+ * First non-internal IPv4 address, for display and for "Copy server URL".
+ * Null when there is no such interface (offline, or LAN access is off).
+ */
+function lanAddress() {
+  if (!allowLan) return null;
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+    }
+  }
+  return null;
+}
+
+/** What to hand another device: the LAN URL when there is one, else loopback. */
+function shareUrl() {
+  const lan = lanAddress();
+  return lan ? `http://${lan}:${PORT}` : LOCAL_URL;
+}
 
 /**
  * The bundled server, emitted by scripts/bundle.mjs and kept OUTSIDE the asar
@@ -98,7 +163,7 @@ async function startServer() {
         ...process.env,
         // Run Electron's binary as a plain Node process.
         ELECTRON_RUN_AS_NODE: '1',
-        KEYHOLE_HOST: HOST,
+        KEYHOLE_HOST: bindHost(),
         KEYHOLE_PORT: String(PORT),
         KEYHOLE_DB: db,
       },
@@ -160,10 +225,54 @@ async function restartServer() {
 // Tray
 // ---------------------------------------------------------------------------
 
+/**
+ * Turning LAN access on is a security decision, so it costs a confirmation.
+ * Turning it back off does not — the safe direction should never be obstructed.
+ */
+async function toggleLan() {
+  if (!allowLan) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Allow access from other devices?',
+      message: 'Allow access from other devices?',
+      detail: [
+        'The sync server will listen on every network interface, not just this',
+        'machine. Anyone who can reach this computer on any network you join —',
+        'including public Wi-Fi — will be able to reach it.',
+        '',
+        'The server holds only encrypted vaults and cannot read them. But it',
+        'serves plain HTTP: the sync credential travels in a header, so put a',
+        'reverse proxy with TLS in front of it before using it over a network',
+        'you do not trust. Browsers also refuse plain http:// to anything but',
+        'this machine, so the app and extension need that HTTPS proxy to',
+        'connect at all.',
+        '',
+        'Close registration once your devices are enrolled.',
+      ].join('\n'),
+      buttons: ['Cancel', 'Allow LAN access'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (response !== 1) {
+      // Rebuild the menu so the checkbox snaps back — Electron has already
+      // flipped it visually by the time the click handler runs.
+      refreshTray();
+      return;
+    }
+  }
+
+  allowLan = !allowLan;
+  saveSettings();
+  refreshTray();
+  // The bind address is fixed at listen(); only a restart can change it.
+  await restartServer();
+}
+
 function statusLabel() {
   switch (status) {
     case 'running':
-      return `Running — ${BASE_URL}`;
+      return allowLan ? `Running — ${shareUrl()} (LAN)` : `Running — ${LOCAL_URL}`;
     case 'starting':
       return 'Starting…';
     case 'crashed':
@@ -178,26 +287,35 @@ function refreshTray() {
 
   const running = status === 'running' || status === 'starting';
 
-  tray.setToolTip(`Keyhole Sync Server — ${status === 'running' ? BASE_URL : status}`);
+  tray.setToolTip(
+    `Keyhole Sync Server — ${status === 'running' ? statusLabel().replace('Running — ', '') : status}`,
+  );
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: statusLabel(), enabled: false },
       { type: 'separator' },
       {
+        // Always loopback: this menu runs on the machine hosting the server.
         label: 'Open status page',
         enabled: status === 'running',
-        click: () => void shell.openExternal(BASE_URL),
+        click: () => void shell.openExternal(LOCAL_URL),
       },
       {
         label: 'Copy server URL',
         enabled: status === 'running',
-        click: () => clipboard.writeText(BASE_URL),
+        click: () => clipboard.writeText(shareUrl()),
       },
       { type: 'separator' },
       { label: 'Start', enabled: !running, click: () => void startServer() },
       { label: 'Stop', enabled: running, click: () => stopServer() },
       { label: 'Restart', enabled: running, click: () => void restartServer() },
       { type: 'separator' },
+      {
+        label: 'Allow access from other devices',
+        type: 'checkbox',
+        checked: allowLan,
+        click: () => void toggleLan(),
+      },
       {
         label: 'Show data folder',
         click: () => void shell.openPath(join(app.getPath('userData'), 'data')),
@@ -210,8 +328,10 @@ function refreshTray() {
             title: 'Keyhole Sync Server',
             message: 'Keyhole Sync Server',
             detail: [
-              `Address:  ${BASE_URL}`,
-              'Binding:  127.0.0.1 only — not reachable from other machines.',
+              `Address:  ${shareUrl()}`,
+              allowLan
+                ? 'Binding:  0.0.0.0 — reachable from other machines on your networks.'
+                : 'Binding:  127.0.0.1 only — not reachable from other machines.',
               '',
               `Database: ${databasePath()}`,
               '',
@@ -251,6 +371,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.whenReady().then(async () => {
+    // Before the tray is built and before the server binds: both need to know
+    // whether LAN access was left on last time.
+    loadSettings();
     createTray();
     // One click means it is running when the icon appears — no second step.
     await startServer();
