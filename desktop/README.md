@@ -75,13 +75,19 @@ unpredictable.
 ## Sync
 
 Unchanged and fully supported. The desktop build talks to the self-hosted server
-in `server/` exactly as the browser build does — the server reflects the request
-`Origin`, so `app://keyhole` needs no server-side configuration.
+in `server/` with no server-side configuration — the server reflects the request
+`Origin`, so `app://keyhole` is accepted as-is.
 
 Note that `http://` sync servers work only on loopback (`127.0.0.1` /
-`localhost`), which Chromium treats as a trustworthy origin. A server on another
-machine must be `https://`. That is the same rule the browser build follows, not
-a new desktop restriction.
+`localhost`). The renderer runs on `app://`, a secure context, so an `http://`
+request to any other host is mixed content and Chromium blocks it before the
+server is contacted. **A server on another machine must be `https://`.**
+
+The least painful way to get that is usually a WireGuard mesh rather than an
+exposed port: `tailscale serve --bg http://127.0.0.1:8787` puts a real
+certificate in front of a server that never leaves loopback.
+[`../server-tray/README.md`](../server-tray/README.md) walks through it, along
+with the Caddy options for a public domain or a private CA.
 
 ---
 

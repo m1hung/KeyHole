@@ -37,12 +37,23 @@ your sync credential.
 ## Reaching it from another device
 
 The server binds `0.0.0.0` by default, so it accepts external connections as
-soon as your firewall does. That is necessary but not sufficient: **Chromium
-treats only loopback as a trustworthy origin**, so the web app and the extension
-refuse plain `http://` to any other host. `http://192.168.1.x:8787` is rejected
-by the client before this server is ever contacted. Remote clients need TLS.
+soon as your firewall does. That is necessary but not sufficient — **remote
+clients need TLS**, for two reasons:
 
-The compose file ships a proxy for exactly this, behind a profile:
+- The sync credential travels in an `Authorization` header. The vault payload is
+  encrypted end-to-end regardless, but plain HTTP over a network hands that
+  credential to anyone on the path.
+- The desktop app's renderer runs on `app://`, a secure context, so an `http://`
+  request from it is mixed content and the browser engine blocks it.
+  `http://192.168.1.x:8787` will not work there whatever this server permits.
+
+If both machines can join a WireGuard mesh (Tailscale, Netbird, plain
+WireGuard), that is usually a better answer than exposing this server at all —
+`tailscale serve --bg http://127.0.0.1:8787` fronts it with a real certificate
+while it stays bound to loopback. See
+[`../server-tray/README.md`](../server-tray/README.md), which walks through it.
+
+Otherwise, the compose file ships a proxy behind a profile:
 
 ```bash
 KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --profile tls up -d

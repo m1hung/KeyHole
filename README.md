@@ -216,7 +216,7 @@ Double-click it: a tray icon appears and the server is running at `http://127.0.
 
 It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults (`0.0.0.0`, and a path relative to the working directory). A service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in.
 
-To sync from another device, tick **Allow access from other devices** in the tray menu — off by default, confirmed once, remembered. That is half of it: browsers refuse plain `http://` to anything but loopback, so a remote client also needs TLS in front of the server. [`server-tray/README.md`](server-tray/README.md) walks through both halves; `server/docker-compose.yml` ships a Caddy profile that does the TLS part.
+To sync from another device on the same trusted network, tick **Allow access from other devices** in the tray menu — off by default, confirmed once, remembered. To sync across networks, don't: put both machines on a WireGuard mesh instead and let `tailscale serve` front the server with a real certificate while it stays on loopback. Either way a remote client wants TLS, since the sync credential travels in a header. [`server-tray/README.md`](server-tray/README.md) covers both, and `server/docker-compose.yml` ships a Caddy profile for the public-domain case.
 
 For a headless deployment, run `server/` directly as before — that path is unchanged.
 

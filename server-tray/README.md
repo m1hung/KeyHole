@@ -45,20 +45,63 @@ security dimension.
 
 ## Using it from another device
 
+Two different problems hide behind that sentence, and they want different
+answers: reaching the server *on the network you are both on*, and reaching it
+*from somewhere else*. Start with the second — it is the common case, and the
+answer is better.
+
+### From another network: a mesh VPN
+
+Put both machines on a WireGuard mesh (Tailscale below; plain WireGuard or
+Netbird work the same way) and let it carry the connection. No ports are
+forwarded, nothing is published to the internet, and only your own devices can
+route to the address at all.
+
+With Tailscale specifically, its proxy can also terminate HTTPS with a real
+certificate, which means **the tray tick stays off and the server never leaves
+loopback**:
+
+```bash
+tailscale serve --bg http://127.0.0.1:8787
+```
+
+The proxy connects from `127.0.0.1`, so the only thing listening on a network
+interface is Tailscale. Clients use `https://<this-machine>.<your-tailnet>.ts.net`.
+
+- Needs MagicDNS and HTTPS certificates enabled in the Tailscale admin console.
+- Flag syntax has moved between Tailscale versions; check `tailscale serve --help`.
+- Use `serve`, **not** `funnel`. Funnel publishes to the public internet, which
+  is the thing this approach exists to avoid.
+
+The certificate is issued for a name you control through Tailscale, so there is
+no private CA for client devices to trust — which is the tedious part of every
+other no-domain option below.
+
+The tray menu will still report loopback, because it only knows its own bind
+address and cannot discover the `.ts.net` name. Type that into the client
+yourself.
+
+### On the same network: the tray tick
+
 Tray menu → **Allow access from other devices**. It is off by default, asks for
 confirmation once, remembers the answer in
 `%APPDATA%\Keyhole Sync Server\settings.json`, and restarts the server on
 `0.0.0.0`. The tray then shows the LAN URL, and **Copy server URL** copies that
 instead of the loopback one. Untick it to go back to loopback.
 
-**The tick alone is not enough to make a browser connect.** Chromium treats only
-loopback as a trustworthy origin, so the web app and the extension refuse plain
-`http://` to any other host. A bare `http://192.168.1.x:8787` will be rejected by
-the client before the server is ever contacted. You also do not *want* it: the
-vault payload is encrypted end-to-end, but the sync credential travels in an
-`Authorization` header and plain HTTP hands it to anyone on the network.
+This is the right tool for a laptop and a phone on a home network you trust. It
+is the wrong tool for crossing networks: it binds every interface, including
+whatever café Wi-Fi you join next.
 
-So the tick is step one of two. Step two is TLS:
+**The tick does not give you TLS, and you want TLS.** The vault payload is
+encrypted end-to-end either way, but the sync credential travels in an
+`Authorization` header — plain HTTP over a network hands it to anyone listening.
+Separately, the desktop app runs on the `app://` scheme, a secure context, so an
+`http://` request from it is mixed content and the browser engine blocks it; a
+bare `http://192.168.1.x:8787` will not work there regardless of what the server
+allows.
+
+So on a plain LAN the tick is step one of two, and step two is a certificate:
 
 **With a domain you control** — run the server under Docker instead, with the
 bundled proxy profile:
@@ -69,8 +112,8 @@ KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --pr
 
 Caddy gets and renews the certificate; clients use `https://sync.example.com`.
 
-**LAN only, no domain** — install Caddy on this machine and put it in front of
-the tray app, which keeps running exactly as it does now:
+**No domain** — install Caddy on this machine and put it in front of the tray
+app, which keeps running exactly as it does now:
 
 ```bash
 caddy reverse-proxy --from keyhole.local --to 127.0.0.1:8787 --internal-certs
@@ -78,16 +121,21 @@ caddy reverse-proxy --from keyhole.local --to 127.0.0.1:8787 --internal-certs
 
 `--internal-certs` issues from Caddy's own CA, so every client device must trust
 that root certificate and resolve `keyhole.local` to this machine. Trusting a
-private CA on each device is a real decision — if you have a domain, the first
-option is far less surprising. Note that with a proxy on loopback in front, the
-tray tick can stay **off**: only Caddy needs to reach the server.
+private CA on each device is a real decision, and it is exactly the work
+`tailscale serve` removes. With a proxy on loopback in front, the tray tick can
+stay **off** here too: only Caddy needs to reach the server.
 
-Either way: close registration once your devices are enrolled. The tray app
-passes its environment through to the server, so a user-level
-`KEYHOLE_ALLOW_REGISTRATION=false` in Windows' environment variables takes effect
-on the next launch. And check that the Windows firewall profile for the network
-in question is one you actually trust — an exposed server is only as private as
-the network it is exposed on.
+### Whichever route you take
+
+Enroll your devices while everything is still on loopback, then close
+registration. The tray app passes its environment through to the server, so a
+user-level `KEYHOLE_ALLOW_REGISTRATION=false` in Windows' environment variables
+takes effect on the next launch. Anything reachable by more than one machine
+should not be accepting new accounts.
+
+And if you bound to `0.0.0.0`, check that the Windows firewall profile for the
+network in question is one you actually trust — an exposed server is only as
+private as the network it is exposed on.
 
 ---
 
