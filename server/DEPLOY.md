@@ -19,13 +19,24 @@ compose network; the only host port it binds is `127.0.0.1:8787`, for you.
 
 ## What you need first
 
-- A host with Docker and the compose plugin.
-- A DNS **A/AAAA record already resolving to it**. Caddy proves control of the
-  name over HTTP, so this must be true *before* you start, not after.
+- **Docker Compose v2.** Check with `docker compose version` — note the space.
+  If that reports `'compose' is not a docker command`, install the plugin:
+  `sudo apt install docker-compose-v2` on Ubuntu 24.04+, or
+  `sudo apt install docker-compose-plugin` if Docker came from Docker's own apt
+  repo. The v1 `docker-compose` binary can run most of this, but it is
+  end-of-life and has no `docker compose cp`, which the backup step below uses.
+- A DNS **A/AAAA record already resolving to your host**. Caddy proves control
+  of the name over HTTP, so this must be true *before* you start, not after.
 - Ports **80 and 443** reachable from the internet. 80 is not optional — it is
   how the certificate is issued and renewed.
 
 Node is not required on the host. The image carries its own.
+
+**Not using a public domain?** Everything below except this section changes.
+If the server is reachable over a WireGuard mesh instead, Tailscale can
+terminate TLS itself and you need no domain, no open ports and no Caddy — see
+[`../server-tray/README.md`](../server-tray/README.md), and use plain
+`docker compose ... up -d` with no `--profile tls` and no `KEYHOLE_DOMAIN`.
 
 ---
 
@@ -44,6 +55,14 @@ KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --pr
 
 Two containers start: the sync server and Caddy. Certificate issuance takes a
 few seconds on first run.
+
+Confirm the domain actually reached Caddy — it has a `keyhole.invalid` fallback
+so that people not using this profile are not forced to set it, which means a
+forgotten variable shows up here rather than as a startup error:
+
+```bash
+KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --profile tls config | grep KEYHOLE_DOMAIN
+```
 
 Check it end to end from your own machine, not the host — that is the path
 clients actually take:
@@ -98,7 +117,22 @@ Do not leave this for later. Until it is done, anyone who finds the host can
 create an account on it. The window is exactly as long as you make it — and a
 host with a DNS record gets found by scanners in hours, not weeks.
 
-Verify: the status page's **Registration** row should read `Closed`.
+**Then confirm it, do not assume it.** The compose file interpolates this
+variable from your shell, so a typo in the name fails open rather than loudly:
+
+```bash
+KEYHOLE_ALLOW_REGISTRATION=false docker compose -f server/docker-compose.yml config | grep REGISTRATION
+```
+
+and check the running server agrees — the status page's **Registration** row
+should read `Closed`, and a registration attempt should be refused:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://sync.example.com/api/v1/account -H 'Content-Type: application/json' -d '{}'
+```
+
+`403` means closed. `400` means it is still open and merely rejecting your empty
+body.
 
 To enroll another device afterwards, flip it back to `true`, enroll, and close
 it again.
