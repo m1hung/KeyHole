@@ -28,9 +28,12 @@ services:
       - keyhole-data:/data
     environment:
       KEYHOLE_DB: /data/keyhole.sqlite
-      # Set to "false" once your own devices are enrolled, so nobody else can
-      # create an account on your server.
-      KEYHOLE_ALLOW_REGISTRATION: "true"
+      # Interpolated from your shell, NOT hardcoded — a literal value here would
+      # silently win over `KEYHOLE_ALLOW_REGISTRATION=false docker compose up -d`
+      # and leave registration open on a host you believed you had closed.
+      # Open by default so a fresh deploy is usable; close it once your own
+      # devices are enrolled.
+      KEYHOLE_ALLOW_REGISTRATION: "${KEYHOLE_ALLOW_REGISTRATION:-true}"
 
   # Only started with `--profile tls`. Without it, `up -d` behaves exactly as
   # before: sync server on loopback, no proxy, no ports 80/443 claimed.
@@ -42,9 +45,16 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # No default: an unset domain would silently produce a proxy that answers
-      # for nothing, which looks like the server being broken.
-      KEYHOLE_DOMAIN: ${KEYHOLE_DOMAIN:?set KEYHOLE_DOMAIN to the hostname clients will use}
+      # `${VAR:?err}` would be the obvious choice here, but Compose interpolates
+      # the whole file before profiles decide what runs — so a required variable
+      # on this service makes plain `up -d` fail for people who never asked for
+      # Caddy (the Tailscale and reverse-proxy-elsewhere setups).
+      #
+      # A reserved .invalid default keeps that path working while still failing
+      # loudly if you start this profile without setting the domain: the name
+      # cannot resolve, so certificate issuance fails and says so in
+      # `docker compose logs caddy`.
+      KEYHOLE_DOMAIN: ${KEYHOLE_DOMAIN:-keyhole.invalid}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificates and account keys. Losing this volume means re-issuing on

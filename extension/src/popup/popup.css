@@ -303,6 +303,22 @@ label {
   margin-top: 10px;
 }
 
+/* A quiet text link, not a second button competing with Unlock. */
+.popup-unlock button.popup-link {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 4px;
+  margin-top: 6px;
+}
+
+.popup-unlock button.popup-link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .popup-error {
   animation: shake 380ms var(--ease-out);
   margin: 8px 12px;

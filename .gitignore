@@ -18,7 +18,8 @@ server-tray/build/
 # — runtime state, and the last thing that should ever reach a public repo.
 server/data/
 
-# Never commit a real vault. The only checked-in vault is examples/demo-vault.keyhole.json,
-# which contains fabricated data and a published master password.
+# Never commit a real vault. The only checked-in vaults are the published demo
+# (fabricated data + public master password) and its iOS test fixture copy.
 *.keyhole.json
 !examples/demo-vault.keyhole.json
+!ios/Tests/KeyholeCoreTests/Fixtures/demo-vault.keyhole.json

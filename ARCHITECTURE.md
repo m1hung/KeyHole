@@ -70,7 +70,9 @@ graph TD
 
 Note that `@keyhole/desktop` attaches to `storage.ts` and nothing else. It does not fork the UI, import `core`, or participate in encryption — it swaps one persistence backend for another and serves the same bundle over a secure `app://` origin. That is why the desktop build needs no separate crypto review: the only new trust boundary is the preload bridge, across which nothing but sealed ciphertext ever travels.
 
-`core` is imported by every surface and performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the desktop app and the extension, and what makes it exhaustively unit-testable.
+`core` is imported by every TypeScript surface and performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the desktop app and the extension, and what makes it exhaustively unit-testable.
+
+`ios/KeyholeCore` is a **Swift port** of `@keyhole/core` (same envelope format, AAD templates, Argon2id params, AES-GCM `ct||tag` layout). It is a separate implementation and therefore a **separate audit surface** — interchange is guaranteed by shared format + vector tests (including the published demo vault), not by sharing object code. The SwiftUI app under `ios/KeyholeApp` owns persistence, session lock state, and optional sync HTTP the same way `app/` does on desktop.
 
 `@keyhole/app` is a renderer, not a third product. It is what `desktop/` packages, and the extension imports its sync client, `Icon.tsx` and stylesheet directly from source. Keyhole has no installable web build: there is no web manifest and no service worker on this side, so `service-worker.ts` in the extension — the sole holder of the unlocked session — is the only service worker in the repository. Nothing serves the renderer over HTTP except the dev server.
 
@@ -219,7 +221,7 @@ Every transition out of `Unlocked` discards the session. There is no path that l
 
 ## Storage formats
 
-Every surface reads and writes the identical `VaultFile` envelope, which is what makes export/import between them work with no conversion step — the desktop app's `%APPDATA%` file, the extension's `chrome.storage.local` entry, and the `localStorage` entry the renderer falls back to under the dev server all hold the same bytes for the same vault.
+Every surface reads and writes the identical `VaultFile` envelope, which is what makes export/import between them work with no conversion step — the desktop app's `%APPDATA%` file, the extension's `chrome.storage.local` entry, the iOS Application Support file, and the `localStorage` entry the renderer falls back to under the dev server all hold the same bytes for the same vault.
 
 ```mermaid
 graph TD

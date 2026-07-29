@@ -303,6 +303,16 @@ function UnlockForm({
         <button type="submit" className="primary" disabled={busy || password.length === 0}>
           {busy ? 'Deriving key…' : 'Unlock'}
         </button>
+        {/* The reset itself lives in the vault window: it is destructive and
+            needs a typed confirmation, which does not belong in a 320px popup
+            that closes the moment focus moves. */}
+        <button
+          type="button"
+          className="popup-link"
+          onClick={() => void openVaultWindow().then(() => window.close())}
+        >
+          Forgot your master password?
+        </button>
       </form>
     </div>
   );

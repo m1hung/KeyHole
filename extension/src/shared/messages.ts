@@ -26,6 +26,13 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('CREATE_VAULT'), masterPassword: z.string().min(1).max(1024) }).strict(),
   z.object({ type: z.literal('IMPORT_VAULT'), file: z.unknown() }).strict(),
   z.object({ type: z.literal('EXPORT_VAULT') }).strict(),
+  /**
+   * Sign out: erase the stored vault, prefs and sync config from this browser.
+   * Takes no master password on purpose — the main reason to reach for it is
+   * having forgotten one. Destructive, so the UI gates it behind a typed
+   * confirmation; this layer only enforces that the sender is our own page.
+   */
+  z.object({ type: z.literal('RESET_VAULT') }).strict(),
   /** Entries whose URLs match a tab. Returns metadata only — never passwords. */
   z.object({ type: z.literal('MATCH_TAB'), tabId: z.number().int().nonnegative() }).strict(),
   z.object({ type: z.literal('LIST_ENTRIES'), query: z.string().max(256).optional() }).strict(),

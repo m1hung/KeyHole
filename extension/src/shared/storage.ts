@@ -41,10 +41,6 @@ export async function saveVaultFile(file: VaultFile): Promise<void> {
   await chrome.storage.local.set({ [VAULT_KEY]: file });
 }
 
-export async function clearVaultFile(): Promise<void> {
-  await chrome.storage.local.remove(VAULT_KEY);
-}
-
 export async function hasVault(): Promise<boolean> {
   const stored = await chrome.storage.local.get(VAULT_KEY);
   return stored[VAULT_KEY] !== undefined;
@@ -106,4 +102,24 @@ export async function saveSyncConfig(config: SyncConfig): Promise<void> {
       accountId: config.accountId.trim().toLowerCase(),
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Reset
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove everything Keyhole has written to this browser profile: the encrypted
+ * envelope, the mirrored preferences, and the sync server association.
+ *
+ * Both halves matter for a "sign out": the vault goes, and so does the account
+ * it synced to — otherwise the next person to open the options page reads the
+ * previous owner's server URL and account id out of the form.
+ *
+ * Spelled out key by key rather than `chrome.storage.local.clear()`, so a key
+ * added later shows up as a survivor to fix here instead of being wiped along
+ * with everything else the extension might one day store.
+ */
+export async function clearAllStoredData(): Promise<void> {
+  await chrome.storage.local.remove([VAULT_KEY, SETTINGS_KEY, SYNC_KEY]);
 }

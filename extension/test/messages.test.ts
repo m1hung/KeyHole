@@ -181,6 +181,8 @@ describe('contentScriptRequestSchema', () => {
 
   it('rejects privileged shapes and smuggled tab/url fields', () => {
     expect(contentScriptRequestSchema.safeParse({ type: 'EXPORT_VAULT' }).success).toBe(false);
+    // A page must never be able to wipe the vault.
+    expect(contentScriptRequestSchema.safeParse({ type: 'RESET_VAULT' }).success).toBe(false);
     expect(contentScriptRequestSchema.safeParse({ type: 'UNLOCK', masterPassword: 'x'.repeat(20) }).success).toBe(
       false,
     );
@@ -241,6 +243,14 @@ describe('requestSchema', () => {
     for (const request of valid) {
       expect(requestSchema.safeParse(request).success).toBe(true);
     }
+  });
+
+  it('accepts RESET_VAULT with no payload', () => {
+    expect(requestSchema.safeParse({ type: 'RESET_VAULT' }).success).toBe(true);
+    // No master password, no confirmation token: the guard is the sender check
+    // plus the typed confirmation in the UI, and adding fields here would only
+    // create a second, weaker path.
+    expect(requestSchema.safeParse({ type: 'RESET_VAULT', confirm: 'DELETE' }).success).toBe(false);
   });
 
   it('accepts SET_THEME', () => {

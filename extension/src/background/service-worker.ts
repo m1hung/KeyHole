@@ -50,7 +50,7 @@ import {
   type Request,
   type Response,
 } from '../shared/messages.ts';
-import { clearVaultFile, hasVault, loadPrefs, loadSyncConfig, loadVaultFile, savePrefs, saveSyncConfig, saveVaultFile } from '../shared/storage.ts';
+import { clearAllStoredData, hasVault, loadPrefs, loadSyncConfig, loadVaultFile, savePrefs, saveSyncConfig, saveVaultFile } from '../shared/storage.ts';
 
 const AUTO_LOCK_ALARM = 'keyhole-auto-lock';
 const HEARTBEAT_ALARM = 'keyhole-heartbeat';
@@ -262,6 +262,15 @@ async function handle(request: Request): Promise<Response> {
       const file = await loadVaultFile();
       if (!file) return { ok: false, error: 'No vault to export.' };
       return { ok: true, type: 'EXPORT', file };
+    }
+
+    case 'RESET_VAULT': {
+      // Drop the session FIRST. `persist()` writes `vaultFile` back to storage,
+      // so a save racing this reset could otherwise re-create the envelope a
+      // moment after it was deleted; after `lock()` there is nothing to write.
+      lock();
+      await clearAllStoredData();
+      return { ok: true, type: 'OK' };
     }
 
     case 'LIST_ENTRIES': {
@@ -865,5 +874,3 @@ function describe(err: unknown): string {
   if (err instanceof Error) return err.message;
   return 'Something went wrong.';
 }
-
-export { clearVaultFile };

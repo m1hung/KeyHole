@@ -267,6 +267,13 @@ console.log('▸ smoke-testing the service worker');
       if (denied?.ok !== false) problems.push('service worker answered a content-script sender!');
       else console.log('  ✓ content-script sender rejected');
 
+      // The destructive one. A page reaching this would erase the vault.
+      const reset = await new Promise((resolve) => {
+        messageListeners[0]({ type: 'RESET_VAULT' }, hostile, resolve);
+      });
+      if (reset?.ok !== false) problems.push('service worker accepted RESET_VAULT from a content-script sender!');
+      else console.log('  ✓ content-script RESET_VAULT rejected');
+
       // Content scripts may ask for suggestions, but only for their own tab.
       const suggest = await new Promise((resolve) => {
         messageListeners[0]({ type: 'SUGGEST_FOR_PAGE' }, hostile, resolve);

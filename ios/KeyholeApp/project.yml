@@ -1,0 +1,28 @@
+name: Keyhole
+options:
+  bundleIdPrefix: app.keyhole
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  BASE_SDK: iphoneos
+  SWIFT_VERSION: "5.9"
+packages:
+  Keyhole:
+    path: ..
+targets:
+  KeyholeApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: KeyholeApp
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: app.keyhole.vault
+      INFOPLIST_FILE: KeyholeApp/Info.plist
+      TARGETED_DEVICE_FAMILY: "1,2"
+      GENERATE_INFOPLIST_FILE: false
+    dependencies:
+      - package: Keyhole
+        product: KeyholeCore
+    info:
+      path: KeyholeApp/Info.plist
