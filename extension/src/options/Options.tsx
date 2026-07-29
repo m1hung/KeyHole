@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength, generatePassword, DEFAULT_GENERATOR_OPTIONS } from '@keyhole/core';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
+import { ConfirmDialog } from '../../../app/src/components/common.tsx';
 import { SyncPanel } from './SyncPanel.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
@@ -39,6 +40,8 @@ const blankDraft = (): EntryDraft => ({
 export function Options() {
   const [screen, setScreen] = useState<Screen>('loading');
   const [entries, setEntries] = useState<EntrySummary[]>([]);
+  /** Total in the vault, unlike `entries` which is filtered by the search box. */
+  const [entryCount, setEntryCount] = useState(0);
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState<EntryDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +61,7 @@ export function Options() {
       return;
     }
     setTheme(state.theme);
+    setEntryCount(state.entryCount);
     const next: Screen = !state.hasVault ? 'no-vault' : state.locked ? 'locked' : 'unlocked';
     setScreen(next);
     if (next === 'unlocked') {
@@ -136,6 +140,27 @@ export function Options() {
     flash('Encrypted vault exported.');
   };
 
+  /**
+   * Sign out of this browser: the stored vault, the mirrored preferences and the
+   * sync account all go. Callers gate this behind a typed confirmation.
+   */
+  const resetVault = async () => {
+    setBusy(true);
+    const response = await sendToBackground({ type: 'RESET_VAULT' });
+    setBusy(false);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    setDraft(null);
+    setEntries([]);
+    setQuery('');
+    setError(null);
+    setView('entries');
+    flash('Vault removed from this browser.');
+    await refresh();
+  };
+
   const importVault = async (file: File) => {
     try {
       const parsed = JSON.parse(await file.text()) as unknown;
@@ -158,8 +183,10 @@ export function Options() {
       <SetupOrUnlock
         mode={screen}
         error={error}
+        notice={notice}
         busy={busy}
         onImport={importVault}
+        onReset={resetVault}
         onSubmit={async (password) => {
           setBusy(true);
           setError(null);
@@ -272,6 +299,7 @@ export function Options() {
         ) : (
           <main className="settings-pane">
             {error && <div className="error">{error}</div>}
+            {notice && <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p>}
             <SyncPanel
               theme={theme}
               onThemeChange={(next) => {
@@ -279,9 +307,74 @@ export function Options() {
                 void sendToBackground({ type: 'SET_THEME', theme: next });
               }}
             />
+            <DangerZone entryCount={entryCount} busy={busy} onReset={() => void resetVault()} />
           </main>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign out / start over.
+ *
+ * Mirrors the desktop app's danger zone, including the typed confirmation: the
+ * encrypted vault is the only copy unless the user exported one, so a stray
+ * click must not be enough to destroy it.
+ */
+function DangerZone({
+  entryCount,
+  busy,
+  onReset,
+}: {
+  entryCount: number;
+  busy: boolean;
+  onReset: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState('');
+
+  const close = () => {
+    setConfirming(false);
+    setTyped('');
+  };
+
+  return (
+    <div className="section">
+      <h3 style={{ color: 'var(--danger)' }}>Danger zone</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Signs out of this browser: the encrypted vault, your preferences and the sync server account are
+        removed from Chrome's storage, leaving the create-vault screen. Exported files and anything already
+        on a sync server are unaffected.
+      </p>
+      <button type="button" className="danger" disabled={busy} onClick={() => setConfirming(true)}>
+        Delete vault and start over
+      </button>
+
+      <ConfirmDialog
+        open={confirming}
+        title="Delete this vault?"
+        confirmLabel="Delete and start over"
+        danger
+        confirmDisabled={typed !== 'DELETE'}
+        onCancel={close}
+        onConfirm={() => {
+          close();
+          onReset();
+        }}
+      >
+        <p>
+          All <strong>{entryCount}</strong> {entryCount === 1 ? 'entry' : 'entries'} will be removed from this
+          browser, along with the saved sync server and account id.
+        </p>
+        <p className="hint">Without an exported backup, or a copy on a sync server, this vault cannot be recovered.</p>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="reset-confirm">Type DELETE to confirm</label>
+          <input id="reset-confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -411,20 +504,31 @@ function EntryForm({
 function SetupOrUnlock({
   mode,
   error,
+  notice,
   busy,
   onSubmit,
   onImport,
+  onReset,
 }: {
   mode: 'no-vault' | 'locked';
   error: string | null;
+  notice: string | null;
   busy: boolean;
   onSubmit: (password: string) => Promise<void>;
   onImport: (file: File) => Promise<void>;
+  onReset: () => Promise<void>;
 }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [purging, setPurging] = useState(false);
+  const [purgeTyped, setPurgeTyped] = useState('');
   const creating = mode === 'no-vault';
   const valid = creating ? password.length >= MIN_MASTER_PASSWORD_LENGTH && password === confirm : password.length > 0;
+
+  const closePurge = () => {
+    setPurging(false);
+    setPurgeTyped('');
+  };
 
   return (
     <div className="center-screen">
@@ -442,6 +546,7 @@ function SetupOrUnlock({
         <p className="subtitle">{creating ? 'Create a vault for this browser.' : 'Unlock your vault.'}</p>
 
         {error && <div className="error">{error}</div>}
+        {notice && <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p>}
 
         <div className="field">
           <label htmlFor="opt-master">Master password</label>
@@ -492,7 +597,56 @@ function SetupOrUnlock({
             }}
           />
         </div>
+
+        {/* Only reachable while locked — this is the way out of a forgotten
+            master password, which is exactly when the settings page cannot be
+            opened to reach the danger zone. */}
+        {!creating && (
+          <div className="section" style={{ marginTop: 12, paddingTop: 12 }}>
+            <button
+              type="button"
+              className="ghost danger-text"
+              style={{ width: '100%' }}
+              disabled={busy}
+              onClick={() => setPurging(true)}
+            >
+              Delete vault and start over
+            </button>
+            <p className="hint" style={{ textAlign: 'center', marginTop: 8 }}>
+              Forgot the password, or handing this browser to someone else? This erases the encrypted copy stored
+              here, along with the saved sync account.
+            </p>
+          </div>
+        )}
       </form>
+
+      <ConfirmDialog
+        open={purging}
+        title="Delete this vault?"
+        confirmLabel="Delete and start over"
+        danger
+        confirmDisabled={purgeTyped !== 'DELETE'}
+        onCancel={closePurge}
+        onConfirm={() => {
+          closePurge();
+          void onReset();
+        }}
+      >
+        <p>
+          The encrypted vault, your preferences and the saved sync server settings are removed from this browser.
+          You will return to the create-vault screen.
+        </p>
+        <p className="hint">Without an exported backup, or a copy on a sync server, this vault cannot be recovered.</p>
+        <div className="field" style={{ marginTop: 12 }}>
+          <label htmlFor="purge-confirm">Type DELETE to confirm</label>
+          <input
+            id="purge-confirm"
+            value={purgeTyped}
+            onChange={(e) => setPurgeTyped(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }
