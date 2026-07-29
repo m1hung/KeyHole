@@ -15,6 +15,13 @@ export interface StatusPageProps {
    * display to someone who reached this page across a network.
    */
   origin?: string | undefined;
+  /**
+   * Control-plane details, present only when this page is being served to a
+   * direct loopback request. Everything here is a capability: rendering it for
+   * a remote viewer would hand them a shutdown switch, so the decision is made
+   * by the caller in app.ts, not here.
+   */
+  control?: { token: string; port: number } | undefined;
 }
 
 /** The origin comes from a request header, so it is attacker-controlled text. */
@@ -31,10 +38,86 @@ export function renderStatusPage({
   accounts,
   allowRegistration,
   origin,
+  control,
 }: StatusPageProps): string {
   const registration = allowRegistration ? 'Open' : 'Closed';
   const registrationClass = allowRegistration ? 'ok' : 'warn';
   const serverUrl = escapeHtml(origin ?? `http://127.0.0.1:${port}`);
+
+  // Both halves are empty unless the caller decided this viewer is local. No
+  // markup, no token, no script — a remote page has nothing to drive and
+  // nothing to steal, rather than disabled buttons hinting at an endpoint.
+  const controlSection = control
+    ? `
+        <p class="section-label">Server controls</p>
+        <div class="controls">
+          <button type="button" id="restart-btn">Restart server</button>
+          <button type="button" id="stop-btn" class="danger">Stop server</button>
+        </div>
+        <p id="control-msg">Local session — these act on this machine.</p>`
+    : '';
+
+  // JSON.stringify, not interpolation: these end up inside a script element,
+  // and it is the escaping that makes that safe rather than the values
+  // happening to be a number and base64url today.
+  const controlScript = control
+    ? `
+      (function () {
+        const base = "http://127.0.0.1:" + ${JSON.stringify(control.port)};
+        const token = ${JSON.stringify(control.token)};
+        const msg = document.getElementById("control-msg");
+        const restartBtn = document.getElementById("restart-btn");
+        const stopBtn = document.getElementById("stop-btn");
+
+        function say(text, isError) {
+          msg.textContent = text;
+          msg.classList.toggle("err", Boolean(isError));
+        }
+
+        async function send(action) {
+          restartBtn.disabled = true;
+          stopBtn.disabled = true;
+          say(action === "stop" ? "Stopping…" : "Restarting…", false);
+          try {
+            const res = await fetch(base + "/control/v1/" + action, {
+              method: "POST",
+              headers: { Authorization: "Bearer " + token },
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            if (action === "stop") {
+              say("Stopped. Start it again from the Keyhole Sync Server icon.", false);
+              return;
+            }
+            // The server is going away and coming back, so poll rather than
+            // assuming a fixed pause is long enough.
+            for (let i = 0; i < 50; i++) {
+              await new Promise((r) => setTimeout(r, 300));
+              try {
+                const health = await fetch("/api/v1/health", { cache: "no-store" });
+                if (health.ok) {
+                  location.reload();
+                  return;
+                }
+              } catch {}
+            }
+            say("Restarted, but it has not answered yet. Check the logs.", true);
+          } catch (err) {
+            say("Failed: " + err.message, true);
+            restartBtn.disabled = false;
+            stopBtn.disabled = false;
+          }
+        }
+
+        restartBtn.addEventListener("click", () => send("restart"));
+        stopBtn.addEventListener("click", () => {
+          // Stopping ends sync for every device, and nothing on a web page can
+          // undo it — the way back is the desktop icon or systemctl.
+          if (confirm("Stop the Keyhole sync server? Other devices will not be able to sync until it is started again.")) {
+            send("stop");
+          }
+        });
+      })();`
+    : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -297,6 +380,50 @@ export function renderStatusPage({
       color: var(--accent);
     }
 
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .controls button {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      padding: 6px 14px;
+    }
+
+    .controls button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Stopping ends vault sync for every device, so it should not look like
+       the same weight of action as restarting. */
+    .controls button.danger:hover:not(:disabled) {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    .controls button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    #control-msg {
+      font-size: 12px;
+      color: var(--text-dim);
+      min-height: 1.2em;
+    }
+
+    #control-msg.err { color: var(--danger); }
+
     #console {
       flex: 1;
       margin: 0;
@@ -391,6 +518,7 @@ Settings  →  Sync server
 4. Sync now             (after that)</pre>
 
         <p class="hint">There is no vault UI on this host — open the Keyhole web app or extension to unlock and sync.</p>
+${controlSection}
       </main>
 
       <section class="card console-card" aria-label="Live server console">
@@ -493,6 +621,7 @@ Settings  →  Sync server
 
       connect();
     })();
+${controlScript}
   </script>
 </body>
 </html>`;

@@ -15,6 +15,22 @@ export interface ServerConfig {
   authWindowMs: number;
   /** Allow new accounts to be created. Turn off once your own are set up. */
   allowRegistration: boolean;
+  /**
+   * Expose the stop/restart control plane on a second listener.
+   *
+   * Off by default, and deliberately so. The API surface above is a blob store
+   * that cannot act on the machine it runs on; the control plane can. Turning
+   * that on should be a decision someone made, not something inherited from a
+   * default — the same reasoning that keeps the bind address explicit.
+   */
+  control: boolean;
+  /**
+   * Port for the control listener. Its *host* is not configurable: it is
+   * always loopback. A control plane reachable from a network is a remote
+   * shutdown switch for everyone's vault sync, and no environment variable
+   * should be able to arrange that by accident.
+   */
+  controlPort: number;
 }
 
 function intFromEnv(name: string, fallback: number): number {
@@ -37,6 +53,9 @@ export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
     authWindowMs: intFromEnv('KEYHOLE_AUTH_WINDOW_MS', 60_000),
     // Default open so a fresh deploy is usable; the docs tell you to close it.
     allowRegistration: (process.env['KEYHOLE_ALLOW_REGISTRATION'] ?? 'true') !== 'false',
+    // Opt-in, unlike everything else here: see ServerConfig.control.
+    control: process.env['KEYHOLE_CONTROL'] === 'true',
+    controlPort: intFromEnv('KEYHOLE_CONTROL_PORT', 8788),
     ...overrides,
   };
 }

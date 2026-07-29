@@ -90,6 +90,40 @@ account on your machine.
 | `KEYHOLE_AUTH_ATTEMPTS` | `10` | Failed auths per IP before cool-off |
 | `KEYHOLE_AUTH_WINDOW_MS` | `60000` | Cool-off window |
 | `KEYHOLE_ALLOW_REGISTRATION` | `true` | **Set `false` once your devices are enrolled** |
+| `KEYHOLE_CONTROL` | `false` | Stop/restart control plane, on a second listener |
+| `KEYHOLE_CONTROL_PORT` | `8788` | Control listener port — its host is always loopback |
+
+---
+
+## Control plane
+
+Off unless `KEYHOLE_CONTROL=true`. When on, a second listener offers exactly
+two actions — stop and restart — so the dashboard can drive the server without
+a terminal. There is no `start`: if the process is not running, nothing is here
+to answer.
+
+It is a separate listener rather than two more routes because the API is a blob
+store that cannot act on the machine, and this can. That difference earns it
+three properties the API does not need:
+
+- **Loopback only, and not configurable.** A proxy fronts the API port; it does
+  not front this one, so putting the API on a tailnet does not carry a remote
+  kill switch along with it.
+- **A bearer token, not the vault credential.** Regenerated every boot and
+  written to `control-token` beside the database with mode `0600`. Loopback is
+  not a trust boundary on a shared machine, and control over the server is a
+  different power from reading a vault — it should not be implied by it.
+- **Almost no CORS.** Only the dashboard's own local origin is allowed, so a
+  page on any other site cannot drive it through a browser running here.
+
+The dashboard renders the buttons only for a direct loopback request with no
+forwarding headers. Viewed through `tailscale serve` the page has no controls
+and no token in its source.
+
+Under systemd, restart exits `75`; map it with `RestartForceExitStatus=75` and
+`SuccessExitStatus=75` so the unit comes back without recording a crash. Stop
+exits `0` and stays down. `server/start-keyhole-server.sh` is the equivalent
+from the desktop, and it is the only one of the two that can also start.
 
 ---
 

@@ -52,9 +52,45 @@ export interface BuildOptions {
   logger?: boolean;
   /** Shared console buffer (tests can pass one to assert against). */
   consoleLog?: ConsoleLog;
+  /**
+   * Control-plane token, when one is running. Embedded in the dashboard for
+   * genuinely local viewers only — see `isDirectLoopback`. Undefined leaves the
+   * page exactly as it was.
+   */
+  controlToken?: string | undefined;
 }
 
-export function buildApp({ config, store, logger = false, consoleLog }: BuildOptions): FastifyInstance {
+/**
+ * Did this request come from this machine, without passing through a proxy?
+ *
+ * `request.ip` alone cannot answer that: `tailscale serve` connects over
+ * loopback, so every proxied request also looks like 127.0.0.1. What separates
+ * them is the forwarding headers a proxy adds. Anything carrying one is treated
+ * as remote, and a header we do not know about would only ever cost a local
+ * user their buttons — the failure is in the safe direction.
+ */
+function isDirectLoopback(request: FastifyRequest): boolean {
+  const forwardingHeaders = [
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-proto',
+    'forwarded',
+    'tailscale-user-login',
+    'tailscale-user-name',
+  ];
+  if (forwardingHeaders.some((h) => request.headers[h] !== undefined)) return false;
+
+  const ip = request.ip;
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+export function buildApp({
+  config,
+  store,
+  logger = false,
+  consoleLog,
+  controlToken,
+}: BuildOptions): FastifyInstance {
   const db = store ?? new Store(config.databasePath);
   const limiter = new AttemptLimiter(config.authAttemptsPerWindow, config.authWindowMs);
   const pepper = db.pepper();
@@ -169,6 +205,11 @@ export function buildApp({ config, store, logger = false, consoleLog }: BuildOpt
   /** Browser-friendly landing page — the API itself has no vault UI. */
   app.get('/', async (request, reply) => {
     const host = request.headers.host;
+    // The token is withheld from anything that reached us through a proxy, so
+    // a tailnet viewer gets a page with no controls and no credential to drive
+    // them with. Their browser could not reach the control port regardless —
+    // 127.0.0.1 there is their own machine — but the token should not travel.
+    const local = controlToken !== undefined && isDirectLoopback(request);
     const html = renderStatusPage({
       port: config.port,
       accounts: db.accountCount(),
@@ -176,6 +217,7 @@ export function buildApp({ config, store, logger = false, consoleLog }: BuildOpt
       // Show the address this request arrived on, so a page opened from another
       // device on the LAN does not tell the reader to use 127.0.0.1.
       origin: host ? `${request.protocol}://${host}` : undefined,
+      control: local ? { token: controlToken, port: config.controlPort } : undefined,
     });
     return reply.type('text/html; charset=utf-8').send(html);
   });
