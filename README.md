@@ -32,11 +32,14 @@ npm run demo                # end-to-end crypto proof, printed to the terminal
 npm run desktop             # build + run the native desktop app
 npm run build:desktop       # portable .exe → desktop/dist/Keyhole-1.0.0-portable.exe
 npm run dev:app             # renderer dev server with HMR at http://127.0.0.1:5173 (next free port if busy)
-npm run server:tray         # sync server as a one-click tray app
+npm run server:tray         # sync server as a one-click tray app (local use)
 npm run build:server-tray   # portable .exe → server-tray/dist/
-npm start --workspace @keyhole/server   # or run the sync server headless at http://127.0.0.1:8787
+npm start --workspace @keyhole/server   # sync server headless on 0.0.0.0:8787
 npm run build:extension     # extension/dist, ready to load unpacked
 ```
+
+Deploying the sync server for real — a Linux host, a domain, HTTPS — is
+[`server/DEPLOY.md`](server/DEPLOY.md).
 
 `npm run desktop` is how you *use* Keyhole; `npm run dev:app` is how you *work on*
 its UI, with HMR and no Electron rebuild in the loop. The dev server is a
@@ -206,19 +209,41 @@ The build is unsigned, so SmartScreen warns on first run — the executable does
 
 **Coming from the browser build?** They are different origins with separate stores, so the desktop app cannot see a browser vault. On first run it detects that case and offers to copy it across, reading — never deleting — the browser copy.
 
-## Running the sync server, one click
+## Running the sync server
+
+Sync is optional. Keyhole works fully offline; the server exists so several devices can share one vault, and it is meant to be **yours** — it stores encrypted envelopes and can read none of them.
+
+### The real deployment
+
+One Linux host, a domain you control, HTTPS from a real certificate, every device pointing at the same URL from any network:
+
+```sh
+KEYHOLE_DOMAIN=sync.example.com docker compose -f server/docker-compose.yml --profile tls up -d
+```
+
+Caddy terminates TLS and reaches the sync container over the compose network; the sync container is never published to the internet. **[`server/DEPLOY.md`](server/DEPLOY.md) walks the whole thing through** — DNS prerequisites, enrolling devices, closing registration, and backups.
+
+Registration is open by default so a fresh deploy is usable. On an internet-facing host, close it the moment your devices are enrolled — `DEPLOY.md` says this louder, and means it.
+
+### The one-click alternative
+
+For a purely local setup — one machine, or a couple on a home network — there is a Windows tray app that needs no Docker, no domain and no Node installation:
 
 ```sh
 npm run build:server-tray   # → server-tray/dist/Keyhole-Sync-Server-1.0.0-portable.exe
 ```
 
-Double-click it: a tray icon appears and the server is running at `http://127.0.0.1:8787`. No console window, no command line, and no Node installation — the server runs on the Node that Electron bundles. The tray menu offers the status page, Start/Stop/Restart, and the data folder.
+Double-click it and the server is running at `http://127.0.0.1:8787`, with a tray menu for the status page, Start/Stop/Restart and the data folder. It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults — a service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in. Tick **Allow access from other devices** to reach it from the same network, and see [`server-tray/README.md`](server-tray/README.md) for what that does and does not get you.
 
-It binds **loopback only** and pins its database to `%APPDATA%\Keyhole Sync Server\data\`, both overriding the server's own defaults (`0.0.0.0`, and a path relative to the working directory). A service you launch by double-clicking should not publish itself to every network you join, and should not create a fresh empty database depending on which folder Explorer was in.
+### Headless, no Docker
 
-To sync from another device on the same trusted network, tick **Allow access from other devices** in the tray menu — off by default, confirmed once, remembered. To sync across networks, don't: put both machines on a WireGuard mesh instead and let `tailscale serve` front the server with a real certificate while it stays on loopback. Either way a remote client wants TLS, since the sync credential travels in a header. [`server-tray/README.md`](server-tray/README.md) covers both, and `server/docker-compose.yml` ships a Caddy profile for the public-domain case.
+```sh
+npm start --workspace @keyhole/server   # 0.0.0.0:8787, ./data/keyhole.sqlite
+```
 
-For a headless deployment, run `server/` directly as before — that path is unchanged.
+Node 22.5+, no build step — Node runs the TypeScript directly and SQLite is built in. Put it behind a TLS-terminating proxy; the sync credential travels in an `Authorization` header.
+
+**These three keep separate databases** — the volume, `%APPDATA%`, and a path relative to your working directory. An account registered against one is invisible to the others, which looks exactly like having lost it. Set `KEYHOLE_DB` to an absolute path if you want them to share; the tray app pins its own deliberately and ignores that variable.
 
 ## Working on the UI
 

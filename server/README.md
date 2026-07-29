@@ -4,6 +4,10 @@ A versioned blob store for encrypted vaults. It authenticates devices, hands
 back the envelope you gave it, and refuses stale writes. It cannot read your
 vault — not "does not", *cannot*: no key ever reaches it.
 
+**Deploying it properly — a host, a domain, HTTPS, backups — is
+[`DEPLOY.md`](DEPLOY.md).** What follows is the reference: what it stores, how
+it is configured, and what the API does.
+
 ```sh
 docker compose -f server/docker-compose.yml up -d
 ```
