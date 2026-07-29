@@ -17,6 +17,13 @@
       "port": 8787
     },
     {
+      "name": "keyhole-sync-server-local",
+      "//": "The loopback-pinned variant (`npm run dev:server`, KEYHOLE_HOST=127.0.0.1). The default for working on this machine: registration is open by default, so the 0.0.0.0 config above offers account creation to the whole LAN.",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:server"],
+      "port": 8787
+    },
+    {
       "name": "keyhole-app-standalone",
       "//": "Built output, served the way an installed copy is. The dev server above deliberately has no service worker, so this is the only config where offline and install behaviour can be checked.",
       "runtimeExecutable": "npm",
