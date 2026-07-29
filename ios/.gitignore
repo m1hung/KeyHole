@@ -1,0 +1,6 @@
+# Generated on Mac
+KeyholeApp/*.xcodeproj
+KeyholeApp/*.xcworkspace
+**/DerivedData/
+**/.build/
+**/xcuserdata/

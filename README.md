@@ -1,12 +1,13 @@
 # 🔑 Keyhole
 
-A local-first, zero-knowledge password manager, in two surfaces that share one
-audited crypto core:
+A local-first, zero-knowledge password manager across surfaces that share one
+vault format (desktop/extension via `@keyhole/core`; iOS via a Swift port):
 
 | Surface | What it is | Why it exists |
 |---|---|---|
 | **Desktop app** | A portable Windows `.exe` — its own window, its own icon, no browser. | The vault you sit down with. Your passwords are a real file you can back up. |
 | **Chrome extension** | Manifest V3: popup, service worker, on-demand autofill. | Autofill has to happen in the browser. |
+| **iOS app** | Native SwiftUI vault client ([`ios/`](ios/README.md)). | Use the same sealed vault on iPhone/iPad (Vault MVP; no AutoFill yet). |
 
 No accounts. No telemetry. No phone-home of any kind. Your vault is a single
 encrypted file that never leaves your device — unless you opt in to a sync
@@ -16,7 +17,7 @@ envelopes it cannot read.
 **Contents** — [Quick start](#quick-start) · [Threat model](#threat-model) ·
 [Cryptographic design](#cryptographic-design) · [Autofill](#autofill-the-security-critical-path) ·
 [Desktop app](#the-desktop-app) · [Chrome extension](#the-chrome-extension) ·
-[Sync server](#the-sync-server) · [Development](#development)
+[iOS app](ios/README.md) · [Sync server](#the-sync-server) · [Development](#development)
 
 ---
 
@@ -27,6 +28,7 @@ core/         framework-agnostic crypto + vault (no I/O, 175 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
+ios/          SwiftUI iOS vault MVP (KeyholeCore Swift port + KeyholeApp)
 server/       optional self-hosted sync server (+ Linux/macOS launcher)
 server-tray/  that server as a one-click Windows tray app (portable .exe, no Node needed)
 examples/     demo vault with a published master password
