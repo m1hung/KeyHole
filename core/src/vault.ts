@@ -469,6 +469,34 @@ export function deleteEntry(data: VaultData, id: string): VaultData {
   return { ...data, entries };
 }
 
+/**
+ * Move several entries to the trash as one edit.
+ *
+ * Not a loop over `deleteEntry` at the call site, for two reasons. Every mutation
+ * in the app re-encrypts and writes the whole vault, so N calls are N saves — and
+ * a failure halfway through leaves a batch the user asked for as one action
+ * half-applied. And they share a single `deletedAt`, so the trash shows them as
+ * the one sweep it was rather than N timestamps a few milliseconds apart.
+ *
+ * Unknown or already-trashed ids are skipped rather than thrown on: the caller is
+ * typically acting on a list built a moment earlier (a health report), and an
+ * entry that a sync has since removed is already in the state this asks for.
+ * Failing the whole batch over it would drop the deletions that are still valid.
+ */
+export function deleteEntries(data: VaultData, ids: readonly string[]): VaultData {
+  const wanted = new Set(ids);
+  if (wanted.size === 0) return data;
+  if (!data.entries.some((e) => wanted.has(e.id) && e.deletedAt === null)) return data;
+
+  const timestamp = now();
+  return {
+    ...data,
+    entries: data.entries.map((e) =>
+      wanted.has(e.id) && e.deletedAt === null ? { ...e, deletedAt: timestamp, updatedAt: timestamp } : e,
+    ),
+  };
+}
+
 /** Take an entry back out of the trash. */
 export function restoreEntry(data: VaultData, id: string): VaultData {
   const index = data.entries.findIndex((e) => e.id === id);

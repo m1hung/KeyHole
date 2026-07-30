@@ -63,6 +63,12 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('FILL'), entryId: z.uuid(), tabId: z.number().int().nonnegative() }).strict(),
   z.object({ type: z.literal('SAVE_ENTRY'), entry: z.unknown() }).strict(),
   z.object({ type: z.literal('DELETE_ENTRY'), entryId: z.uuid() }).strict(),
+  /**
+   * Move several entries to the trash in one save — what the health panel's
+   * batch action sends. Reversible, like `DELETE_ENTRY`; the irreversible
+   * `PURGE_ENTRY` stays deliberately one entry at a time.
+   */
+  z.object({ type: z.literal('DELETE_ENTRIES'), entryIds: z.array(z.uuid()).min(1).max(5000) }).strict(),
   z.object({ type: z.literal('KEEPALIVE') }).strict(),
   z.object({ type: z.literal('GET_SYNC_CONFIG') }).strict(),
   z
