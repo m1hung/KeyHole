@@ -25,7 +25,7 @@ threat-model row below).
 ## Repository layout
 
 ```
-core/         framework-agnostic crypto + vault (no I/O, 238 tests)
+core/         framework-agnostic crypto + vault (no I/O, 244 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
@@ -50,7 +50,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 351 tests: 238 core + 66 extension + 47 server
+npm test                    # 358 tests: 244 core + 67 extension + 47 server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 ```
 
@@ -246,6 +246,15 @@ works is gone. The editor can copy or restore any of them.
 autofill immediately, and are destroyed for good after 30 days or when you say
 "delete forever". Before, a delete removed the entry and told every synced device to
 do the same — one misclick, gone everywhere, with the vault often the only copy.
+
+That is also what makes the health scan's **batch actions** safe to offer. Findings
+are selectable — individually, all at once, or a whole category ("every reused
+password") — and the bulk action is the reversible delete, applied as one edit with
+one timestamp. Acting on many entries at once, from a list a machine produced, is
+precisely where the irreversible one does not belong: "delete forever" stays in the
+trash, one entry at a time. Selection is per *entry*, not per finding, because a
+login is routinely weak *and* reused *and* stale — a checkbox per finding would let
+"3 selected" mean one password.
 
 Both are `schemaVersion: 4` (along with `totpConfig`, custom fields, attachments and
 the breach-check setting). History merges as a **union keyed by the change
@@ -568,7 +577,7 @@ Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app
 ## Development
 
 ```sh
-npm test                                       # 351 tests across core + extension + server
+npm test                                       # 358 tests across core + extension + server
 npm run typecheck                              # tsc --noEmit, all workspaces
 npm run demo                                   # end-to-end crypto proof
 npm run demo:vault --workspace @keyhole/core   # regenerate examples/
