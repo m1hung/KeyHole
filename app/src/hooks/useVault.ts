@@ -17,6 +17,7 @@ import {
   createVault as coreCreateVault,
   saveVault as coreSaveVault,
   unlockVault as coreUnlockVault,
+  SCHEMA_VERSION,
   type KdfPresetName,
   type VaultData,
   type VaultFile,
@@ -31,6 +32,8 @@ import {
   storeVault,
   writeToHandle,
 } from '../storage.ts';
+import { loadSyncConfig } from '../sync/storage.ts';
+import { rotateSyncAuthAfterRekey } from '../sync/runSync.ts';
 
 export type VaultStatus = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 
@@ -41,6 +44,12 @@ export interface VaultController {
   busy: boolean;
   /** Seconds until auto-lock, or null when locked / timeout disabled. */
   secondsUntilLock: number | null;
+  /**
+   * Schema version of the open vault when it was written by a newer Keyhole than
+   * this build, otherwise null. The vault is usable and unknown fields survive a
+   * save, but this build cannot show or maintain them — so say so.
+   */
+  foreignSchemaVersion: number | null;
 
   createVault: (masterPassword: string, preset?: KdfPresetName) => Promise<void>;
   unlock: (masterPassword: string) => Promise<void>;
@@ -192,9 +201,39 @@ export function useVault(): VaultController {
       try {
         const result = await coreChangeMasterPassword(file, current, next);
         sessionRef.current = result.session;
+        // Persist locally FIRST. If the server step below fails, the user still has a
+        // vault that opens with the password they just chose; the reverse order could
+        // leave the server expecting a password this device never adopted.
         await persist(result.file);
         setData(result.session.data);
+        // The old secret was derived from the old salt and is now worthless.
+        syncAuthSecretRef.current = null;
         registerActivity();
+
+        // Re-keying changes the KDF salt, which invalidates the account's sync
+        // verifier. Rotating here rather than at the call site is deliberate: a
+        // caller that forgets leaves sync broken with a 401 and no obvious cause,
+        // which is exactly the bug this replaces.
+        const syncConfig = loadSyncConfig();
+        if (syncConfig) {
+          try {
+            const rotated = await rotateSyncAuthAfterRekey({
+              baseUrl: syncConfig.baseUrl,
+              accountId: syncConfig.accountId,
+              currentMasterPassword: current,
+              nextMasterPassword: next,
+              previousFile: file,
+              newFile: result.file,
+            });
+            syncAuthSecretRef.current = rotated.syncAuthSecretB64;
+          } catch (syncErr) {
+            // The local change succeeded and must not be reported as a failure —
+            // but the user has to know sync needs attention, and why.
+            setError(
+              `Master password changed on this device, but the sync server could not be updated: ${messageFor(syncErr)} Sync will refuse this account until you retry from Settings → Sync.`,
+            );
+          }
+        }
       } catch (err) {
         setError(messageFor(err));
         throw err;
@@ -342,6 +381,10 @@ export function useVault(): VaultController {
       error,
       busy,
       secondsUntilLock,
+      // Derived rather than tracked: `migrate()` in core deliberately leaves a
+      // newer payload's version in place, so this cannot drift out of step with
+      // `data` the way separate state set at each unlock could.
+      foreignSchemaVersion: data !== null && data.schemaVersion > SCHEMA_VERSION ? data.schemaVersion : null,
       createVault,
       unlock,
       lock,

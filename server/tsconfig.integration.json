@@ -1,0 +1,21 @@
+{
+  "//": [
+    "Type-checks the cross-surface integration tests, which the main server config",
+    "cannot: it pins `lib` to ES2022 with no DOM and fences `rootDir` to this",
+    "directory, both on purpose — the server must never reach for a browser API or",
+    "import renderer code.",
+    "",
+    "These tests are the exception that proves it. They drive the real client helper",
+    "against the real server, so they need the DOM lib that `@keyhole/core` is typed",
+    "against (CryptoKey, SubtleCrypto) and imports from `app/`. Giving them their own",
+    "config keeps that widening off the server's own sources."
+  ],
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["test/rekey-rotation.test.ts", "src/**/*.ts"]
+}

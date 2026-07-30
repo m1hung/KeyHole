@@ -195,7 +195,8 @@ public func unlockVault(file input: Any, masterPassword: String) throws -> Vault
         vaultId: parsed.vaultId,
         key: vaultKey,
         data: try migrateVaultData(data),
-        unlockedAt: Date().timeIntervalSince1970 * 1000
+        unlockedAt: Date().timeIntervalSince1970 * 1000,
+        foreignSchemaVersion: foreignSchemaVersion(data)
     )
 }
 
@@ -294,16 +295,28 @@ public func lockSession(_ session: inout VaultSession) {
     session.unlockedAt = 0
 }
 
+/// Bring a decrypted payload up to the model this build understands.
+///
+/// A NEWER PAYLOAD IS NOT AN ERROR — same contract as `migrate()` in
+/// core/src/vault.ts. This used to throw, which meant a vault written by an
+/// updated desktop or extension could not be opened on this phone at all. Since
+/// `Entry`/`VaultData` now carry unrecognised fields through (see JSONValue.swift),
+/// a newer payload whose known fields decode is usable: read what we understand,
+/// preserve the rest verbatim. A genuinely malformed payload still throws, from
+/// decoding and `validateVaultData`.
 public func migrateVaultData(_ data: VaultData) throws -> VaultData {
-    if data.schemaVersion > SCHEMA_VERSION {
-        throw KeyholeError.unsupportedVersion(
-            "Vault schema \(data.schemaVersion) is newer than this build supports."
-        )
-    }
     var out = data
     out.tombstones = data.tombstones
-    out.schemaVersion = SCHEMA_VERSION
+    // Never stamp our own version onto a payload written by a newer build: the
+    // fields we cannot see are still in there, and relabelling it as ours would
+    // tell the next reader they are gone.
+    out.schemaVersion = max(data.schemaVersion, SCHEMA_VERSION)
     return out
+}
+
+/// How far ahead of this build a payload is, or nil when it is one we know.
+public func foreignSchemaVersion(_ data: VaultData) -> Int? {
+    data.schemaVersion > SCHEMA_VERSION ? data.schemaVersion : nil
 }
 
 // MARK: - CRUD
@@ -326,7 +339,9 @@ public func createEntry(data: VaultData, input: EntryInput) throws -> (data: Vau
         totpSecret: input.totpSecret,
         createdAt: timestamp,
         updatedAt: timestamp,
-        passwordUpdatedAt: timestamp
+        passwordUpdatedAt: timestamp,
+        history: [],
+        deletedAt: nil
     )
     var next = data
     next.entries.append(entry)
@@ -373,6 +388,14 @@ public func updateEntry(data: VaultData, id: String, patch: UpdateEntryPatch) th
     }
     var existing = data.entries[index]
     let passwordChanged = patch.password != nil && patch.password != existing.password
+    let changedAt = nowISO()
+    if passwordChanged {
+        existing.history = rememberPassword(
+            history: existing.history,
+            previousPassword: existing.password,
+            changedAt: changedAt
+        )
+    }
 
     if let kind = patch.kind { existing.kind = kind }
     if let title = patch.title {
@@ -385,8 +408,8 @@ public func updateEntry(data: VaultData, id: String, patch: UpdateEntryPatch) th
     if let tags = patch.tags { existing.tags = tags }
     if let folderId = patch.folderId { existing.folderId = folderId }
     if let totpSecret = patch.totpSecret { existing.totpSecret = totpSecret }
-    existing.updatedAt = nowISO()
-    if passwordChanged { existing.passwordUpdatedAt = nowISO() }
+    existing.updatedAt = changedAt
+    if passwordChanged { existing.passwordUpdatedAt = changedAt }
     if existing.title.isEmpty {
         throw KeyholeError.validation("Entry title must not be empty.")
     }
@@ -396,7 +419,53 @@ public func updateEntry(data: VaultData, id: String, patch: UpdateEntryPatch) th
     return next
 }
 
+/// Cap and dedupe rule mirrored from `rememberPassword` in core/src/vault.ts.
+/// Keyed on (changedAt, password) — the same key the merge uses, so two devices
+/// cannot end up with different histories for the same entry.
+private func rememberPassword(
+    history: [PasswordHistoryEntry],
+    previousPassword: String,
+    changedAt: String
+) -> [PasswordHistoryEntry] {
+    if previousPassword.isEmpty { return history }
+    let withoutDuplicate = history.filter {
+        !($0.changedAt == changedAt && $0.password == previousPassword)
+    }
+    let next = [PasswordHistoryEntry(password: previousPassword, changedAt: changedAt)] + withoutDuplicate
+    return Array(next.prefix(PASSWORD_HISTORY_LIMIT))
+}
+
+/// Move an entry to the trash. Reversible with `restoreEntry`; mirrors
+/// `deleteEntry` in core/src/vault.ts, which stopped destroying entries because a
+/// hard delete propagated to every synced device with no way back.
 public func deleteEntry(data: VaultData, id: String) throws -> VaultData {
+    guard let index = data.entries.firstIndex(where: { $0.id == id }) else {
+        throw KeyholeError.validation("No entry with id \(id).")
+    }
+    if data.entries[index].deletedAt != nil { return data }
+
+    let timestamp = nowISO()
+    var next = data
+    next.entries[index].deletedAt = timestamp
+    next.entries[index].updatedAt = timestamp
+    return next
+}
+
+/// Take an entry back out of the trash.
+public func restoreEntry(data: VaultData, id: String) throws -> VaultData {
+    guard let index = data.entries.firstIndex(where: { $0.id == id }) else {
+        throw KeyholeError.validation("No entry with id \(id).")
+    }
+    if data.entries[index].deletedAt == nil { return data }
+
+    var next = data
+    next.entries[index].deletedAt = nil
+    next.entries[index].updatedAt = nowISO()
+    return next
+}
+
+/// Destroy an entry for good, on every device. The old `deleteEntry`.
+public func purgeEntry(data: VaultData, id: String) throws -> VaultData {
     guard data.entries.contains(where: { $0.id == id }) else {
         throw KeyholeError.validation("No entry with id \(id).")
     }
@@ -407,6 +476,47 @@ public func deleteEntry(data: VaultData, id: String) throws -> VaultData {
         next: Tombstone(id: id, kind: .entry, deletedAt: nowISO())
     )
     return next
+}
+
+/// Purge anything that has sat in the trash past `TRASH_RETENTION_DAYS`.
+public func purgeExpiredTrash(data: VaultData, now: Date = Date()) -> VaultData {
+    let cutoff = now.timeIntervalSince1970 - Double(TRASH_RETENTION_DAYS) * 24 * 60 * 60
+    let expired = data.entries.filter { entry in
+        guard let deletedAt = entry.deletedAt,
+              let parsed = parseTrashDate(deletedAt) else { return false }
+        return parsed.timeIntervalSince1970 < cutoff
+    }
+    if expired.isEmpty { return data }
+
+    let timestamp = nowISO()
+    var next = data
+    let expiredIds = Set(expired.map(\.id))
+    next.entries = data.entries.filter { !expiredIds.contains($0.id) }
+    next.tombstones = expired.reduce(data.tombstones) { acc, entry in
+        recordTombstone(existing: acc, next: Tombstone(id: entry.id, kind: .entry, deletedAt: timestamp))
+    }
+    return next
+}
+
+private func parseTrashDate(_ iso: String) -> Date? {
+    let withFraction = ISO8601DateFormatter()
+    withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = withFraction.date(from: iso) { return date }
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: iso)
+}
+
+/// Live entries only — the trash is reached through `trashedEntries`.
+public func liveEntries(_ data: VaultData) -> [Entry] {
+    data.entries.filter { $0.deletedAt == nil }
+}
+
+/// What is currently in the trash, most recently deleted first.
+public func trashedEntries(_ data: VaultData) -> [Entry] {
+    data.entries
+        .filter { $0.deletedAt != nil }
+        .sorted { ($0.deletedAt ?? "") > ($1.deletedAt ?? "") }
 }
 
 private func recordTombstone(existing: [Tombstone], next: Tombstone) -> [Tombstone] {
@@ -460,10 +570,11 @@ public func searchEntries(data: VaultData, query: String) -> [Entry] {
     let sorted = { (a: Entry, b: Entry) -> Bool in
         a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
     }
+    let live = liveEntries(data)
     if q.isEmpty {
-        return data.entries.sorted(by: sorted)
+        return live.sorted(by: sorted)
     }
-    return data.entries.filter { e in
+    return live.filter { e in
         e.title.lowercased().contains(q)
             || e.username.lowercased().contains(q)
             || e.tags.contains(where: { $0.lowercased().contains(q) })

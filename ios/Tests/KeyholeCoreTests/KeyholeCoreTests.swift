@@ -203,3 +203,261 @@ final class GeneratorAndTotpTests: XCTestCase {
         XCTAssertEqual(PassphraseWordlist.words.count, 2048)
     }
 }
+
+/// Interop with the TypeScript surfaces, which read and write the same payload.
+///
+/// These are the rules that cannot be checked from the TS side: what *this*
+/// implementation puts on the wire.
+final class PayloadInteropTests: XCTestCase {
+    private func encodedEntryJSON(_ entry: Entry) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(entry)
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func sampleEntry(extras: [String: JSONValue] = [:]) -> Entry {
+        Entry(
+            id: "11111111-1111-4111-8111-111111111111",
+            title: "Example",
+            username: "someone",
+            password: "secret",
+            urls: ["https://example.com"],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            passwordUpdatedAt: "2026-01-01T00:00:00.000Z",
+            extras: extras
+        )
+    }
+
+    /// The TS schema declares `folderId` / `totpSecret` nullable, not optional. A
+    /// synthesised Swift encoder would `encodeIfPresent` and omit them, which made
+    /// every vault this app saved unreadable on desktop — almost no entry has a TOTP
+    /// secret. The keys must be present and null.
+    func testNullValuedKeysAreWrittenExplicitly() throws {
+        let json = try encodedEntryJSON(sampleEntry())
+        XCTAssertTrue(json.keys.contains("folderId"), "folderId must be present, not omitted")
+        XCTAssertTrue(json.keys.contains("totpSecret"), "totpSecret must be present, not omitted")
+        XCTAssertTrue(json["folderId"] is NSNull)
+        XCTAssertTrue(json["totpSecret"] is NSNull)
+    }
+
+    /// Fields written by a newer Keyhole must survive being read and re-saved here,
+    /// or syncing through this device destroys what another surface wrote.
+    func testUnknownEntryFieldsSurviveARoundTrip() throws {
+        let extras: [String: JSONValue] = [
+            "history": .array([
+                .object(["password": .string("previous-one"), "changedAt": .string("2025-06-01T00:00:00.000Z")])
+            ]),
+            "deletedAt": .null,
+            "someCount": .int(7),
+        ]
+        let encoded = try JSONEncoder().encode(sampleEntry(extras: extras))
+        let decoded = try JSONDecoder().decode(Entry.self, from: encoded)
+
+        XCTAssertEqual(decoded.extras, extras)
+        XCTAssertEqual(decoded.title, "Example")
+
+        // And again, to prove re-encoding does not drop them.
+        let reEncoded = try JSONEncoder().encode(decoded)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: reEncoded) as? [String: Any])
+        XCTAssertNotNil(json["history"])
+        XCTAssertEqual(json["someCount"] as? Int, 7, "an integer must not come back as 7.0")
+    }
+
+    func testUnknownTopLevelFieldsSurviveARoundTrip() throws {
+        var data = emptyVaultData()
+        data.extras = ["futureTopLevelKey": .object(["anything": .bool(true)])]
+        let decoded = try JSONDecoder().decode(VaultData.self, from: try JSONEncoder().encode(data))
+        XCTAssertEqual(decoded.extras, data.extras)
+    }
+
+    /// A payload from a newer build opens rather than throwing — refusing it locked
+    /// this device out of a vault the desktop had merely updated.
+    func testNewerSchemaOpensAndReportsItself() throws {
+        var data = emptyVaultData()
+        data.schemaVersion = 42
+        let migrated = try migrateVaultData(data)
+        XCTAssertEqual(migrated.schemaVersion, 42, "must not be relabelled as ours")
+        XCTAssertEqual(foreignSchemaVersion(data), 42)
+        XCTAssertNil(foreignSchemaVersion(emptyVaultData()))
+    }
+}
+
+/// The health port must agree with `core/src/health.ts`. Two surfaces disagreeing
+/// about what counts as a weak or reused password would be worse than either rule
+/// on its own, so these mirror the TypeScript tests.
+final class HealthTests: XCTestCase {
+    private func login(_ title: String, password: String, passwordUpdatedAt: String = "2026-07-01T00:00:00.000Z") -> Entry {
+        Entry(
+            id: UUID().uuidString.lowercased(),
+            title: title,
+            password: password,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            passwordUpdatedAt: passwordUpdatedAt
+        )
+    }
+
+    private func vault(_ entries: [Entry]) -> VaultData {
+        var data = emptyVaultData()
+        data.entries = entries
+        return data
+    }
+
+    func testFlagsReuseAcrossEntries() {
+        let shared = "correct-horse-battery-staple-42"
+        let report = analyzeVaultHealth(vault([
+            login("A", password: shared),
+            login("B", password: shared),
+            login("C", password: "an-entirely-different-one-99"),
+        ]))
+        let reused = report.issues.filter { $0.kind == .reused }
+        XCTAssertEqual(reused.count, 2)
+        XCTAssertEqual(report.loginCount, 3)
+        // Wording matters: it is shown verbatim next to the entry.
+        XCTAssertEqual(reused.first?.detail, "Same password as 1 other login.")
+    }
+
+    func testFlagsEmptyAndWeak() {
+        let report = analyzeVaultHealth(vault([
+            login("Empty", password: ""),
+            login("Weak", password: "abc"),
+        ]))
+        XCTAssertTrue(report.issues.contains { $0.kind == .empty && $0.title == "Empty" })
+        XCTAssertTrue(report.issues.contains { $0.kind == .weak && $0.title == "Weak" })
+        // An entry with no password is not also counted as weak or reused.
+        XCTAssertFalse(report.issues.contains { $0.kind == .weak && $0.title == "Empty" })
+    }
+
+    func testFlagsStalePasswords() {
+        let twoYearsAgo = Date().addingTimeInterval(-2 * 365 * 24 * 60 * 60)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let report = analyzeVaultHealth(vault([
+            login("Old", password: "a-long-enough-unique-password-1", passwordUpdatedAt: formatter.string(from: twoYearsAgo))
+        ]))
+        XCTAssertTrue(report.issues.contains { $0.kind == .stale })
+    }
+
+    func testCleanVaultHasNoIssues() {
+        let report = analyzeVaultHealth(vault([
+            login("A", password: "9x!Kq2vTn4Lm8Zr6Wb3Y"),
+            login("B", password: "Qw7#Rt2$Yu5^Ip9&Ka3*"),
+        ]))
+        XCTAssertEqual(report.issues, [])
+        XCTAssertEqual(report.loginCount, 2)
+    }
+
+    /// Notes have no password to audit, so they must not appear at all.
+    func testIgnoresNotes() {
+        var note = login("A note", password: "")
+        note.kind = .note
+        let report = analyzeVaultHealth(vault([note]))
+        XCTAssertEqual(report.issues, [])
+        XCTAssertEqual(report.loginCount, 0)
+    }
+}
+
+/// Password history and the trash, mirroring core/test/vault.test.ts. Two
+/// implementations of one vault format have to agree on these or syncing between
+/// a phone and a desktop silently loses data.
+final class HistoryAndTrashTests: XCTestCase {
+    private func vaultWithLogin(password: String = "first") throws -> (data: VaultData, id: String) {
+        let result = try createEntry(
+            data: emptyVaultData(),
+            input: EntryInput(title: "Bank", password: password)
+        )
+        return (result.data, result.entry.id)
+    }
+
+    func testRotationKeepsTheSupersededPassword() throws {
+        let (data, id) = try vaultWithLogin()
+        XCTAssertEqual(getEntry(data: data, id: id)?.history.count, 0)
+
+        let rotated = try updateEntry(data: data, id: id, patch: UpdateEntryPatch(password: "second"))
+        let entry = try XCTUnwrap(getEntry(data: rotated, id: id))
+        XCTAssertEqual(entry.password, "second")
+        XCTAssertEqual(entry.history.map(\.password), ["first"])
+    }
+
+    func testUnchangedPasswordRecordsNothing() throws {
+        let (data, id) = try vaultWithLogin()
+        let renamed = try updateEntry(data: data, id: id, patch: UpdateEntryPatch(title: "Bank renamed"))
+        XCTAssertEqual(getEntry(data: renamed, id: id)?.history.count, 0)
+
+        let rewritten = try updateEntry(data: data, id: id, patch: UpdateEntryPatch(password: "first"))
+        XCTAssertEqual(getEntry(data: rewritten, id: id)?.history.count, 0)
+    }
+
+    func testHistoryIsCapped() throws {
+        var (data, id) = try vaultWithLogin(password: "pw-0")
+        for i in 1...(PASSWORD_HISTORY_LIMIT + 5) {
+            data = try updateEntry(data: data, id: id, patch: UpdateEntryPatch(password: "pw-\(i)"))
+        }
+        let history = try XCTUnwrap(getEntry(data: data, id: id)?.history)
+        XCTAssertEqual(history.count, PASSWORD_HISTORY_LIMIT)
+        XCTAssertFalse(history.contains { $0.password == "pw-0" })
+    }
+
+    /// The whole point of the trash: deleting stopped destroying anything.
+    func testDeleteIsReversible() throws {
+        let (data, id) = try vaultWithLogin()
+        let trashed = try deleteEntry(data: data, id: id)
+
+        XCTAssertEqual(trashed.entries.count, 1)
+        XCTAssertNotNil(getEntry(data: trashed, id: id)?.deletedAt)
+        XCTAssertEqual(searchEntries(data: trashed, query: "").count, 0, "trashed entries must not appear in the list")
+        XCTAssertEqual(trashedEntries(trashed).map(\.id), [id])
+        XCTAssertTrue(trashed.tombstones.isEmpty, "a soft delete must not propagate a deletion")
+
+        let restored = try restoreEntry(data: trashed, id: id)
+        XCTAssertNil(getEntry(data: restored, id: id)?.deletedAt)
+        XCTAssertEqual(searchEntries(data: restored, query: "").count, 1)
+    }
+
+    func testPurgeDestroysAndTombstones() throws {
+        let (data, id) = try vaultWithLogin()
+        let purged = try purgeEntry(data: try deleteEntry(data: data, id: id), id: id)
+        XCTAssertTrue(purged.entries.isEmpty)
+        XCTAssertEqual(purged.tombstones.map(\.id), [id])
+    }
+
+    func testExpiredTrashIsSweptButFreshTrashIsNot() throws {
+        let (data, id) = try vaultWithLogin()
+        let trashed = try deleteEntry(data: data, id: id)
+        let deletedAt = try XCTUnwrap(getEntry(data: trashed, id: id)?.deletedAt)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let deletedDate = try XCTUnwrap(formatter.date(from: deletedAt))
+        let day: TimeInterval = 24 * 60 * 60
+
+        let early = purgeExpiredTrash(
+            data: trashed,
+            now: deletedDate.addingTimeInterval(Double(TRASH_RETENTION_DAYS - 1) * day)
+        )
+        XCTAssertEqual(early.entries.count, 1)
+
+        let swept = purgeExpiredTrash(
+            data: trashed,
+            now: deletedDate.addingTimeInterval(Double(TRASH_RETENTION_DAYS + 1) * day)
+        )
+        XCTAssertTrue(swept.entries.isEmpty)
+        XCTAssertEqual(swept.tombstones.map(\.id), [id])
+    }
+
+    /// The merge trap: whole-entry last-write-wins would drop one device's row.
+    func testMergeKeepsBothDevicesHistory() throws {
+        let (base, id) = try vaultWithLogin(password: "original")
+        let onPhone = try updateEntry(data: base, id: id, patch: UpdateEntryPatch(password: "from-the-phone"))
+        let onDesktop = try updateEntry(data: base, id: id, patch: UpdateEntryPatch(password: "from-the-desktop"))
+
+        let merged = mergeVaultData(onPhone, onDesktop).data
+        let passwords = try XCTUnwrap(merged.entries.first?.history.map(\.password))
+        XCTAssertTrue(passwords.contains("original"))
+        XCTAssertEqual(Set(passwords).count, passwords.count, "no duplicated rows")
+
+        // Symmetric, like every other merge rule.
+        let ab = try VaultJSON.canonicalString(mergeVaultData(onPhone, onDesktop).data)
+        let ba = try VaultJSON.canonicalString(mergeVaultData(onDesktop, onPhone).data)
+        XCTAssertEqual(ab, ba)
+    }
+}

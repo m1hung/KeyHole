@@ -639,6 +639,9 @@ function ChangeMasterPassword({ vault }: { vault: VaultController }) {
   const [confirm, setConfirm] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [done, setDone] = useState(false);
+  /* Re-keying re-points the sync account too, which is worth saying out loud —
+     every other device will need the new password before it can sync again. */
+  const syncConfigured = loadSyncConfig() !== null;
 
   const valid = next.length >= MIN_MASTER_PASSWORD_LENGTH && next === confirm && current.length > 0;
 
@@ -661,6 +664,7 @@ function ChangeMasterPassword({ vault }: { vault: VaultController }) {
       {done && (
         <p className="hint" style={{ color: 'var(--ok)' }}>
           Master password changed. Re-export your backup — older exports still use the old password.
+          {syncConfigured && ' Your sync account was re-pointed at the new password; other devices will need it too.'}
         </p>
       )}
       <div className="field">

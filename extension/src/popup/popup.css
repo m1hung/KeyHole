@@ -330,6 +330,19 @@ label {
   font-size: 12px;
 }
 
+/* Informational, not a failure — a newer build wrote this vault. Neutral colours
+   so it does not read as something being wrong. */
+.popup-notice {
+  margin: 8px 12px;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
 /* Why the fill failed, in host terms. Quieter than the message itself, and
    selectable — its job is to be read out or pasted into a bug report. */
 .popup-error-detail {

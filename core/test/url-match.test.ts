@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { displayHost, findMatchingEntries, matchUrl, parseTarget } from '../src/url-match.ts';
-import { createEntry, emptyVaultData } from '../src/vault.ts';
+import { createEntry, deleteEntry, emptyVaultData, restoreEntry } from '../src/vault.ts';
 import type { Entry } from '../src/types.ts';
 
 describe('parseTarget', () => {
@@ -179,5 +179,34 @@ describe('displayHost', () => {
   it('extracts the host, falling back to the raw input', () => {
     expect(displayHost('https://github.com/login?x=1')).toBe('github.com');
     expect(displayHost('not a url')).toBe('not a url');
+  });
+});
+
+describe('trashed entries', () => {
+  /**
+   * The single most important consequence of soft delete: a deleted login must
+   * never be offered for autofill again. The user's last word on it was "delete";
+   * it is only still in the vault so they can change their mind.
+   */
+  it('are never offered, at any match strength', () => {
+    let data = emptyVaultData();
+    data = createEntry(data, { title: 'Live', urls: ['https://example.com'] }).data;
+    data = createEntry(data, { title: 'Binned', urls: ['https://example.com'] }).data;
+    const binnedId = data.entries[1]!.id;
+    data = deleteEntry(data, binnedId);
+
+    for (const mode of ['exact', 'host', 'subdomain', 'domain'] as const) {
+      const titles = findMatchingEntries(data.entries, 'https://example.com/login', mode).map((m) => m.entry.title);
+      expect(titles).toEqual(['Live']);
+    }
+  });
+
+  it('are offered again once restored', () => {
+    let data = emptyVaultData();
+    data = createEntry(data, { title: 'Binned', urls: ['https://example.com'] }).data;
+    const id = data.entries[0]!.id;
+
+    expect(findMatchingEntries(deleteEntry(data, id).entries, 'https://example.com')).toEqual([]);
+    expect(findMatchingEntries(restoreEntry(deleteEntry(data, id), id).entries, 'https://example.com')).toHaveLength(1);
   });
 });

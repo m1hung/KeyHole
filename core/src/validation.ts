@@ -6,6 +6,26 @@
  * written by someone holding the key, but a vault written by a future (or
  * buggy) build could still be structurally wrong, and we would rather fail
  * loudly at the boundary than propagate `undefined` into the UI.
+ *
+ * STRICT WHERE IT PROVES SOMETHING, LOOSE WHERE IT ONLY HURTS:
+ *
+ * The envelope schemas stay `.strict()`. That part is unencrypted, so an
+ * unexpected key there is a real signal — corruption, or someone appending to a
+ * file they cannot decrypt.
+ *
+ * The payload schemas are `.loose()`: known fields are validated exactly as
+ * before, and unrecognised ones are carried through instead of rejected. The
+ * distinction that matters is between a *malformed* payload and a *well-formed
+ * one carrying a field this build has not learned about yet*. Only a Keyhole
+ * holding the key can produce the latter, and rejecting it does not protect the
+ * user — it locks them out of their own passwords on whichever device they
+ * updated last. Keyhole now runs on four surfaces against one synced vault
+ * (desktop, extension, iOS, and any older build still installed), so "newer
+ * vault meets older reader" is routine rather than exotic.
+ *
+ * Carrying unknown fields through also means an older build cannot silently
+ * strip them: it re-encrypts what it read, so a round trip through a stale
+ * device does not destroy data written by a current one.
  */
 
 import { z } from 'zod';
@@ -43,7 +63,7 @@ export const generatorOptionsSchema = z
     symbols: z.boolean(),
     excludeAmbiguous: z.boolean(),
   })
-  .strict();
+  .loose();
 
 export const settingsSchema = z
   .object({
@@ -53,7 +73,7 @@ export const settingsSchema = z
     theme: z.enum(['light', 'dark', 'system']),
     lockOnHide: z.boolean(),
   })
-  .strict();
+  .loose();
 
 export const entrySchema = z
   .object({
@@ -66,13 +86,32 @@ export const entrySchema = z
     urls: z.array(z.string().max(2048)).max(64),
     notes: z.string().max(64 * 1024),
     tags: z.array(z.string().max(64)).max(64),
-    folderId: z.uuid().nullable(),
-    totpSecret: z.string().max(512).nullable(),
+    /*
+     * Nullable AND defaulted, because "absent" and "null" both occur in the wild.
+     * Swift synthesises `encodeIfPresent` for optional properties, so the iOS build
+     * omits these keys instead of writing an explicit null — and requiring them
+     * present made every vault saved by that app unreadable here, since almost no
+     * entry has a TOTP secret. iOS now writes explicit nulls (see Types.swift), but
+     * vaults it already wrote have to keep opening.
+     */
+    folderId: z.uuid().nullable().default(null),
+    totpSecret: z.string().max(512).nullable().default(null),
     createdAt: isoDate,
     updatedAt: isoDate,
     passwordUpdatedAt: isoDate,
+    /*
+     * Defaulted, like `kind` before them: a schema-2 vault has neither field, and
+     * defaulting here is what lets an older vault open without a rewrite pass.
+     * The cap is enforced when writing (see `rememberPassword`), not here, so a
+     * vault that somehow exceeds it still opens rather than becoming unreadable.
+     */
+    history: z
+      .array(z.object({ password: z.string().max(4096), changedAt: isoDate }).loose())
+      .max(1000)
+      .default([]),
+    deletedAt: isoDate.nullable().default(null),
   })
-  .strict();
+  .loose();
 
 export const folderSchema = z
   .object({
@@ -80,7 +119,7 @@ export const folderSchema = z
     name: z.string().min(1).max(128),
     createdAt: isoDate,
   })
-  .strict();
+  .loose();
 
 export const tombstoneSchema = z
   .object({
@@ -88,7 +127,7 @@ export const tombstoneSchema = z
     kind: z.enum(['entry', 'folder']),
     deletedAt: isoDate,
   })
-  .strict();
+  .loose();
 
 export const vaultDataSchema = z
   .object({
@@ -106,7 +145,7 @@ export const vaultDataSchema = z
     settings: settingsSchema,
     updatedAt: isoDate,
   })
-  .strict();
+  .loose();
 
 export const vaultFileSchema = z
   .object({

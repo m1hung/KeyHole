@@ -27,18 +27,24 @@
 
 import {
   DecryptionError,
+  analyzeVaultHealth,
   createEntry,
+  changeMasterPassword,
   createVault,
   deleteEntry as coreDeleteEntry,
   deriveSyncAuthSecret,
   displayHost,
   findMatchingEntries,
   generateTotp,
+  liveEntries,
   matchRank,
   parseTarget,
+  purgeEntry,
   registrableDomain,
+  restoreEntry,
   saveVault,
   searchEntries,
+  trashedEntries,
   unlockVault,
   updateEntry,
   type Entry,
@@ -47,7 +53,7 @@ import {
   type VaultSession,
 } from '@keyhole/core';
 import { healthCheck, registerAccount, fetchPrelogin, getVault, putVault, SyncClientError } from '../../../app/src/sync/client.ts';
-import { performSync } from '../../../app/src/sync/runSync.ts';
+import { performSync, rotateSyncAuthAfterRekey } from '../../../app/src/sync/runSync.ts';
 import {
   contentScriptRequestSchema,
   isContentScriptSender,
@@ -181,6 +187,60 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   void updateMatchBadge();
 });
 
+/**
+ * Keyboard autofill, without opening the popup.
+ *
+ * A command invocation is a user gesture on the active tab, so it carries the same
+ * `activeTab` grant the toolbar click does, and it runs through the identical
+ * `fill()` path — frame resolution, TOCTOU re-check and single-frame delivery
+ * included. It is a shortcut for the click, not a second, looser way in.
+ *
+ * WHEN IN DOUBT, DO NOTHING. If several entries match the page equally well, this
+ * refuses rather than picking one: a hotkey that silently types the wrong account's
+ * password into a login form is worse than a hotkey that does nothing, and there is
+ * no UI here in which to disambiguate.
+ */
+chrome.commands?.onCommand.addListener((command, tab) => {
+  if (command !== 'fill-best-match') return;
+  void fillBestMatch(tab?.id);
+});
+
+async function fillBestMatch(tabId: number | undefined): Promise<void> {
+  if (typeof tabId !== 'number' || !session) return;
+  touch();
+
+  const url = await tabUrl(tabId);
+  if (!url) return;
+
+  const matches = findMatchingEntries(session.data.entries, url, MATCH_MODE);
+  const best = matches[0];
+  if (!best) return;
+
+  // Ambiguous when the runner-up is just as good a match — "same site, two
+  // accounts" is the common case, and only the user knows which one they want.
+  const runnerUp = matches[1];
+  if (runnerUp && matchRank(runnerUp.strength) === matchRank(best.strength)) {
+    await flashBadge(tabId, '?');
+    return;
+  }
+
+  const result = await fill(best.entry.id, tabId);
+  if (!result.ok) await flashBadge(tabId, '!');
+}
+
+/**
+ * Say something on the toolbar icon, since a keyboard fill has no window to report
+ * into. Restores the match count afterwards.
+ */
+async function flashBadge(tabId: number, text: string): Promise<void> {
+  try {
+    await chrome.action.setBadgeText({ tabId, text });
+    setTimeout(() => void updateMatchBadge(tabId), 2000);
+  } catch {
+    // Badge unavailable; the fill result is unaffected.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Message routing
 // ---------------------------------------------------------------------------
@@ -248,9 +308,12 @@ async function handle(request: Request): Promise<Response> {
         type: 'STATE',
         locked: session === null,
         hasVault: await hasVault(),
-        entryCount: session?.data.entries.length ?? 0,
+        // Live only: the trash is reported separately, and counting it here would
+        // make "12 entries" disagree with the list the user is looking at.
+        entryCount: session ? liveEntries(session.data).length : 0,
         autoLockMinutes: session?.data.settings.autoLockMinutes ?? prefs.autoLockMinutes,
         theme: session?.data.settings.theme ?? prefs.theme,
+        foreignSchemaVersion: session?.foreignSchemaVersion ?? null,
       };
     }
 
@@ -309,6 +372,24 @@ async function handle(request: Request): Promise<Response> {
       return { ok: true, type: 'OK' };
     }
 
+    case 'CHANGE_MASTER_PASSWORD':
+      return changeMasterPasswordHere(request.currentPassword, request.newPassword);
+
+    case 'HEALTH_REPORT': {
+      if (!session) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      // Runs here, in the only process holding decrypted entries, and returns
+      // findings rather than passwords. Nothing is persisted or sent anywhere.
+      const report = analyzeVaultHealth(session.data);
+      return {
+        ok: true,
+        type: 'HEALTH',
+        issues: report.issues,
+        loginCount: report.loginCount,
+        checkedAt: report.checkedAt,
+      };
+    }
+
     case 'LIST_ENTRIES': {
       if (!session) return { ok: false, error: 'Vault is locked.' };
       touch();
@@ -357,6 +438,41 @@ async function handle(request: Request): Promise<Response> {
       const result = await saveEntry(request.entry);
       if (result.ok) void updateMatchBadge();
       return result;
+    }
+
+    case 'LIST_TRASH': {
+      if (!session) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      const entries = trashedEntries(session.data).map((entry) => ({
+        ...toSummary(entry),
+        deletedAt: entry.deletedAt,
+      }));
+      return { ok: true, type: 'ENTRIES', entries };
+    }
+
+    case 'RESTORE_ENTRY': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        session.data = restoreEntry(session.data, request.entryId);
+        await persist();
+        void updateMatchBadge();
+        return { ok: true, type: 'OK' };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
+    }
+
+    case 'PURGE_ENTRY': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        session.data = purgeEntry(session.data, request.entryId);
+        await persist();
+        return { ok: true, type: 'OK' };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
     }
 
     case 'DELETE_ENTRY': {
@@ -848,6 +964,70 @@ async function persist(): Promise<void> {
   if (!session || !vaultFile) throw new Error('Vault is locked.');
   vaultFile = await saveVault(session, vaultFile);
   await saveVaultFile(vaultFile);
+}
+
+/**
+ * Re-key the vault from the extension.
+ *
+ * Until this existed, someone whose only Keyhole was the extension could not change
+ * their master password at all — the capability was in core and surfaced on desktop
+ * and iOS only.
+ *
+ * Ordering matches the desktop path deliberately: persist the re-keyed envelope
+ * locally *before* touching the server, so a network failure leaves a vault that
+ * opens with the password the user just chose. The reverse could leave the server
+ * expecting a password this device never adopted.
+ */
+async function changeMasterPasswordHere(currentPassword: string, newPassword: string): Promise<Response> {
+  if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+  touch();
+
+  const previousFile = vaultFile;
+  let rekeyed: { file: VaultFile; session: VaultSession };
+  try {
+    rekeyed = await changeMasterPassword(previousFile, currentPassword, newPassword);
+  } catch (err) {
+    return { ok: false, error: describe(err) };
+  }
+
+  try {
+    await saveVaultFile(rekeyed.file);
+  } catch (err) {
+    // Nothing was written, so the old password still opens the stored vault.
+    return { ok: false, error: describe(err) };
+  }
+
+  await markUnlocked(rekeyed.session, rekeyed.file);
+  // Derived from the old salt, so worthless now.
+  syncAuthSecretB64 = null;
+
+  const config = await loadSyncConfig();
+  if (!config) {
+    return { ok: true, type: 'SYNC_RESULT', message: 'Master password changed. Re-export your backup.' };
+  }
+
+  try {
+    const rotated = await rotateSyncAuthAfterRekey({
+      baseUrl: config.baseUrl,
+      accountId: config.accountId,
+      currentMasterPassword: currentPassword,
+      nextMasterPassword: newPassword,
+      previousFile,
+      newFile: rekeyed.file,
+    });
+    syncAuthSecretB64 = rotated.syncAuthSecretB64;
+    return {
+      ok: true,
+      type: 'SYNC_RESULT',
+      message: `Master password changed and the sync account re-pointed (v${rotated.version}). Other devices will need the new password.`,
+    };
+  } catch (err) {
+    // The local change stands — say so plainly, and say what is now broken.
+    return {
+      ok: false,
+      error: `Master password changed on this device, but the sync server could not be updated: ${describeSync(err, 'Rotation failed.')} Sync will refuse this account until you retry.`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

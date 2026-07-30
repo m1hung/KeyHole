@@ -18,6 +18,16 @@ public final class AppVaultSession {
     public var busy = false
     public var secondsUntilLock: Int?
 
+    /// Vault format when a newer Keyhole wrote this vault, else nil.
+    ///
+    /// Derived from `data` rather than tracked separately: `migrateVaultData` leaves
+    /// a newer payload's version in place, so this cannot drift out of step the way
+    /// a stored copy set at each unlock could.
+    public var foreignSchemaVersion: Int? {
+        guard let version = data?.schemaVersion, version > SCHEMA_VERSION else { return nil }
+        return version
+    }
+
     public private(set) var file: VaultFile?
     private var session: VaultSession?
     private var syncAuthSecretB64: String?

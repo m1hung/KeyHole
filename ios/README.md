@@ -84,6 +84,11 @@ Argon2id cost (~64 MiB) and can take a few seconds.
 - AutoFill Credential Provider
 - Face ID / Keychain-wrapped unlock of the vault key
 - App Store signing / CI
+- **Trash management.** Deleting here is a soft delete, the same as on desktop and
+  in the extension — the entry disappears from the list and from autofill, and is
+  purged for good after 30 days. But there is no view to restore or purge early on
+  iOS yet, so use the desktop app or the extension for that. Nothing is lost
+  either way; it is only unreachable from this surface.
 
 ## Argon2 embedding
 

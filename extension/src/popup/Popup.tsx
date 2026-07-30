@@ -29,6 +29,8 @@ export function Popup() {
   const [accessRequest, setAccessRequest] = useState<{ pattern: string; entryId: string } | null>(null);
   /** Why a fill failed, in host-level terms. Same line the service worker logs. */
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  /** Set when this vault was last written by a newer Keyhole than this build. */
+  const [foreignSchemaVersion, setForeignSchemaVersion] = useState<number | null>(null);
 
   const refreshState = useCallback(async () => {
     const response = await sendToBackground({ type: 'GET_STATE' });
@@ -39,6 +41,7 @@ export function Popup() {
     }
     if (response.type !== 'STATE') return;
     document.documentElement.dataset['theme'] = response.theme;
+    setForeignSchemaVersion(response.foreignSchemaVersion);
     setScreen(!response.hasVault ? 'no-vault' : response.locked ? 'locked' : 'unlocked');
   }, []);
 
@@ -233,6 +236,15 @@ export function Popup() {
               {busy ? 'Requesting…' : `Allow Keyhole on ${tabHost ?? 'this site'} and retry`}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Not an error: the vault works and nothing is lost. But this build cannot
+          show newer fields, so it must not imply the list is complete. */}
+      {foreignSchemaVersion !== null && (
+        <div className="popup-notice" role="status">
+          Written by a newer Keyhole (format {foreignSchemaVersion}). Everything still works, but newer fields are not
+          shown here.
         </div>
       )}
 

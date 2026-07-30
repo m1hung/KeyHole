@@ -123,6 +123,9 @@ export function findMatchingEntries(entries: readonly Entry[], pageUrl: string, 
 
   const matches: EntryMatch[] = [];
   for (const entry of entries) {
+    // A trashed entry must never be offered for autofill: the user's last word on
+    // it was "delete", and it is only still here so they can change their mind.
+    if (entry.deletedAt !== null) continue;
     let best: MatchStrength = 'none';
     for (const url of entry.urls) {
       const strength = matchUrl(url, pageUrl, mode);

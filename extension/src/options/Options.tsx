@@ -7,8 +7,14 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength, generatePassword, DEFAULT_GENERATOR_OPTIONS } from '@keyhole/core';
-import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
+import {
+  MIN_MASTER_PASSWORD_LENGTH,
+  TRASH_RETENTION_DAYS,
+  estimateStrength,
+  generatePassword,
+  DEFAULT_GENERATOR_OPTIONS,
+} from '@keyhole/core';
+import { sendToBackground, type EntrySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
 import { ConfirmDialog } from '../../../app/src/components/common.tsx';
 import { SyncPanel } from './SyncPanel.tsx';
@@ -120,7 +126,7 @@ export function Options() {
       return;
     }
     setDraft(null);
-    flash('Entry deleted.');
+    flash('Entry moved to the trash.');
     await refresh();
   };
 
@@ -307,10 +313,288 @@ export function Options() {
                 void sendToBackground({ type: 'SET_THEME', theme: next });
               }}
             />
+            <VaultHealth />
+            <Trash onChanged={() => void refresh()} />
+            <ChangeMasterPassword />
             <DangerZone entryCount={entryCount} busy={busy} onReset={() => void resetVault()} />
           </main>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Deleted entries, still restorable.
+ *
+ * Deleting is a soft delete now, so without this an extension-only user could put
+ * an entry beyond reach with no way to get it back or to destroy it deliberately —
+ * the same gap that left them unable to change their master password.
+ */
+function Trash({ onChanged }: { onChanged: () => void }) {
+  const [entries, setEntries] = useState<EntrySummary[]>([]);
+  const [confirming, setConfirming] = useState<EntrySummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const response = await sendToBackground({ type: 'LIST_TRASH' });
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    if (response.type === 'ENTRIES') setEntries(response.entries);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const act = async (message: { type: 'RESTORE_ENTRY' | 'PURGE_ENTRY'; entryId: string }) => {
+    const response = await sendToBackground(message);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    await load();
+    onChanged();
+  };
+
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="section">
+      <h3>Trash</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Deleted entries are hidden from your list and from autofill, and are removed for good after{' '}
+        {TRASH_RETENTION_DAYS} days.
+      </p>
+      {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
+
+      <ul className="entry-list">
+        {entries.map((entry) => (
+          <li key={entry.id}>
+            <span className="entry-item" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="entry-body">
+                <div className="title">{entry.title}</div>
+                <div className="meta">
+                  {entry.username || 'No username'}
+                  {entry.deletedAt ? ` · deleted ${new Date(entry.deletedAt).toLocaleDateString()}` : ''}
+                </div>
+              </span>
+              <span className="button-row">
+                <button type="button" onClick={() => void act({ type: 'RESTORE_ENTRY', entryId: entry.id })}>
+                  Restore
+                </button>
+                <button type="button" className="ghost danger-text" onClick={() => setConfirming(entry)}>
+                  Delete forever
+                </button>
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      <ConfirmDialog
+        open={confirming !== null}
+        title="Delete this entry for good?"
+        confirmLabel="Delete forever"
+        danger
+        onCancel={() => setConfirming(null)}
+        onConfirm={() => {
+          const entry = confirming;
+          setConfirming(null);
+          if (entry) void act({ type: 'PURGE_ENTRY', entryId: entry.id });
+        }}
+      >
+        <p>
+          <strong>{confirming?.title ?? 'This entry'}</strong> and its password history will be destroyed here and on
+          every synced device. This cannot be undone.
+        </p>
+      </ConfirmDialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Offline vault audit — reused, weak, stale and empty passwords.
+ *
+ * The analysis has always existed in core; it was only ever surfaced in the desktop
+ * app, so extension-only users had no way to see it. It runs in the service worker
+ * (the only process holding decrypted entries) and returns findings, never
+ * passwords. Nothing leaves the device and nothing is stored.
+ */
+function VaultHealth() {
+  const [report, setReport] = useState<Extract<BackgroundResponse, { type: 'HEALTH' }> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    const response = await sendToBackground({ type: 'HEALTH_REPORT' });
+    setBusy(false);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    if (response.type === 'HEALTH') setReport(response);
+  };
+
+  return (
+    <div className="section">
+      <h3>Vault health</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Checks your logins for reused, weak, unchanged and missing passwords. Runs entirely on this device — no
+        password, hash or count is sent anywhere, and the result is not stored.
+      </p>
+
+      <button type="button" disabled={busy} onClick={() => void run()}>
+        {busy ? 'Checking…' : report ? 'Check again' : 'Check vault'}
+      </button>
+
+      {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
+
+      {report && (
+        <div style={{ marginTop: 12 }}>
+          <p className="hint">
+            Checked {report.loginCount} logins —{' '}
+            {report.issues.length === 0 ? 'no issues found.' : `${report.issues.length} finding(s).`}
+          </p>
+          {report.issues.length > 0 && (
+            /* Same markup as the desktop panel, so the two surfaces read alike and
+               there is one set of styles to maintain. */
+            <ul className="entry-list" style={{ marginTop: 8 }}>
+              {report.issues.slice(0, 40).map((issue) => (
+                <li key={`${issue.kind}-${issue.entryId}`}>
+                  <span className="entry-item">
+                    <span className="entry-body">
+                      <div className="title">
+                        <span className="tag" style={{ marginRight: 6 }}>
+                          {issue.kind}
+                        </span>
+                        {issue.title}
+                      </div>
+                      <div className="meta">{issue.detail}</div>
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-key the vault.
+ *
+ * Present in core, the desktop app and iOS, and previously missing here — which
+ * meant someone whose only Keyhole was this extension could not rotate their master
+ * password at all. The service worker also re-points the sync account, because the
+ * new KDF salt invalidates the account's verifier.
+ */
+function ChangeMasterPassword() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ kind: 'ok' | 'error'; message: string } | null>(null);
+
+  const valid = next.length >= MIN_MASTER_PASSWORD_LENGTH && next === confirm && current.length > 0;
+  const strength = next.length > 0 ? estimateStrength(next) : null;
+
+  const apply = async () => {
+    setBusy(true);
+    setStatus(null);
+    const response = await sendToBackground({
+      type: 'CHANGE_MASTER_PASSWORD',
+      currentPassword: current,
+      newPassword: next,
+    });
+    setBusy(false);
+
+    if (!response.ok) {
+      setStatus({ kind: 'error', message: response.error });
+      return;
+    }
+    setCurrent('');
+    setNext('');
+    setConfirm('');
+    setStatus({
+      kind: 'ok',
+      message:
+        response.type === 'SYNC_RESULT'
+          ? `${response.message} Re-export your backup — older exports still use the old password.`
+          : 'Master password changed.',
+    });
+  };
+
+  return (
+    <div className="section">
+      <h3>Master password</h3>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Re-encrypts this vault under a new password: a fresh key-derivation salt and a new vault key, so the old
+        password stops working everywhere. There is no recovery if you forget the new one.
+      </p>
+
+      {status && (
+        <p className="hint" style={{ color: status.kind === 'ok' ? 'var(--ok)' : 'var(--danger)' }}>
+          {status.message}
+        </p>
+      )}
+
+      <label htmlFor="ext-current-master">Current master password</label>
+      <input
+        id="ext-current-master"
+        type="password"
+        autoComplete="current-password"
+        value={current}
+        disabled={busy}
+        onChange={(e) => setCurrent(e.target.value)}
+      />
+
+      <label htmlFor="ext-next-master">New master password</label>
+      <input
+        id="ext-next-master"
+        type="password"
+        autoComplete="new-password"
+        value={next}
+        disabled={busy}
+        onChange={(e) => setNext(e.target.value)}
+      />
+      {strength && (
+        <p className="hint">
+          Strength: {strength.label} (~{strength.bits} bits)
+          {next.length < MIN_MASTER_PASSWORD_LENGTH && ` — at least ${MIN_MASTER_PASSWORD_LENGTH} characters`}
+        </p>
+      )}
+
+      <label htmlFor="ext-confirm-master">Confirm new master password</label>
+      <input
+        id="ext-confirm-master"
+        type="password"
+        autoComplete="new-password"
+        value={confirm}
+        disabled={busy}
+        onChange={(e) => setConfirm(e.target.value)}
+      />
+      {confirm.length > 0 && next !== confirm && (
+        <p className="hint" style={{ color: 'var(--danger)' }}>
+          Passwords do not match.
+        </p>
+      )}
+
+      <button type="button" disabled={!valid || busy} onClick={() => void apply()}>
+        {busy ? 'Re-encrypting…' : 'Change master password'}
+      </button>
     </div>
   );
 }

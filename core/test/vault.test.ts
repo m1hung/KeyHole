@@ -5,6 +5,10 @@ import {
   createFolder,
   createVault,
   deleteEntry,
+  purgeEntry,
+  purgeExpiredTrash,
+  restoreEntry,
+  trashedEntries,
   deleteFolder,
   emptyVaultData,
   getEntry,
@@ -15,7 +19,7 @@ import {
   updateSettings,
 } from '../src/vault.ts';
 import { DecryptionError, UnsupportedVersionError, ValidationError, VaultFormatError } from '../src/errors.ts';
-import type { VaultFile } from '../src/types.ts';
+import { PASSWORD_HISTORY_LIMIT, TRASH_RETENTION_DAYS, type VaultFile } from '../src/types.ts';
 import { bytesToB64 } from '../src/encoding.ts';
 import { randomBytes } from '../src/crypto.ts';
 import { parseVaultData } from '../src/validation.ts';
@@ -165,12 +169,86 @@ describe('tamper resistance', () => {
     expect((err as Error).message).toMatch(/newer version of Keyhole/);
   });
 
-  it('rejects a newer payload schema version', async () => {
-    // Reached only after successful decryption, so it must be built legitimately.
-    const created = await createVault(PASSWORD);
-    created.session.data = { ...created.session.data, schemaVersion: 42 };
-    const saved = await saveVault(created.session, created.file);
-    await expect(unlockVault(saved, PASSWORD)).rejects.toThrow(UnsupportedVersionError);
+  /**
+   * A newer *payload* is opened, not refused — the envelope is what must match.
+   * Refusing here used to mean that one device writing a new schema locked every
+   * device that had not updated out of the vault.
+   */
+  describe('a payload written by a newer build', () => {
+    /** Build a v-next payload the only way it can legitimately exist: encrypted. */
+    const writeFutureVault = async (mutate: (data: Record<string, unknown>) => Record<string, unknown>) => {
+      const created = await createVault(PASSWORD);
+      created.session.data = mutate({
+        ...created.session.data,
+        schemaVersion: 42,
+      }) as unknown as typeof created.session.data;
+      return saveVault(created.session, created.file);
+    };
+
+    it('opens, and reports how far ahead it is', async () => {
+      const saved = await writeFutureVault((data) => data);
+      const session = await unlockVault(saved, PASSWORD);
+      expect(session.foreignSchemaVersion).toBe(42);
+      // Not relabelled as ours: the next reader must not be told the extra fields
+      // it cannot see are absent.
+      expect(session.data.schemaVersion).toBe(42);
+    });
+
+    it('reports null for a schema this build knows', async () => {
+      const { session } = await createVault(PASSWORD);
+      expect(session.foreignSchemaVersion).toBeNull();
+    });
+
+    it('preserves fields it does not understand across a save', async () => {
+      const saved = await writeFutureVault((data) => ({
+        ...data,
+        entries: [
+          {
+            id: '11111111-1111-4111-8111-111111111111',
+            kind: 'login',
+            title: 'Written by v-next',
+            username: 'someone',
+            password: 'secret',
+            urls: ['https://example.com'],
+            notes: '',
+            tags: [],
+            folderId: null,
+            totpSecret: null,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            passwordUpdatedAt: '2026-01-01T00:00:00.000Z',
+            // The point of the test: this build has never heard of either.
+            history: [{ password: 'previous-one', changedAt: '2025-06-01T00:00:00.000Z' }],
+            deletedAt: null,
+          },
+        ],
+        futureTopLevelKey: { anything: true },
+      }));
+
+      const session = await unlockVault(saved, PASSWORD);
+      const entry = session.data.entries[0] as unknown as Record<string, unknown>;
+      expect(entry['title']).toBe('Written by v-next');
+      expect(entry['history']).toEqual([{ password: 'previous-one', changedAt: '2025-06-01T00:00:00.000Z' }]);
+      expect(entry['deletedAt']).toBeNull();
+
+      // Round-trip through this build: an older reader must not strip what a newer
+      // writer put there, or syncing through a stale device destroys data.
+      const resaved = await saveVault(session, saved);
+      const reopened = await unlockVault(resaved, PASSWORD);
+      const reopenedEntry = reopened.data.entries[0] as unknown as Record<string, unknown>;
+      expect(reopenedEntry['history']).toEqual([{ password: 'previous-one', changedAt: '2025-06-01T00:00:00.000Z' }]);
+      expect((reopened.data as unknown as Record<string, unknown>)['futureTopLevelKey']).toEqual({ anything: true });
+      expect(reopened.foreignSchemaVersion).toBe(42);
+    });
+
+    it('still rejects a payload that is actually malformed', async () => {
+      // Tolerating extra keys must not mean tolerating a broken known field.
+      const saved = await writeFutureVault((data) => ({
+        ...data,
+        entries: [{ id: 'not-a-uuid', title: 5 }],
+      }));
+      await expect(unlockVault(saved, PASSWORD)).rejects.toThrow(VaultFormatError);
+    });
   });
 });
 
@@ -223,9 +301,15 @@ describe('entry CRUD', () => {
     expect(added.entries[0]?.title).toBe('Site');
     expect(getEntry(updated, entry.id)?.title).toBe('Renamed');
 
+    // Deleting is now reversible: the entry stays, marked, until it is purged.
     const deleted = deleteEntry(updated, entry.id);
-    expect(deleted.entries).toHaveLength(0);
-    expect(updated.entries).toHaveLength(1);
+    expect(deleted.entries).toHaveLength(1);
+    expect(deleted.entries[0]?.deletedAt).not.toBeNull();
+    expect(updated.entries[0]?.deletedAt).toBeNull();
+
+    const purged = purgeEntry(deleted, entry.id);
+    expect(purged.entries).toHaveLength(0);
+    expect(deleted.entries).toHaveLength(1);
   });
 
   it('creates a secure note with kind note', () => {
@@ -351,6 +435,66 @@ describe('search', () => {
   });
 });
 
+describe('cross-surface interoperability', () => {
+  /**
+   * Swift synthesises `encodeIfPresent` for optional properties, so the iOS build
+   * omits `folderId` / `totpSecret` rather than writing an explicit null. Requiring
+   * them present made every vault iOS saved unreadable here — almost no entry has a
+   * TOTP secret — so absent and null must both be accepted.
+   */
+  it('accepts an entry whose null-valued keys were omitted, as iOS writes them', () => {
+    const iosStyleEntry = {
+      id: '11111111-1111-4111-8111-111111111111',
+      kind: 'login',
+      title: 'Saved on iPhone',
+      username: 'someone',
+      password: 'secret',
+      urls: ['https://example.com'],
+      notes: '',
+      tags: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      passwordUpdatedAt: '2026-01-01T00:00:00.000Z',
+      // folderId and totpSecret deliberately absent.
+    };
+    const data = parseVaultData({
+      schemaVersion: 2,
+      entries: [iosStyleEntry],
+      folders: [],
+      tombstones: [],
+      settings: emptyVaultData().settings,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(data.entries[0]?.folderId).toBeNull();
+    expect(data.entries[0]?.totpSecret).toBeNull();
+  });
+
+  it('still rejects those keys when they carry the wrong type', () => {
+    const base = {
+      schemaVersion: 2,
+      folders: [],
+      tombstones: [],
+      settings: emptyVaultData().settings,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const entry = {
+      id: '11111111-1111-4111-8111-111111111111',
+      kind: 'login',
+      title: 'Bad',
+      username: '',
+      password: '',
+      urls: [],
+      notes: '',
+      tags: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      passwordUpdatedAt: '2026-01-01T00:00:00.000Z',
+      folderId: 42,
+    };
+    expect(() => parseVaultData({ ...base, entries: [entry] })).toThrow(VaultFormatError);
+  });
+});
+
 describe('round-trip fidelity', () => {
   it('preserves unicode, newlines and long values', async () => {
     const { file, session } = await createVault(PASSWORD);
@@ -385,5 +529,109 @@ describe('round-trip fidelity', () => {
     const reopened = await unlockVault(await saveVault(session, file), PASSWORD);
     expect(reopened.data.entries).toHaveLength(500);
     expect(reopened.data.entries[499]?.password).toBe('pw-499');
+  });
+});
+
+describe('password history', () => {
+  it('keeps the superseded password when one is replaced', () => {
+    const { data, entry } = createEntry(emptyVaultData(), { title: 'Bank', password: 'first' });
+    expect(entry.history).toEqual([]);
+
+    const rotated = updateEntry(data, entry.id, { password: 'second' });
+    const history = getEntry(rotated, entry.id)?.history ?? [];
+    expect(history.map((h) => h.password)).toEqual(['first']);
+    expect(getEntry(rotated, entry.id)?.password).toBe('second');
+  });
+
+  it('records nothing when the password is unchanged or absent', () => {
+    const { data, entry } = createEntry(emptyVaultData(), { title: 'Bank', password: 'same' });
+    const renamed = updateEntry(data, entry.id, { title: 'Bank renamed' });
+    expect(getEntry(renamed, entry.id)?.history).toEqual([]);
+
+    const rewritten = updateEntry(data, entry.id, { password: 'same' });
+    expect(getEntry(rewritten, entry.id)?.history).toEqual([]);
+
+    // An entry that never had a password has nothing to remember.
+    const { data: noteData, entry: note } = createEntry(emptyVaultData(), { title: 'Note', kind: 'note' });
+    const given = updateEntry(noteData, note.id, { password: 'first-ever' });
+    expect(getEntry(given, note.id)?.history).toEqual([]);
+  });
+
+  it('keeps newest first and caps the list', () => {
+    let data = createEntry(emptyVaultData(), { title: 'Rotated often', password: 'pw-0' }).data;
+    const id = data.entries[0]!.id;
+    for (let i = 1; i <= PASSWORD_HISTORY_LIMIT + 5; i += 1) {
+      data = updateEntry(data, id, { password: `pw-${i}` });
+    }
+    const history = getEntry(data, id)?.history ?? [];
+    expect(history).toHaveLength(PASSWORD_HISTORY_LIMIT);
+    // Newest supersession first, oldest dropped off the end.
+    expect(history[0]?.password).toBe(`pw-${PASSWORD_HISTORY_LIMIT + 4}`);
+    expect(history.map((h) => h.password)).not.toContain('pw-0');
+  });
+
+  it('survives a save/unlock round trip', async () => {
+    const { file, session } = await createVault(PASSWORD);
+    session.data = createEntry(session.data, { title: 'Bank', password: 'first' }).data;
+    const id = session.data.entries[0]!.id;
+    session.data = updateEntry(session.data, id, { password: 'second' });
+
+    const reopened = await unlockVault(await saveVault(session, file), PASSWORD);
+    expect(reopened.data.entries[0]?.history.map((h) => h.password)).toEqual(['first']);
+  });
+});
+
+describe('trash', () => {
+  const build = () => {
+    const { data, entry } = createEntry(emptyVaultData(), {
+      title: 'Binned',
+      password: 'p',
+      urls: ['https://example.com'],
+    });
+    return { data: deleteEntry(data, entry.id), id: entry.id };
+  };
+
+  it('hides trashed entries from search but lists them in the trash', () => {
+    const { data, id } = build();
+    expect(searchEntries(data, '')).toHaveLength(0);
+    expect(searchEntries(data, 'Binned')).toHaveLength(0);
+    expect(trashedEntries(data).map((e) => e.id)).toEqual([id]);
+  });
+
+  it('restores an entry back into the list', () => {
+    const { data, id } = build();
+    const restored = restoreEntry(data, id);
+    expect(searchEntries(restored, '')).toHaveLength(1);
+    expect(trashedEntries(restored)).toHaveLength(0);
+    expect(getEntry(restored, id)?.deletedAt).toBeNull();
+  });
+
+  it('is idempotent in both directions', () => {
+    const { data, id } = build();
+    expect(deleteEntry(data, id)).toBe(data);
+    const restored = restoreEntry(data, id);
+    expect(restoreEntry(restored, id)).toBe(restored);
+  });
+
+  it('purges only what has sat past the retention window', () => {
+    const { data, id } = build();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const deletedAtMs = Date.parse(getEntry(data, id)!.deletedAt!);
+
+    // One day short of the window: still restorable.
+    const early = purgeExpiredTrash(data, deletedAtMs + (TRASH_RETENTION_DAYS - 1) * dayMs);
+    expect(early.entries).toHaveLength(1);
+    expect(early.tombstones).toHaveLength(0);
+
+    // Past it: gone, with a tombstone so peers do not resurrect it.
+    const swept = purgeExpiredTrash(data, deletedAtMs + (TRASH_RETENTION_DAYS + 1) * dayMs);
+    expect(swept.entries).toHaveLength(0);
+    expect(swept.tombstones.map((t) => t.id)).toEqual([id]);
+  });
+
+  it('leaves live entries alone no matter how old', () => {
+    const { data } = createEntry(emptyVaultData(), { title: 'Ancient', password: 'p' });
+    const swept = purgeExpiredTrash(data, Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
+    expect(swept).toBe(data);
   });
 });

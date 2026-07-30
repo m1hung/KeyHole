@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import {
   DEFAULT_GENERATOR_OPTIONS,
   displayHost,
+  TRASH_RETENTION_DAYS,
   generatePassword,
   generatePassphrase,
   generatorEntropyBits,
@@ -326,6 +327,36 @@ export function EntryEditor({
         />
       )}
 
+      {/* Previous passwords. The reason this exists: you rotate a password here,
+          the site rejects the change, and without this the one that still works is
+          gone for good — "no recovery, no backdoor" cuts both ways. */}
+      {!isNote && entry.history.length > 0 && (
+        <div className="section">
+          <h3>Previous passwords</h3>
+          <p className="hint" style={{ marginBottom: 8 }}>
+            Kept in case a password change does not take on the site. Restoring puts one back as the current password;
+            the one it replaces is remembered in turn.
+          </p>
+          <ul className="entry-list">
+            {entry.history.map((old) => (
+              <li key={`${old.changedAt}:${old.password}`}>
+                <div className="history-row">
+                  <span className="meta">Replaced {new Date(old.changedAt).toLocaleString()}</span>
+                  <div className="button-row">
+                    <button type="button" onClick={() => onCopy(old.password, 'Previous password')}>
+                      Copy
+                    </button>
+                    <button type="button" onClick={() => setDraft((current) => ({ ...current, password: old.password }))}>
+                      Restore
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="section">
         <h3>Details</h3>
         <p className="hint">
@@ -339,15 +370,14 @@ export function EntryEditor({
           )}
         </p>
         <button type="button" className="danger" style={{ marginTop: 12 }} onClick={() => setConfirmDelete(true)}>
-          Delete entry
+          Move to trash
         </button>
       </div>
 
       <ConfirmDialog
         open={confirmDelete}
-        title="Delete this entry?"
-        confirmLabel="Delete permanently"
-        danger
+        title="Move this entry to the trash?"
+        confirmLabel="Move to trash"
         onCancel={() => setConfirmDelete(false)}
         onConfirm={() => {
           setConfirmDelete(false);
@@ -355,7 +385,8 @@ export function EntryEditor({
         }}
       >
         <p>
-          <strong>{entry.title}</strong> will be removed from the vault. This cannot be undone.
+          <strong>{entry.title}</strong> will be hidden from your list and from autofill, and can be restored from the
+          trash for {TRASH_RETENTION_DAYS} days before it is deleted for good.
         </p>
       </ConfirmDialog>
     </div>

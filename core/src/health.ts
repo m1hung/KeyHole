@@ -25,7 +25,9 @@ const STALE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const WEAK_MAX_SCORE = 1; // very weak / weak
 
 export function analyzeVaultHealth(data: VaultData, nowMs = Date.now()): VaultHealthReport {
-  const logins = data.entries.filter((e) => e.kind === 'login');
+  // Trashed entries are excluded: nagging about the strength of a password the
+  // user has already deleted is noise, and it would inflate the reuse counts.
+  const logins = data.entries.filter((e) => e.kind === 'login' && e.deletedAt === null);
   const issues: HealthIssue[] = [];
 
   const byPassword = new Map<string, Entry[]>();

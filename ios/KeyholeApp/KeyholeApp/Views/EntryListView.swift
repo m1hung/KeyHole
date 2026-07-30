@@ -17,6 +17,23 @@ struct EntryListView: View {
     var body: some View {
         NavigationStack {
             List {
+                // A newer Keyhole wrote this vault. It opens and unknown fields
+                // survive being saved from here, but they are not shown — so do not
+                // imply this list is the whole picture.
+                if let version = session.foreignSchemaVersion {
+                    Section {
+                        Label(
+                            """
+                            Written by a newer version of Keyhole (vault format \(version)). \
+                            Everything still works and nothing is lost, but newer fields are not shown here.
+                            """,
+                            systemImage: "arrow.up.circle"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
                 ForEach(entries) { entry in
                     NavigationLink {
                         EntryDetailView(entryId: entry.id, clipboard: clipboard)

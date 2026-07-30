@@ -17,6 +17,8 @@ struct SettingsView: View {
     @State private var showExporter = false
     @State private var exportData: Data?
     @State private var confirmReset = false
+    /** Result of the last offline audit. Not persisted — recomputed on demand. */
+    @State private var healthReport: VaultHealthReport?
 
     // Sync
     @State private var syncBaseUrl = ""
@@ -60,6 +62,34 @@ struct SettingsView: View {
                         Task { await changePassword() }
                     }
                     .disabled(newPassword.count < MIN_MASTER_PASSWORD_LENGTH || newPassword != confirmPassword)
+                }
+
+                // The same offline audit core has always computed, previously shown
+                // only in the desktop app. Runs in-process against the unlocked
+                // vault; no password, hash or count leaves the device.
+                Section("Vault health") {
+                    if let report = healthReport {
+                        Text(
+                            report.issues.isEmpty
+                                ? "Checked \(report.loginCount) logins — no issues found."
+                                : "Checked \(report.loginCount) logins — \(report.issues.count) finding(s)."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                        ForEach(report.issues.prefix(40), id: \.entryId) { issue in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(issue.kind.rawValue.uppercased()) · \(issue.title)")
+                                    .font(.subheadline)
+                                Text(issue.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Button(healthReport == nil ? "Check vault" : "Check again") {
+                        healthReport = session.data.map { analyzeVaultHealth($0) }
+                    }
                 }
 
                 Section("Vault file") {

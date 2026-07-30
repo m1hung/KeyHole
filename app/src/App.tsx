@@ -10,8 +10,13 @@ import {
   createFolder,
   deleteEntry,
   deleteFolder,
+  liveEntries,
+  purgeEntry,
+  restoreEntry,
+  trashedEntries,
   displayHost,
   searchEntries,
+  TRASH_RETENTION_DAYS,
   updateEntry,
   updateSettings,
   type Entry,
@@ -25,12 +30,12 @@ import { UnlockScreen } from './components/UnlockScreen.tsx';
 import { EntryEditor } from './components/EntryEditor.tsx';
 import { GeneratorPanel } from './components/GeneratorPanel.tsx';
 import { SettingsPanel } from './components/SettingsPanel.tsx';
-import { EmptyState, Toast } from './components/common.tsx';
+import { ConfirmDialog, EmptyState, Toast } from './components/common.tsx';
 import { Icon } from './components/Icon.tsx';
 import { readLegacyBrowserVault } from './storage.ts';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
-type ListFilter = 'all' | EntryKind | { folderId: string };
+type ListFilter = 'all' | 'trash' | EntryKind | { folderId: string };
 
 interface AppProps {
   /**
@@ -48,6 +53,8 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
   const [filter, setFilter] = useState<ListFilter>('all');
   const [view, setView] = useState<View>({ kind: 'none' });
   const [newFolderName, setNewFolderName] = useState('');
+  /** Entry id awaiting a "delete forever" confirmation. */
+  const [confirmPurge, setConfirmPurge] = useState<string | null>(null);
 
   const settings = vault.data?.settings;
   const clipboard = useClipboard(settings?.clipboardClearSeconds ?? 30);
@@ -80,14 +87,25 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
   }
 
   const data = vault.data;
-  const results = searchEntries(data, query).filter((e) => {
-    if (filter === 'all') return true;
-    if (typeof filter === 'string') return e.kind === filter;
-    return e.folderId === filter.folderId;
-  });
+  /* The trash is a separate source, not a filter over the live list: `searchEntries`
+     deliberately never returns deleted entries, so that autofill and the UI cannot
+     drift apart about what still exists. */
+  const trashed = trashedEntries(data);
+  const results =
+    filter === 'trash'
+      ? trashed.filter((e) => {
+          const q = query.trim().toLowerCase();
+          return q.length === 0 || e.title.toLowerCase().includes(q) || e.username.toLowerCase().includes(q);
+        })
+      : searchEntries(data, query).filter((e) => {
+          if (filter === 'all') return true;
+          if (typeof filter === 'string') return e.kind === filter;
+          return e.folderId === filter.folderId;
+        });
   const selected = view.kind === 'entry' ? data.entries.find((e) => e.id === view.id) : undefined;
-  const loginCount = data.entries.filter((e) => e.kind === 'login').length;
-  const noteCount = data.entries.filter((e) => e.kind === 'note').length;
+  const live = liveEntries(data);
+  const loginCount = live.filter((e) => e.kind === 'login').length;
+  const noteCount = live.filter((e) => e.kind === 'note').length;
 
   const addEntry = async (kind: EntryKind) => {
     let created: Entry | undefined;
@@ -159,6 +177,21 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
         </button>
       </header>
 
+      {/* This vault has been touched by a build that knows more than we do. It
+          opens and unknown fields survive being saved from here, but they are not
+          shown or maintained, so claiming a complete view of the vault would be a
+          lie. See migrate() in core/src/vault.ts. */}
+      {vault.foreignSchemaVersion !== null && (
+        <div className="foreign-schema" role="status">
+          <Icon name="refresh" size={16} />
+          <span>
+            This vault was last written by a newer version of Keyhole (vault format{' '}
+            {vault.foreignSchemaVersion}). It opens normally and nothing is lost — anything this version does not
+            recognise is kept as-is — but newer fields are not shown here. Update this copy of Keyhole to see them.
+          </span>
+        </div>
+      )}
+
       {/* On mobile the search field gets its own full-width row — inline in the
           topbar it collapses to an unusable sliver. */}
       <div className="search-row">
@@ -175,7 +208,7 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
         <div className="list-pane">
           <div className="list-toolbar">
             <div className="filter-row" role="tablist" aria-label="Entry type">
-              <FilterChip active={filter === 'all'} onClick={() => setFilter('all')} count={data.entries.length}>
+              <FilterChip active={filter === 'all'} onClick={() => setFilter('all')} count={live.length}>
                 All
               </FilterChip>
               <FilterChip active={filter === 'login'} onClick={() => setFilter('login')} count={loginCount} icon="key">
@@ -189,6 +222,18 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
               >
                 Notes
               </FilterChip>
+              {/* Only offered when there is something in it — an always-visible
+                  empty bin is noise in a list this small. */}
+              {trashed.length > 0 && (
+                <FilterChip
+                  active={filter === 'trash'}
+                  onClick={() => setFilter('trash')}
+                  count={trashed.length}
+                  icon="trash"
+                >
+                  Trash
+                </FilterChip>
+              )}
             </div>
             {data.folders.length > 0 && (
               <div className="filter-row" role="tablist" aria-label="Folders" style={{ marginTop: 8 }}>
@@ -197,7 +242,7 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
                     key={folder.id}
                     active={typeof filter === 'object' && filter.folderId === folder.id}
                     onClick={() => setFilter({ folderId: folder.id })}
-                    count={data.entries.filter((e) => e.folderId === folder.id).length}
+                    count={live.filter((e) => e.folderId === folder.id).length}
                   >
                     {folder.name}
                   </FilterChip>
@@ -258,6 +303,36 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
                     : 'Add your first login or secure note to get started.'}
               </p>
             </EmptyState>
+          ) : filter === 'trash' ? (
+            /* The trash is a holding area, not a browsing view: rows are not
+               editable, only restorable or destroyable. */
+            <ul className="entry-list">
+              {results.map((entry) => (
+                <li key={entry.id}>
+                  <div className="entry-item trash-row">
+                    <span className="entry-body">
+                      <div className="title">{entry.title}</div>
+                      <div className="meta">
+                        Deleted {entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''} · removed for good
+                        after {TRASH_RETENTION_DAYS} days
+                      </div>
+                    </span>
+                    <span className="button-row">
+                      <button type="button" onClick={() => void vault.mutate((c) => restoreEntry(c, entry.id))}>
+                        Restore
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost danger-text"
+                        onClick={() => setConfirmPurge(entry.id)}
+                      >
+                        Delete forever
+                      </button>
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
           ) : (
             <ul className="entry-list">
               {results.map((entry) => (
@@ -357,6 +432,27 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
         </main>
       </div>
 
+      {/* The one irreversible action in the trash, so it is confirmed by name.
+          Everything else here is undoable. */}
+      <ConfirmDialog
+        open={confirmPurge !== null}
+        title="Delete this entry for good?"
+        confirmLabel="Delete forever"
+        danger
+        onCancel={() => setConfirmPurge(null)}
+        onConfirm={() => {
+          const id = confirmPurge;
+          setConfirmPurge(null);
+          if (id === null) return;
+          void vault.mutate((current) => purgeEntry(current, id));
+        }}
+      >
+        <p>
+          <strong>{trashed.find((e) => e.id === confirmPurge)?.title ?? 'This entry'}</strong> and its password history
+          will be destroyed on this device and every synced one. This cannot be undone.
+        </p>
+      </ConfirmDialog>
+
       {/* Mobile primary navigation. Hidden on desktop, where the topbar carries
           the same actions. */}
       <nav className="tabbar" aria-label="Main">
@@ -397,7 +493,7 @@ function FilterChip({
   active: boolean;
   onClick: () => void;
   count: number;
-  icon?: 'key' | 'secureNote';
+  icon?: 'key' | 'secureNote' | 'trash';
   children: string;
 }) {
   return (

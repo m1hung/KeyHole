@@ -13,7 +13,7 @@
  *    paths.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { EntrySummary, Response } from '../src/shared/messages.ts';
 
 const EXTENSION_ID = 'abcdefghijklmnopabcdefghijklmnop';
@@ -26,7 +26,11 @@ type Listener = (
 ) => boolean | void;
 
 const listeners: Listener[] = [];
+/** Keyboard-command handlers the worker registered. */
+const commandListeners: ((command: string, tab?: { id?: number }) => void)[] = [];
 let tabUrl = 'https://example.com/';
+/** Badge text the worker set, per tab — how a keyboard fill reports a refusal. */
+let badgeTexts: string[] = [];
 interface FillDispatch {
   username?: string;
   expectedOrigin?: string;
@@ -100,8 +104,15 @@ function installChromeStub(): void {
       },
     },
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: { addListener: noop } },
+    commands: {
+      onCommand: {
+        addListener: (fn: (command: string, tab?: { id?: number }) => void) => commandListeners.push(fn),
+      },
+    },
     action: {
-      setBadgeText: async () => {},
+      setBadgeText: async (details: { text?: string }) => {
+        if (typeof details.text === 'string' && details.text.length > 0) badgeTexts.push(details.text);
+      },
       setBadgeBackgroundColor: async () => {},
       setBadgeTextColor: async () => {},
     },
@@ -582,4 +593,264 @@ describe('filling a frame that cannot be injected into', () => {
     // It saw one frame — the top one — because the other is beyond its reach.
     expect(response.detail).toContain('frames seen 1');
   });
+});
+
+/**
+ * Re-keying from the extension. Until this existed, an extension-only user could
+ * not change their master password at all.
+ */
+describe('changing the master password', () => {
+  const NEW_PASSWORD = 'an-entirely-different-passphrase';
+
+  // These tests mutate state the whole file shares — every later block unlocks
+  // with MASTER_PASSWORD — so put it back rather than leaving a landmine.
+  afterAll(async () => {
+    await send({ type: 'UNLOCK', masterPassword: NEW_PASSWORD });
+    const restored = await send({
+      type: 'CHANGE_MASTER_PASSWORD',
+      currentPassword: NEW_PASSWORD,
+      newPassword: MASTER_PASSWORD,
+    });
+    expect(restored.ok).toBe(true);
+  }, 60_000);
+
+  it('re-keys so the new password unlocks and the old one does not', async () => {
+    const changed = await send({
+      type: 'CHANGE_MASTER_PASSWORD',
+      currentPassword: MASTER_PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+    expect(changed.ok).toBe(true);
+
+    // Still unlocked afterwards — re-keying must not log the user out.
+    const state = await send({ type: 'GET_STATE' });
+    if (!state.ok || state.type !== 'STATE') throw new Error('expected state');
+    expect(state.locked).toBe(false);
+
+    await send({ type: 'LOCK' });
+    const withOld = await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD });
+    expect(withOld.ok).toBe(false);
+
+    const withNew = await send({ type: 'UNLOCK', masterPassword: NEW_PASSWORD });
+    expect(withNew.ok).toBe(true);
+  }, 60_000);
+
+  it('refuses a wrong current password without touching the stored vault', async () => {
+    const refused = await send({
+      type: 'CHANGE_MASTER_PASSWORD',
+      currentPassword: 'not-the-current-password',
+      newPassword: 'something-else-entirely',
+    });
+    expect(refused.ok).toBe(false);
+
+    // The password from the previous test still works, so nothing was rewritten.
+    await send({ type: 'LOCK' });
+    const unlocked = await send({ type: 'UNLOCK', masterPassword: NEW_PASSWORD });
+    expect(unlocked.ok).toBe(true);
+  }, 60_000);
+});
+
+/**
+ * The health report, which core has always computed but only the desktop app
+ * surfaced.
+ */
+describe('vault health', () => {
+  /** Weak enough to be flagged, distinctive enough to spot if it leaks. */
+  const WEAK_SHARED_PASSWORD = 'zzzz1';
+
+  it('reports findings without ever returning a password', async () => {
+    // Two logins sharing a password, which is also weak.
+    await saveEntry('Shared A', 'https://a.example.org');
+    await saveEntry('Shared B', 'https://b.example.org');
+    const listed = await send({ type: 'LIST_ENTRIES', query: 'Shared' });
+    if (!listed.ok || listed.type !== 'ENTRIES') throw new Error('expected entries');
+    for (const entry of listed.entries) {
+      const saved = await send({
+        type: 'SAVE_ENTRY',
+        entry: { id: entry.id, title: entry.title, username: entry.username, password: WEAK_SHARED_PASSWORD, urls: [] },
+      });
+      expect(saved.ok).toBe(true);
+    }
+
+    const response = await send({ type: 'HEALTH_REPORT' });
+    expect(response.ok).toBe(true);
+    if (!response.ok || response.type !== 'HEALTH') throw new Error('expected a health report');
+
+    const kinds = new Set(response.issues.map((i) => i.kind));
+    expect(kinds.has('reused')).toBe(true);
+    expect(kinds.has('weak')).toBe(true);
+    expect(response.loginCount).toBeGreaterThan(0);
+
+    // The response must not contain the secret it is complaining about: it
+    // crosses a process boundary into a page, so findings only. (Asserted against
+    // the value, not the word — the findings themselves legitimately say
+    // "password".)
+    expect(JSON.stringify(response)).not.toContain(WEAK_SHARED_PASSWORD);
+    expect(JSON.stringify(response)).not.toContain('stored-password');
+  }, 60_000);
+
+  it('refuses when locked', async () => {
+    await send({ type: 'LOCK' });
+    const response = await send({ type: 'HEALTH_REPORT' });
+    expect(response.ok).toBe(false);
+  });
+});
+
+/**
+ * The keyboard shortcut. It reuses `fill()` wholesale, so what needs pinning here
+ * is the decision it makes *before* filling — with no popup open, a wrong guess
+ * types someone else's password into a login form with nothing to undo it.
+ */
+describe('fill-best-match hotkey', () => {
+  // Its own site: other blocks have added entries to shared origins, and "how many
+  // entries match" is exactly what these tests are about.
+  const TOP = 'https://hotkey.example.net/login';
+
+  /** Invoke the command the way Chrome does. */
+  async function pressHotkey(tabId: number | undefined = 1): Promise<void> {
+    const listener = commandListeners[0];
+    if (!listener) throw new Error('service worker registered no command listener');
+    listener('fill-best-match', { id: tabId });
+    // The handler is async and Chrome does not await it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  beforeAll(async () => {
+    await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD });
+    await saveEntry('Hotkey Only', 'https://hotkey.example.net');
+  }, 60_000);
+
+  beforeEach(async () => {
+    tabUrl = TOP;
+    dispatches = [];
+    badgeTexts = [];
+    lastFill = null;
+    await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD });
+  });
+
+  it('fills the single best match without opening anything', async () => {
+    await pressHotkey();
+    expect(dispatches.map((d) => d.message.type)).toEqual(['KEYHOLE_FILL']);
+    expect(dispatchedFill()?.expectedOrigin).toBe('https://hotkey.example.net');
+  });
+
+  it('ignores commands it does not own', async () => {
+    const listener = commandListeners[0];
+    listener?.('some-other-command', { id: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatches).toEqual([]);
+  });
+
+  it('does nothing on a page with no match', async () => {
+    tabUrl = 'https://nothing-saved-here.test/login';
+    await pressHotkey();
+    expect(dispatches).toEqual([]);
+  });
+
+  /**
+   * Two accounts on one site is the ordinary case, not an edge case. Picking one
+   * silently would be the worst possible behaviour, so it refuses and says so on
+   * the toolbar icon.
+   */
+  it('refuses to guess between equally good matches', async () => {
+    const second = await send({
+      type: 'SAVE_ENTRY',
+      entry: {
+        title: 'Hotkey second login',
+        username: 'other@example.test',
+        password: 'another-password',
+        urls: ['https://hotkey.example.net'],
+      },
+    });
+    expect(second.ok).toBe(true);
+
+    await pressHotkey();
+    expect(dispatches).toEqual([]);
+    expect(badgeTexts).toContain('?');
+
+    // Clean up so later tests see one match again.
+    const listed = await send({ type: 'LIST_ENTRIES', query: 'Hotkey second login' });
+    if (!listed.ok || listed.type !== 'ENTRIES') throw new Error('expected entries');
+    const id = listed.entries[0]?.id;
+    if (id) await send({ type: 'DELETE_ENTRY', entryId: id });
+  });
+
+  it('does nothing when the vault is locked', async () => {
+    await send({ type: 'LOCK' });
+    await pressHotkey();
+    expect(dispatches).toEqual([]);
+  });
+});
+
+/**
+ * Trash, through the service worker. The property that matters most is the last
+ * one: a deleted login must stop being offered for autofill immediately, on every
+ * path, or "delete" does not mean what the user thinks it means.
+ */
+describe('trash', () => {
+  /**
+   * A distinct registrable domain per test. Entries accumulate across this file
+   * and these tests assert on *how many* match — and since matching is same-site,
+   * sharing even a parent domain (example.org) would pull in other blocks' logins.
+   */
+  async function trashableEntry(name: string): Promise<{ id: string; site: string }> {
+    const site = `https://${name}-trash.org`;
+    await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD });
+    await saveEntry(name, site);
+    const listed = await send({ type: 'LIST_ENTRIES', query: name });
+    if (!listed.ok || listed.type !== 'ENTRIES') throw new Error('expected entries');
+    const id = listed.entries[0]?.id;
+    if (!id) throw new Error('entry not created');
+    return { id, site };
+  }
+
+  it('hides a deleted entry from lists and offers it in the trash instead', async () => {
+    const { id } = await trashableEntry('binned');
+    expect((await send({ type: 'DELETE_ENTRY', entryId: id })).ok).toBe(true);
+
+    const listed = await send({ type: 'LIST_ENTRIES', query: 'binned' });
+    if (!listed.ok || listed.type !== 'ENTRIES') throw new Error('expected entries');
+    expect(listed.entries).toHaveLength(0);
+
+    const trash = await send({ type: 'LIST_TRASH' });
+    if (!trash.ok || trash.type !== 'ENTRIES') throw new Error('expected entries');
+    expect(trash.entries.map((e) => e.id)).toContain(id);
+    expect(trash.entries.find((e) => e.id === id)?.deletedAt).toBeTruthy();
+
+    // ...and it comes back.
+    expect((await send({ type: 'RESTORE_ENTRY', entryId: id })).ok).toBe(true);
+    const relisted = await send({ type: 'LIST_ENTRIES', query: 'binned' });
+    if (!relisted.ok || relisted.type !== 'ENTRIES') throw new Error('expected entries');
+    expect(relisted.entries).toHaveLength(1);
+  }, 60_000);
+
+  it('stops offering a deleted entry for autofill, and refuses to fill it', async () => {
+    const { id, site } = await trashableEntry('unfillable');
+    tabUrl = `${site}/login`;
+    expect(await entriesFor(`${site}/login`)).toHaveLength(1);
+
+    await send({ type: 'DELETE_ENTRY', entryId: id });
+
+    expect(await entriesFor(`${site}/login`)).toEqual([]);
+    expect(await entriesFor(`${site}/login`, 'page')).toEqual([]);
+
+    // Even asked for by id — the popup could be holding a stale list.
+    dispatches = [];
+    const refused = await send({ type: 'FILL', entryId: id, tabId: 1 });
+    expect(refused.ok).toBe(false);
+    expect(dispatches).toEqual([]);
+  }, 60_000);
+
+  it('purges for good, leaving a tombstone rather than the entry', async () => {
+    const { id } = await trashableEntry('purgeable');
+    await send({ type: 'DELETE_ENTRY', entryId: id });
+    expect((await send({ type: 'PURGE_ENTRY', entryId: id })).ok).toBe(true);
+
+    const trash = await send({ type: 'LIST_TRASH' });
+    if (!trash.ok || trash.type !== 'ENTRIES') throw new Error('expected entries');
+    expect(trash.entries.map((e) => e.id)).not.toContain(id);
+
+    // Gone: a second purge has nothing to work on.
+    expect((await send({ type: 'PURGE_ENTRY', entryId: id })).ok).toBe(false);
+  }, 60_000);
 });

@@ -25,9 +25,12 @@ import { UnsupportedVersionError, ValidationError, VaultFormatError } from './er
 import { DEFAULT_GENERATOR_OPTIONS } from './password-gen.ts';
 import {
   FORMAT_VERSION,
+  PASSWORD_HISTORY_LIMIT,
   SCHEMA_VERSION,
+  TRASH_RETENTION_DAYS,
   VAULT_FORMAT_ID,
   type Entry,
+  type PasswordHistoryEntry,
   type Folder,
   type Settings,
   type Tombstone,
@@ -113,7 +116,10 @@ export async function createVault(
       wrappedKey,
       payload,
     };
-    return { file, session: { vaultId, key: vaultKey, data, unlockedAt: Date.now() } };
+    return {
+      file,
+      session: { vaultId, key: vaultKey, data, unlockedAt: Date.now(), foreignSchemaVersion: null },
+    };
   } finally {
     zeroize(vekBytes);
   }
@@ -157,7 +163,13 @@ export async function unlockVault(file: unknown, masterPassword: string): Promis
     zeroize(plaintext);
   }
 
-  return { vaultId: parsed.vaultId, key: vaultKey, data: migrate(data), unlockedAt: Date.now() };
+  return {
+    vaultId: parsed.vaultId,
+    key: vaultKey,
+    data: migrate(data),
+    unlockedAt: Date.now(),
+    foreignSchemaVersion: foreignSchemaVersion(data),
+  };
 }
 
 /**
@@ -242,7 +254,14 @@ export async function changeMasterPassword(
 
     return {
       file: { ...file, formatVersion: FORMAT_VERSION, kdf, wrappedKey, payload, updatedAt: data.updatedAt },
-      session: { vaultId: file.vaultId, key: newVaultKey, data, unlockedAt: Date.now() },
+      session: {
+        vaultId: file.vaultId,
+        key: newVaultKey,
+        data,
+        unlockedAt: Date.now(),
+        // Carried over: re-keying re-encrypts, it does not reinterpret the payload.
+        foreignSchemaVersion: current.foreignSchemaVersion,
+      },
     };
   } finally {
     zeroize(vekBytes);
@@ -263,15 +282,36 @@ export function lockSession(session: VaultSession): void {
 // Migrations
 // ---------------------------------------------------------------------------
 
+/**
+ * Bring a decrypted payload up to the model this build understands.
+ *
+ * A NEWER PAYLOAD IS NOT AN ERROR. It used to throw here, which meant one device
+ * writing a new schema locked every not-yet-updated device out of the vault —
+ * including a portable .exe someone had not replaced. Since the payload schemas
+ * carry unrecognised fields through rather than rejecting them (see
+ * validation.ts), a newer payload whose *known* fields still validate is
+ * perfectly usable: we read what we understand and preserve the rest verbatim.
+ *
+ * `foreignSchemaVersion` on the session reports the gap so the UI can say which
+ * way to point the user, since this build will not display or maintain whatever
+ * those extra fields mean. A payload that genuinely fails validation still
+ * throws, from `parseVaultData`.
+ */
 function migrate(data: VaultData): VaultData {
-  if (data.schemaVersion > SCHEMA_VERSION) {
-    throw new UnsupportedVersionError(`Vault schema ${data.schemaVersion} is newer than this build supports.`);
-  }
-
   // 1 → 2: sync needs deletions to be recorded rather than merely absent.
   const tombstones = data.tombstones ?? [];
 
-  return { ...data, tombstones, schemaVersion: SCHEMA_VERSION };
+  // Never stamp our own version onto a payload written by a newer build. The
+  // fields we do not understand are still in there, and relabelling it as ours
+  // would tell the next reader they are gone.
+  const schemaVersion = Math.max(data.schemaVersion, SCHEMA_VERSION);
+
+  return { ...data, tombstones, schemaVersion };
+}
+
+/** How far ahead of this build a payload is, or null when it is one we know. */
+function foreignSchemaVersion(data: VaultData): number | null {
+  return data.schemaVersion > SCHEMA_VERSION ? data.schemaVersion : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,8 +347,32 @@ export function createEntry(data: VaultData, input: EntryInput): { data: VaultDa
     createdAt: timestamp,
     updatedAt: timestamp,
     passwordUpdatedAt: timestamp,
+    history: [],
+    deletedAt: null,
   };
   return { data: { ...data, entries: [...data.entries, entry] }, entry };
+}
+
+/**
+ * Push a superseded password onto an entry's history, newest first.
+ *
+ * Deduplicated on (changedAt, password) — the *same key `mergeHistory` uses*, and
+ * deliberately so. Keying on `changedAt` alone looks equivalent but is not: two
+ * rotations landing in the same millisecond would collapse into one row here while
+ * the merge kept both, so two devices could disagree about the same entry's
+ * history depending only on how fast the user clicked.
+ */
+function rememberPassword(
+  history: readonly PasswordHistoryEntry[],
+  previousPassword: string,
+  changedAt: string,
+): PasswordHistoryEntry[] {
+  // Nothing to remember for an entry that never had a password.
+  if (previousPassword.length === 0) return [...history];
+  const duplicate = (h: PasswordHistoryEntry): boolean =>
+    h.changedAt === changedAt && h.password === previousPassword;
+  const next = [{ password: previousPassword, changedAt }, ...history.filter((h) => !duplicate(h))];
+  return next.slice(0, PASSWORD_HISTORY_LIMIT);
 }
 
 export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInput>): VaultData {
@@ -317,8 +381,10 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
   const existing = data.entries[index]!;
 
   const passwordChanged = patch.password !== undefined && patch.password !== existing.password;
+  const changedAt = now();
   const updated: Entry = {
     ...existing,
+    ...(passwordChanged ? { history: rememberPassword(existing.history, existing.password, changedAt) } : {}),
     ...(patch.kind !== undefined ? { kind: patch.kind } : {}),
     ...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
     ...(patch.username !== undefined ? { username: patch.username } : {}),
@@ -328,8 +394,8 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
     ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
     ...(patch.folderId !== undefined ? { folderId: patch.folderId } : {}),
     ...(patch.totpSecret !== undefined ? { totpSecret: patch.totpSecret } : {}),
-    updatedAt: now(),
-    passwordUpdatedAt: passwordChanged ? now() : existing.passwordUpdatedAt,
+    updatedAt: changedAt,
+    passwordUpdatedAt: passwordChanged ? changedAt : existing.passwordUpdatedAt,
   };
   if (updated.title.length === 0) throw new ValidationError('Entry title must not be empty.');
 
@@ -338,12 +404,79 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
   return { ...data, entries };
 }
 
+/**
+ * Move an entry to the trash. Reversible with `restoreEntry`.
+ *
+ * This used to remove the entry and write a tombstone, which propagated the
+ * deletion to every synced device: one misclick, gone everywhere, with the vault
+ * often the only copy. A soft delete is an ordinary field change, so it merges by
+ * last-write-wins like any other edit and needs no new sync rules — and restoring
+ * is just another edit. `purgeEntry` is what actually destroys anything.
+ */
 export function deleteEntry(data: VaultData, id: string): VaultData {
+  const index = data.entries.findIndex((e) => e.id === id);
+  if (index === -1) throw new ValidationError(`No entry with id ${id}.`);
+  const existing = data.entries[index]!;
+  if (existing.deletedAt !== null) return data;
+
+  const timestamp = now();
+  const entries = [...data.entries];
+  entries[index] = { ...existing, deletedAt: timestamp, updatedAt: timestamp };
+  return { ...data, entries };
+}
+
+/** Take an entry back out of the trash. */
+export function restoreEntry(data: VaultData, id: string): VaultData {
+  const index = data.entries.findIndex((e) => e.id === id);
+  if (index === -1) throw new ValidationError(`No entry with id ${id}.`);
+  const existing = data.entries[index]!;
+  if (existing.deletedAt === null) return data;
+
+  const entries = [...data.entries];
+  entries[index] = { ...existing, deletedAt: null, updatedAt: now() };
+  return { ...data, entries };
+}
+
+/**
+ * Destroy an entry for good, on every device.
+ *
+ * This is the old `deleteEntry`: removal plus a tombstone so peers do not
+ * resurrect it. Nothing calls it by accident — it is "delete forever" in the
+ * trash, and the automatic sweep below.
+ */
+export function purgeEntry(data: VaultData, id: string): VaultData {
   if (!data.entries.some((e) => e.id === id)) throw new ValidationError(`No entry with id ${id}.`);
   return {
     ...data,
     entries: data.entries.filter((e) => e.id !== id),
     tombstones: recordTombstone(data.tombstones, { id, kind: 'entry', deletedAt: now() }),
+  };
+}
+
+/**
+ * Purge anything that has sat in the trash past `TRASH_RETENTION_DAYS`.
+ *
+ * The window is well inside `TOMBSTONE_TTL_DAYS` (180), so the tombstone a purge
+ * writes still has months to reach every device before it is pruned — otherwise a
+ * device that had been offline would resurrect the entry it never saw deleted.
+ */
+export function purgeExpiredTrash(data: VaultData, nowMs: number = Date.now()): VaultData {
+  const cutoff = nowMs - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const expired = data.entries.filter((e) => {
+    if (e.deletedAt === null) return false;
+    const deletedAtMs = Date.parse(e.deletedAt);
+    return Number.isFinite(deletedAtMs) && deletedAtMs < cutoff;
+  });
+  if (expired.length === 0) return data;
+
+  const timestamp = new Date(nowMs).toISOString();
+  return {
+    ...data,
+    entries: data.entries.filter((e) => !expired.some((x) => x.id === e.id)),
+    tombstones: expired.reduce(
+      (acc, entry) => recordTombstone(acc, { id: entry.id, kind: 'entry', deletedAt: timestamp }),
+      data.tombstones,
+    ),
   };
 }
 
@@ -386,10 +519,23 @@ export function updateSettings(data: VaultData, patch: Partial<Settings>): Vault
  * Passwords are never searched. Notes are searched only for `kind: 'note'`
  * entries — that is their primary content — not for login credentials.
  */
+/** Live entries only — the trash is reached through `trashedEntries`. */
+export function liveEntries(data: VaultData): Entry[] {
+  return data.entries.filter((e) => e.deletedAt === null);
+}
+
+/** What is currently in the trash, most recently deleted first. */
+export function trashedEntries(data: VaultData): Entry[] {
+  return data.entries
+    .filter((e) => e.deletedAt !== null)
+    .sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''));
+}
+
 export function searchEntries(data: VaultData, query: string): Entry[] {
   const q = query.trim().toLowerCase();
-  if (q.length === 0) return [...data.entries].sort(byTitle);
-  return data.entries
+  const live = liveEntries(data);
+  if (q.length === 0) return live.sort(byTitle);
+  return live
     .filter((e) => {
       return (
         e.title.toLowerCase().includes(q) ||

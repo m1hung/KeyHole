@@ -33,9 +33,27 @@ export const requestSchema = z.discriminatedUnion('type', [
    * confirmation; this layer only enforces that the sender is our own page.
    */
   z.object({ type: z.literal('RESET_VAULT') }).strict(),
+  /**
+   * Re-key the vault. Also re-points the sync account, since the new KDF salt
+   * invalidates the account's verifier — see rotateSyncAuthAfterRekey.
+   */
+  z
+    .object({
+      type: z.literal('CHANGE_MASTER_PASSWORD'),
+      currentPassword: z.string().min(1).max(1024),
+      newPassword: z.string().min(1).max(1024),
+    })
+    .strict(),
   /** Entries whose URLs match a tab. Returns metadata only — never passwords. */
   z.object({ type: z.literal('MATCH_TAB'), tabId: z.number().int().nonnegative() }).strict(),
   z.object({ type: z.literal('LIST_ENTRIES'), query: z.string().max(256).optional() }).strict(),
+  /** Offline vault audit. Returns findings only — never a password. */
+  z.object({ type: z.literal('HEALTH_REPORT') }).strict(),
+  /** Entries in the trash — deleted but still restorable. */
+  z.object({ type: z.literal('LIST_TRASH') }).strict(),
+  z.object({ type: z.literal('RESTORE_ENTRY'), entryId: z.uuid() }).strict(),
+  /** Destroy an entry for good, on every synced device. Not reversible. */
+  z.object({ type: z.literal('PURGE_ENTRY'), entryId: z.uuid() }).strict(),
   /** Reveals one secret to the popup, for an explicit copy/reveal gesture. */
   z.object({ type: z.literal('REVEAL_SECRET'), entryId: z.uuid(), field: z.enum(['password', 'username', 'totp']) }).strict(),
   /** The privileged autofill trigger. */
@@ -127,6 +145,8 @@ export interface EntrySummary {
   id: string;
   title: string;
   username: string;
+  /** When this entry was moved to the trash; absent for live entries. */
+  deletedAt?: string | null;
   /** Display host only. The full URL list stays in the service worker. */
   host: string | null;
   /** Loosest is `domain`: same registrable domain, a different host. */
@@ -143,6 +163,11 @@ export type Response =
       entryCount: number;
       autoLockMinutes: number;
       theme: 'light' | 'dark' | 'system';
+      /**
+       * Set when the open vault was written by a newer Keyhole than this build.
+       * It works and unknown fields survive a save, but they are not shown here.
+       */
+      foreignSchemaVersion: number | null;
     }
   | { ok: true; type: 'ENTRIES'; entries: EntrySummary[] }
   | {
@@ -151,6 +176,18 @@ export type Response =
       locked: boolean;
       theme: 'light' | 'dark' | 'system';
       entries: EntrySummary[];
+    }
+  | {
+      ok: true;
+      type: 'HEALTH';
+      /**
+       * Findings from `analyzeVaultHealth`. Each names an entry and what is wrong
+       * with its password — never the password itself, so this stays inside the
+       * "metadata only" rule the other list responses follow.
+       */
+      issues: { kind: 'reused' | 'weak' | 'stale' | 'empty'; entryId: string; title: string; detail: string }[];
+      loginCount: number;
+      checkedAt: string;
     }
   | { ok: true; type: 'SECRET'; value: string; clipboardClearSeconds: number }
   | { ok: true; type: 'FILLED'; filledUsername: boolean; filledPassword: boolean; filledTotp: boolean }

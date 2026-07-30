@@ -17,8 +17,15 @@
  * rather than preferring "local".
  */
 
-import type { Entry, Folder, Tombstone, VaultData } from './types.ts';
-import { SCHEMA_VERSION } from './types.ts';
+import {
+  PASSWORD_HISTORY_LIMIT,
+  SCHEMA_VERSION,
+  type Entry,
+  type Folder,
+  type PasswordHistoryEntry,
+  type Tombstone,
+  type VaultData,
+} from './types.ts';
 
 /**
  * How long a deletion is remembered. A device offline longer than this can
@@ -50,6 +57,31 @@ function latest(a: string, b: string): string {
  */
 function breakTie<T>(a: T, b: T): T {
   return JSON.stringify(a) >= JSON.stringify(b) ? a : b;
+}
+
+/**
+ * Union two password histories, newest first, capped.
+ *
+ * Keyed on `changedAt`: it is when the password stopped being current, so two
+ * devices recording the same rotation agree on it, while two genuinely different
+ * rotations differ. Where both sides have a row for one instant, the passwords are
+ * compared so a real collision still keeps both rather than silently picking one.
+ */
+function mergeHistory(
+  a: readonly PasswordHistoryEntry[],
+  b: readonly PasswordHistoryEntry[],
+): PasswordHistoryEntry[] {
+  const seen = new Set<string>();
+  const merged: PasswordHistoryEntry[] = [];
+  for (const row of [...a, ...b]) {
+    // A JSON tuple rather than a delimiter, so no separator can collide with content.
+    const key = JSON.stringify([row.changedAt, row.password]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(row);
+  }
+  merged.sort((x, y) => time(y.changedAt) - time(x.changedAt));
+  return merged.slice(0, PASSWORD_HISTORY_LIMIT);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +148,12 @@ export function mergeVaultData(a: VaultData, b: VaultData, nowMs: number = Date.
 
     const ta = time(existing.updatedAt);
     const tb = time(entry.updatedAt);
-    entryById.set(entry.id, ta === tb ? breakTie(existing, entry) : ta > tb ? existing : entry);
+    const winner = ta === tb ? breakTie(existing, entry) : ta > tb ? existing : entry;
+    // Every other field is last-write-wins, but history is not a *state* — it is a
+    // log, and the two sides hold different parts of it. Rotate a password on the
+    // phone and again on the desktop, and whole-entry LWW keeps one row and drops
+    // the other, destroying exactly the old password this feature exists to keep.
+    entryById.set(entry.id, { ...winner, history: mergeHistory(existing.history, entry.history) });
   }
 
   let entriesDeleted = 0;

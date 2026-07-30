@@ -8,5 +8,7 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "//exclude": "rekey-rotation.test.ts spans client and server; see tsconfig.integration.json",
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/rekey-rotation.test.ts"]
 }

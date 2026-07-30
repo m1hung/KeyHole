@@ -24,7 +24,7 @@ envelopes it cannot read.
 ## Repository layout
 
 ```
-core/         framework-agnostic crypto + vault (no I/O, 204 tests)
+core/         framework-agnostic crypto + vault (no I/O, 227 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
@@ -49,7 +49,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 299 tests: 204 core + 51 extension + 44 server
+npm test                    # 338 tests: 227 core + 64 extension + 47 server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 ```
 
@@ -229,6 +229,27 @@ present at all.
       d. sends exactly one credential, addressed to that one frame id
 5. Content script re-checks location.origin, fills two fields, forgets the value
 ```
+
+### Losing a password is the failure that matters
+
+"No recovery, no backdoor, no reset" makes every unrecoverable path a real one, so
+the two routine actions that used to destroy a password no longer do.
+
+**Rotating** keeps the old one. Change a password and the previous value is kept on
+the entry (the last 20), because the ordinary failure is that the site rejects the
+change *after* you have saved the new one — at which point the password that still
+works is gone. The editor can copy or restore any of them.
+
+**Deleting** is reversible. Entries go to a trash, disappear from the list and from
+autofill immediately, and are destroyed for good after 30 days or when you say
+"delete forever". Before, a delete removed the entry and told every synced device to
+do the same — one misclick, gone everywhere, with the vault often the only copy.
+
+Both are `schemaVersion: 3`. History merges as a **union keyed by the change
+timestamp** rather than last-write-wins: rotate on your phone and on your desktop
+before they sync, and plain LWW would keep one row and silently drop the other —
+which is precisely the password this feature exists to preserve. Deletion needs no
+new merge rule at all, since a soft delete is an ordinary field edit.
 
 ### Logins inside an iframe
 
@@ -544,7 +565,7 @@ Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app
 ## Development
 
 ```sh
-npm test                                       # 299 tests across core + extension + server
+npm test                                       # 338 tests across core + extension + server
 npm run typecheck                              # tsc --noEmit, all workspaces
 npm run demo                                   # end-to-end crypto proof
 npm run demo:vault --workspace @keyhole/core   # regenerate examples/

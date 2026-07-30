@@ -279,7 +279,7 @@ graph TD
 
 Green is stored in the clear (and authenticated as associated data). Red is ciphertext.
 
-`schemaVersion` and `formatVersion` are versioned independently: the former describes the decrypted model and is migrated in `migrate()`, the latter describes the envelope and gates unlock entirely. Both reject newer-than-supported values with an actionable error rather than a generic parse failure.
+`schemaVersion` and `formatVersion` are versioned independently, and they fail differently on purpose. `formatVersion` describes the envelope — a newer one means the crypto itself may have changed, so unlock is refused outright. `schemaVersion` describes the decrypted model, and a newer one is *accepted*: the payload schemas carry unrecognised fields through untouched, so a build reads what it understands and preserves the rest, reporting the gap as `session.foreignSchemaVersion`. Refusing there would mean one updated device locking every other device out of the vault, which is a worse failure than showing a partial view of it.
 
 ---
 

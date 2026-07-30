@@ -22,6 +22,25 @@ private func latest(_ a: String, _ b: String) -> String {
     time(a) >= time(b) ? a : b
 }
 
+/// Union two password histories, newest first, capped. Keyed on
+/// (changedAt, password) exactly as `mergeHistory` does in core/src/sync.ts, so
+/// both implementations converge on the same result.
+private func mergeHistory(
+    _ a: [PasswordHistoryEntry],
+    _ b: [PasswordHistoryEntry]
+) -> [PasswordHistoryEntry] {
+    var seen = Set<String>()
+    var merged: [PasswordHistoryEntry] = []
+    for row in a + b {
+        let key = (try? VaultJSON.canonicalString([row.changedAt, row.password])) ?? "\(row.changedAt)|\(row.password)"
+        if seen.contains(key) { continue }
+        seen.insert(key)
+        merged.append(row)
+    }
+    merged.sort { time($0.changedAt) > time($1.changedAt) }
+    return Array(merged.prefix(PASSWORD_HISTORY_LIMIT))
+}
+
 private func breakTie<T: Encodable>(_ a: T, _ b: T) -> T {
     let sa = (try? VaultJSON.canonicalString(a)) ?? ""
     let sb = (try? VaultJSON.canonicalString(b)) ?? ""
@@ -99,11 +118,11 @@ public func mergeVaultData(_ a: VaultData, _ b: VaultData, nowMs: Double = Date(
             if sa != sb { entriesReconciled += 1 }
             let ta = time(existing.updatedAt)
             let tb = time(entry.updatedAt)
-            if ta == tb {
-                entryById[entry.id] = breakTie(existing, entry)
-            } else {
-                entryById[entry.id] = ta > tb ? existing : entry
-            }
+            var winner = ta == tb ? breakTie(existing, entry) : (ta > tb ? existing : entry)
+            // History is a log, not a state: last-write-wins would drop whichever
+            // device's rotation lost the comparison. Mirrors core/src/sync.ts.
+            winner.history = mergeHistory(existing.history, entry.history)
+            entryById[entry.id] = winner
         } else {
             entryById[entry.id] = entry
         }

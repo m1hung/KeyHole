@@ -183,6 +183,14 @@ describe('contentScriptRequestSchema', () => {
     expect(contentScriptRequestSchema.safeParse({ type: 'EXPORT_VAULT' }).success).toBe(false);
     // A page must never be able to wipe the vault.
     expect(contentScriptRequestSchema.safeParse({ type: 'RESET_VAULT' }).success).toBe(false);
+    // ...nor re-key it, which would lock the user out of their own vault.
+    expect(
+      contentScriptRequestSchema.safeParse({
+        type: 'CHANGE_MASTER_PASSWORD',
+        currentPassword: 'x'.repeat(20),
+        newPassword: 'y'.repeat(20),
+      }).success,
+    ).toBe(false);
     expect(contentScriptRequestSchema.safeParse({ type: 'UNLOCK', masterPassword: 'x'.repeat(20) }).success).toBe(
       false,
     );
@@ -251,6 +259,16 @@ describe('requestSchema', () => {
     // plus the typed confirmation in the UI, and adding fields here would only
     // create a second, weaker path.
     expect(requestSchema.safeParse({ type: 'RESET_VAULT', confirm: 'DELETE' }).success).toBe(false);
+  });
+
+  it('accepts CHANGE_MASTER_PASSWORD with both passwords', () => {
+    const request = { type: 'CHANGE_MASTER_PASSWORD', currentPassword: 'old-one', newPassword: 'new-one' };
+    expect(requestSchema.safeParse(request).success).toBe(true);
+    // Both are required: a re-key with a missing current password would be a
+    // takeover, and one with no new password would be a lockout.
+    expect(requestSchema.safeParse({ type: 'CHANGE_MASTER_PASSWORD', newPassword: 'new-one' }).success).toBe(false);
+    expect(requestSchema.safeParse({ type: 'CHANGE_MASTER_PASSWORD', currentPassword: 'old-one' }).success).toBe(false);
+    expect(requestSchema.safeParse({ ...request, currentPassword: '' }).success).toBe(false);
   });
 
   it('accepts SET_THEME', () => {

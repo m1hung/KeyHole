@@ -334,6 +334,51 @@ label {
   margin-bottom: 12px;
 }
 
+/* A newer build wrote this vault. Informational, not an error — nothing is
+   broken and nothing is lost, so it must not read like a failure. */
+.foreign-schema {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 16px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.foreign-schema svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Trash rows carry their own actions instead of opening the editor — a deleted
+   entry is restorable or destroyable, not editable. */
+.entry-item.trash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+  width: 100%;
+}
+
+.entry-item.trash-row:hover {
+  background: none;
+}
+
+/* Previous-password rows: timestamp on the left, actions on the right. */
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  width: 100%;
+}
+
 /* ------------------------------------------------------------- app shell */
 
 .center-screen {

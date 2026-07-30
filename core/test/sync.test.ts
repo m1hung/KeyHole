@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { mergeVaultData, TOMBSTONE_TTL_DAYS } from '../src/sync.ts';
-import { createEntry, createFolder, deleteEntry, deleteFolder, emptyVaultData, updateEntry } from '../src/vault.ts';
+import {
+  createEntry,
+  createFolder,
+  deleteEntry,
+  deleteFolder,
+  emptyVaultData,
+  purgeEntry,
+  restoreEntry,
+  updateEntry,
+} from '../src/vault.ts';
 import { SCHEMA_VERSION, type VaultData } from '../src/types.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -45,7 +54,7 @@ describe('mergeVaultData — keeping data', () => {
 describe('mergeVaultData — deletions', () => {
   it('propagates a deletion instead of resurrecting the entry', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Retired' });
-    const deleted = deleteEntry(base, entry.id);
+    const deleted = purgeEntry(base, entry.id);
 
     // `base` still has it; without tombstones the union would bring it back.
     expect(mergeVaultData(deleted, base).data.entries).toHaveLength(0);
@@ -54,7 +63,7 @@ describe('mergeVaultData — deletions', () => {
 
   it('keeps an entry edited AFTER the other device deleted it', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Contested' });
-    const deleted = deleteEntry(base, entry.id);
+    const deleted = purgeEntry(base, entry.id);
     // The edit is newer than the tombstone, so the user's later intent wins.
     const edited = withTimes(updateEntry(base, entry.id, { password: 'still wanted' }), entry.id, '2099-01-01T00:00:00.000Z');
 
@@ -76,7 +85,7 @@ describe('mergeVaultData — deletions', () => {
 
   it('expires tombstones once they are older than the TTL', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Ancient' });
-    const deleted = deleteEntry(base, entry.id);
+    const deleted = purgeEntry(base, entry.id);
     const wayLater = Date.now() + (TOMBSTONE_TTL_DAYS + 1) * DAY_MS;
 
     const merged = mergeVaultData(deleted, deleted, wayLater).data;
@@ -85,8 +94,8 @@ describe('mergeVaultData — deletions', () => {
 
   it('collapses duplicate tombstones for the same id, keeping the newest', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Gone' });
-    const a = deleteEntry(base, entry.id);
-    const b = deleteEntry(base, entry.id);
+    const a = purgeEntry(base, entry.id);
+    const b = purgeEntry(base, entry.id);
 
     expect(mergeVaultData(a, b).data.tombstones).toHaveLength(1);
   });
@@ -98,7 +107,7 @@ describe('mergeVaultData — convergence', () => {
     const { data: seeded, entry: doomed } = createEntry(seed, { title: 'Doomed' });
 
     const deviceA = createEntry(withTimes(seeded, shared.id, '2026-03-01T00:00:00.000Z'), { title: 'A only' }).data;
-    const deviceB = deleteEntry(createEntry(seeded, { title: 'B only' }).data, doomed.id);
+    const deviceB = purgeEntry(createEntry(seeded, { title: 'B only' }).data, doomed.id);
 
     const ab = mergeVaultData(deviceA, deviceB).data;
     const ba = mergeVaultData(deviceB, deviceA).data;
@@ -125,7 +134,7 @@ describe('mergeVaultData — convergence', () => {
 
   it('re-merging an already-merged vault with an old peer does not resurrect', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Zombie' });
-    const deleted = deleteEntry(base, entry.id);
+    const deleted = purgeEntry(base, entry.id);
     const merged = mergeVaultData(deleted, base).data;
     // A third device still carrying the old copy syncs later.
     expect(mergeVaultData(merged, base).data.entries).toHaveLength(0);
@@ -145,7 +154,7 @@ describe('mergeVaultData — settings and metadata', () => {
 
   it('reports what it did', () => {
     const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Kept' });
-    const deletedSide = deleteEntry(createEntry(base, { title: 'Extra' }).data, entry.id);
+    const deletedSide = purgeEntry(createEntry(base, { title: 'Extra' }).data, entry.id);
 
     const { stats } = mergeVaultData(base, deletedSide);
     expect(stats.entriesDeleted).toBe(1);
@@ -162,5 +171,85 @@ describe('mergeVaultData — settings and metadata', () => {
     const broken = withTimes(base, entry.id, 'not-a-date');
     const merged = mergeVaultData(broken, emptyVaultData()).data;
     expect(merged.entries).toHaveLength(1);
+  });
+});
+
+describe('mergeVaultData — password history', () => {
+  /**
+   * The trap this feature would otherwise walk into. Every other field is
+   * last-write-wins, so a whole-entry LWW merge keeps one device's row and drops
+   * the other's — destroying exactly the old password history exists to keep.
+   */
+  it('keeps both rows when two devices rotate the same password', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Shared', password: 'original' });
+
+    const onPhone = updateEntry(base, entry.id, { password: 'from-the-phone' });
+    const onDesktop = updateEntry(base, entry.id, { password: 'from-the-desktop' });
+
+    const merged = mergeVaultData(onPhone, onDesktop).data;
+    const history = merged.entries[0]?.history ?? [];
+    const passwords = history.map((h) => h.password);
+
+    // 'original' is recorded by both sides; each side's own supersession is
+    // recorded by only one. All of it must survive.
+    expect(passwords).toContain('original');
+    expect(new Set(passwords).size).toBe(passwords.length);
+    expect(merged.entries[0]?.password).toMatch(/^from-the-(phone|desktop)$/);
+  });
+
+  it('is symmetric, like every other merge rule', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Shared', password: 'original' });
+    const a = updateEntry(base, entry.id, { password: 'a-side' });
+    const b = updateEntry(base, entry.id, { password: 'b-side' });
+
+    expect(JSON.stringify(mergeVaultData(a, b).data)).toBe(JSON.stringify(mergeVaultData(b, a).data));
+  });
+
+  it('does not duplicate a row both devices already agree on', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Shared', password: 'original' });
+    const rotated = updateEntry(base, entry.id, { password: 'rotated' });
+
+    // Both devices hold the same history; merging must not double it.
+    const merged = mergeVaultData(rotated, rotated).data;
+    expect(merged.entries[0]?.history).toHaveLength(1);
+  });
+});
+
+describe('mergeVaultData — trash', () => {
+  it('merges a soft delete as an ordinary edit, with no tombstone', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Binned' });
+    // Dated explicitly: creating and deleting inside one millisecond is a tie, and
+    // ties are decided by content rather than by intent (see below).
+    const trashed = withTimes(deleteEntry(base, entry.id), entry.id, '2099-01-01T00:00:00.000Z');
+
+    const merged = mergeVaultData(trashed, base).data;
+    // Still present — deleting no longer destroys anything on other devices.
+    expect(merged.entries).toHaveLength(1);
+    expect(merged.entries[0]?.deletedAt).not.toBeNull();
+    expect(merged.tombstones).toHaveLength(0);
+  });
+
+  /**
+   * On an exact timestamp tie the entry stays live. That follows this file's rule
+   * — when in doubt, keep the data — and it is the recoverable direction: the user
+   * can delete again, but cannot un-destroy.
+   */
+  it('keeps the entry live when a delete ties with an edit', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Tied' });
+    const trashed = deleteEntry(base, entry.id);
+    const sameInstant = withTimes(trashed, entry.id, base.entries[0]!.updatedAt);
+
+    const merged = mergeVaultData(sameInstant, base).data;
+    expect(merged.entries[0]?.deletedAt).toBeNull();
+  });
+
+  it('lets a later restore win over an earlier delete', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Rescued' });
+    const trashed = deleteEntry(base, entry.id);
+    const restored = withTimes(restoreEntry(trashed, entry.id), entry.id, '2099-01-01T00:00:00.000Z');
+
+    for (const merged of [mergeVaultData(trashed, restored).data, mergeVaultData(restored, trashed).data]) {
+      expect(merged.entries[0]?.deletedAt).toBeNull();
+    }
   });
 });
