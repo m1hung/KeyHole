@@ -8,7 +8,12 @@ struct RootView: View {
         Group {
             switch session.status {
             case .loading:
-                ProgressView("Loading…")
+                ZStack {
+                    KeyholeColors.bg.ignoresSafeArea()
+                    ProgressView("Loading…")
+                        .tint(KeyholeColors.accent)
+                        .foregroundStyle(KeyholeColors.textDim)
+                }
             case .noVault, .locked:
                 UnlockView()
             case .unlocked:

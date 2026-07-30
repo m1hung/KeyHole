@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 import KeyholeCore
 
 struct SettingsView: View {
@@ -18,10 +19,11 @@ struct SettingsView: View {
     @State private var showExporter = false
     @State private var exportData: Data?
     @State private var confirmReset = false
-    /** Result of the last offline audit. Not persisted — recomputed on demand. */
     @State private var healthReport: VaultHealthReport?
+    @State private var breachBusy = false
+    @State private var breachError: String?
+    @State private var breachHits: [BreachHit]?
 
-    // Sync
     @State private var syncBaseUrl = ""
     @State private var syncAccountId = ""
     @State private var syncPassword = ""
@@ -31,7 +33,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Security") {
+                Section {
                     Stepper(
                         "Auto-lock: \(Int(autoLockMinutes)) min",
                         value: $autoLockMinutes,
@@ -51,11 +53,43 @@ struct SettingsView: View {
                             """
                             Opt-in Have I Been Pwned lookup. Nothing is sent automatically — \
                             each check requires an explicit tap, and only a 5-character hash prefix \
-                            leaves the device. Full breach UI is available on desktop and extension for now.
+                            leaves the device.
                             """
                         )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                        Button {
+                            Task { await runBreachCheck() }
+                        } label: {
+                            HStack {
+                                Text(breachHits == nil ? "Check passwords" : "Check again")
+                                if breachBusy { ProgressView() }
+                            }
+                        }
+                        .disabled(breachBusy || session.data == nil)
+                        if let breachError {
+                            Text(breachError)
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.danger)
+                        }
+                        if let breachHits {
+                            Text(
+                                breachHits.isEmpty
+                                    ? "No breached passwords found among checked logins."
+                                    : "\(breachHits.count) password(s) found in known breaches."
+                            )
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.textDim)
+                            ForEach(breachHits.prefix(40)) { hit in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(hit.title)
+                                        .font(KeyholeFonts.bodySemibold)
+                                    Text("Seen \(hit.count) time(s) in breaches.")
+                                        .font(KeyholeFonts.meta)
+                                        .foregroundStyle(KeyholeColors.danger)
+                                }
+                            }
+                        }
                     }
                     Picker("Theme", selection: $theme) {
                         Text("System").tag(ThemePreference.system)
@@ -65,9 +99,13 @@ struct SettingsView: View {
                     Button("Save preferences") {
                         Task { await savePrefs() }
                     }
+                    .foregroundStyle(KeyholeColors.accent)
+                } header: {
+                    KeyholeFieldLabel(text: "Security")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
-                Section("Master password") {
+                Section {
                     SecureField("Current", text: $currentPassword)
                     SecureField("New (≥12 chars)", text: $newPassword)
                     SecureField("Confirm new", text: $confirmPassword)
@@ -75,41 +113,47 @@ struct SettingsView: View {
                         Task { await changePassword() }
                     }
                     .disabled(newPassword.count < MIN_MASTER_PASSWORD_LENGTH || newPassword != confirmPassword)
+                    .foregroundStyle(KeyholeColors.accent)
+                } header: {
+                    KeyholeFieldLabel(text: "Master password")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
-                // The same offline audit core has always computed, previously shown
-                // only in the desktop app. Runs in-process against the unlocked
-                // vault; no password, hash or count leaves the device.
-                Section("Vault health") {
+                Section {
                     if let report = healthReport {
                         Text(
                             report.issues.isEmpty
                                 ? "Checked \(report.loginCount) logins — no issues found."
                                 : "Checked \(report.loginCount) logins — \(report.issues.count) finding(s)."
                         )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
 
                         ForEach(report.issues.prefix(40), id: \.entryId) { issue in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("\(issue.kind.rawValue.uppercased()) · \(issue.title)")
-                                    .font(.subheadline)
+                                    .font(KeyholeFonts.bodySemibold)
                                 Text(issue.detail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(KeyholeFonts.meta)
+                                    .foregroundStyle(KeyholeColors.textDim)
                             }
                         }
                     }
                     Button(healthReport == nil ? "Check vault" : "Check again") {
                         healthReport = session.data.map { analyzeVaultHealth($0) }
+                        session.registerActivity()
                     }
+                    .foregroundStyle(KeyholeColors.accent)
+                } header: {
+                    KeyholeFieldLabel(text: "Vault health")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
-                Section("Vault file") {
+                Section {
                     if let url = session.exportVault().map({ _ in VaultStore.shared.vaultFileURL }) {
                         Text(url.path)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.textDim)
                     }
                     Button("Export vault…") {
                         Task { await prepareExport() }
@@ -119,7 +163,42 @@ struct SettingsView: View {
                     Button("Delete vault from this device", role: .destructive) {
                         confirmReset = true
                     }
+                } header: {
+                    KeyholeFieldLabel(text: "Vault file")
                 }
+                .listRowBackground(KeyholeColors.surface)
+
+                Section {
+                    Text(
+                        """
+                        Keyhole can fill usernames and passwords in Safari and apps. \
+                        After installing, enable it in iOS Settings:
+                        """
+                    )
+                    .font(KeyholeFonts.meta)
+                    .foregroundStyle(KeyholeColors.textDim)
+                    Text("Settings → Passwords → Password Options → AutoFill Passwords → Keyhole")
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.accent)
+                    Text(
+                        """
+                        When a login form appears, choose Keyhole from the QuickType bar, \
+                        unlock with your master password, and pick a matching entry. \
+                        The vault stays sealed; AutoFill never keeps your master password.
+                        """
+                    )
+                    .font(KeyholeFonts.meta)
+                    .foregroundStyle(KeyholeColors.textDim)
+                    Button("Open Password Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .foregroundStyle(KeyholeColors.accent)
+                } header: {
+                    KeyholeFieldLabel(text: "AutoFill")
+                }
+                .listRowBackground(KeyholeColors.surface)
 
                 SyncSettingsSection(
                     syncBaseUrl: $syncBaseUrl,
@@ -131,15 +210,21 @@ struct SettingsView: View {
                 )
 
                 if let err = session.errorMessage {
-                    Section { Text(err).foregroundStyle(.red) }
+                    Section {
+                        KeyholeErrorBanner(message: err)
+                    }
                 }
                 if let remaining = clipboard.secondsRemaining {
                     Section {
                         Text("Clipboard clears in \(remaining)s")
-                            .font(.caption)
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.textDim)
                     }
+                    .listRowBackground(KeyholeColors.surface2)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(KeyholeColors.bg)
             .navigationTitle("Settings")
             .onAppear { load() }
             .fileImporter(
@@ -189,6 +274,7 @@ struct SettingsView: View {
             }
         }
         clipboard.updateClearAfter(Int(clipboardClear))
+        session.registerActivity()
     }
 
     private func changePassword() async {
@@ -200,6 +286,27 @@ struct SettingsView: View {
         currentPassword = ""
         newPassword = ""
         confirmPassword = ""
+    }
+
+    private func runBreachCheck() async {
+        guard breachCheckEnabled, let data = session.data else { return }
+        breachBusy = true
+        breachError = nil
+        defer { breachBusy = false }
+        var hits: [BreachHit] = []
+        let logins = liveEntries(data).filter { $0.kind == .login && !$0.password.isEmpty }
+        do {
+            for entry in logins {
+                let count = try await BreachClient.checkPasswordBreachCount(entry.password)
+                if count > 0 {
+                    hits.append(BreachHit(entryId: entry.id, title: entry.title, count: count))
+                }
+            }
+            breachHits = hits
+            session.registerActivity()
+        } catch {
+            breachError = error.localizedDescription
+        }
     }
 
     private func prepareExport() async {
@@ -252,23 +359,32 @@ struct SyncSettingsSection: View {
     @State private var vaultMismatch = false
 
     var body: some View {
-        Section("Sync (optional)") {
+        Section {
             TextField("Server URL", text: $syncBaseUrl)
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)
             TextField("Account id", text: $syncAccountId)
                 .textInputAutocapitalization(.never)
             SecureField("Master password (for sync auth)", text: $syncPassword)
+            if syncBusy {
+                HStack {
+                    ProgressView()
+                    Text("Working…")
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                }
+            }
             if let syncMessage {
                 Text(syncMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(KeyholeFonts.meta)
+                    .foregroundStyle(KeyholeColors.textDim)
             }
             Button("Save sync settings") {
                 let cfg = SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: syncAccountId)
                 cfg.save()
                 session.syncConfig = cfg
                 syncMessage = "Sync settings saved (auth secret is never persisted)."
+                session.registerActivity()
             }
             Button("Test connection") {
                 Task {
@@ -276,6 +392,7 @@ struct SyncSettingsSection: View {
                     defer { syncBusy = false }
                     let ok = await SyncClient.healthCheck(baseUrl: syncBaseUrl)
                     syncMessage = ok ? "Server healthy." : "Server unreachable."
+                    session.registerActivity()
                 }
             }
             .disabled(syncBusy || syncBaseUrl.isEmpty)
@@ -289,8 +406,9 @@ struct SyncSettingsSection: View {
             .disabled(syncBusy)
             if vaultMismatch {
                 Text("This account already has a different vault on the server. Pick one:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(KeyholeFonts.meta)
+                    .foregroundStyle(KeyholeColors.warn)
+                    .padding(.vertical, 4)
                 Button("Use server vault here") {
                     Task { await adoptRemote() }
                 }
@@ -308,7 +426,10 @@ struct SyncSettingsSection: View {
                 syncMessage = "Cleared."
                 vaultMismatch = false
             }
+        } header: {
+            KeyholeFieldLabel(text: "Sync (optional)")
         }
+        .listRowBackground(KeyholeColors.surface)
     }
 
     private func registerUpload() async {
@@ -331,6 +452,7 @@ struct SyncSettingsSection: View {
             session.syncConfig = cfg
             syncMessage = "Registered. Server version \(result.version)."
             syncPassword = ""
+            session.registerActivity()
         } catch {
             syncMessage = error.localizedDescription
         }
@@ -359,6 +481,7 @@ struct SyncSettingsSection: View {
             syncMessage = message
             syncPassword = ""
             vaultMismatch = false
+            session.registerActivity()
         } catch let err as SyncClientError where err.code == "vault_mismatch" {
             vaultMismatch = true
             syncMessage = err.message
@@ -388,6 +511,7 @@ struct SyncSettingsSection: View {
             syncMessage = message
             syncPassword = ""
             vaultMismatch = false
+            session.registerActivity()
         } catch {
             syncMessage = error.localizedDescription
         }
@@ -414,6 +538,7 @@ struct SyncSettingsSection: View {
             syncMessage = message
             syncPassword = ""
             vaultMismatch = false
+            session.registerActivity()
         } catch {
             syncMessage = error.localizedDescription
         }

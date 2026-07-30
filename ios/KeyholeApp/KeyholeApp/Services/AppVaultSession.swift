@@ -62,7 +62,7 @@ public final class AppVaultSession {
         defer { busy = false }
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try createVault(
+                try KeyholeCore.createVault(
                     masterPassword: masterPassword,
                     options: CreateVaultOptions(kdfPreset: preset)
                 )
@@ -164,7 +164,7 @@ public final class AppVaultSession {
         defer { busy = false }
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try changeMasterPassword(
+                try KeyholeCore.changeMasterPassword(
                     file: file,
                     currentPassword: current,
                     newPassword: next

@@ -24,7 +24,7 @@ final class DemoVaultTests: XCTestCase {
     func testWrongPasswordFails() throws {
         let file = try loadDemoVault()
         XCTAssertThrowsError(try unlockVault(file: file, masterPassword: "wrong-password-xx")) { err in
-            guard case KeyholeError.decryption = err as? KeyholeError else {
+            guard let kh = err as? KeyholeError, case .decryption = kh else {
                 return XCTFail("Expected decryption error, got \(err)")
             }
         }
@@ -536,5 +536,50 @@ final class HistoryAndTrashTests: XCTestCase {
         let ab = try VaultJSON.canonicalString(mergeVaultData(onPhone, onDesktop).data)
         let ba = try VaultJSON.canonicalString(mergeVaultData(onDesktop, onPhone).data)
         XCTAssertEqual(ab, ba)
+    }
+}
+
+final class BreachTests: XCTestCase {
+    func testHashForRangeQuerySplitsSha1() {
+        // Known SHA-1("password") = 5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8
+        let query = hashForRangeQuery("password")
+        XCTAssertEqual(query.prefix, "5BAA6")
+        XCTAssertEqual(query.suffix, "1E4C9B93F3F0682250B6CF8331B7EE68FD8")
+        XCTAssertEqual(query.prefix.count, 5)
+        XCTAssertEqual(query.suffix.count, 35)
+    }
+
+    func testCountFromRangeResponse() {
+        let body = [
+            "0018A45C4D1DEF81644B54AB7F969B88D65:1",
+            "1E4C9B93F3F0682250B6CF8331B7EE68FD8:3861493",
+            "00D4F6E8DA3F211726AA4D1F4656FA666B0:2",
+        ].joined(separator: "\n")
+        XCTAssertEqual(countFromRangeResponse(body, suffix: "1E4C9B93F3F0682250B6CF8331B7EE68FD8"), 3_861_493)
+        XCTAssertEqual(countFromRangeResponse(body, suffix: "1e4c9b93f3f0682250b6cf8331b7ee68fd8"), 3_861_493)
+        XCTAssertEqual(countFromRangeResponse(body, suffix: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"), 0)
+    }
+}
+
+final class UrlMatchTests: XCTestCase {
+    func testHostMatchAndLookalikeRejected() throws {
+        let data = try createEntry(
+            data: emptyVaultData(),
+            input: EntryInput(title: "GitHub", username: "u", password: "p", urls: ["https://github.com"])
+        ).data
+        let hits = matchEntriesForAutofill(data: data, pageUrl: "https://github.com/login", mode: .host)
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(matchUrl(entryUrl: "https://github.com", pageUrl: "https://github.com.evil.com", mode: .host), .none)
+        XCTAssertEqual(matchUrl(entryUrl: "https://github.com", pageUrl: "https://gist.github.com", mode: .subdomain), .subdomain)
+    }
+
+    func testTrashedNotOffered() throws {
+        var data = try createEntry(
+            data: emptyVaultData(),
+            input: EntryInput(title: "Bank", password: "x", urls: ["https://bank.example"])
+        ).data
+        let id = data.entries[0].id
+        data = try deleteEntry(data: data, id: id)
+        XCTAssertTrue(matchEntriesForAutofill(data: data, pageUrl: "https://bank.example").isEmpty)
     }
 }

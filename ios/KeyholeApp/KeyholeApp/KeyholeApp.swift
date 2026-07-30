@@ -20,6 +20,7 @@ struct KeyholeApp: App {
                         session.handleScenePhase(.inactive)
                     case .active:
                         session.handleScenePhase(.active)
+                        session.registerActivity()
                     @unknown default:
                         break
                     }

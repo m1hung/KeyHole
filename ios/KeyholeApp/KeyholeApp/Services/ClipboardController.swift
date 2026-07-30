@@ -6,10 +6,12 @@ import UIKit
 public final class ClipboardController {
     public var secondsRemaining: Int?
     public var lastCopied: String?
+    public var toastMessage: String?
     public var error: String?
 
     private var copiedValue: String?
     private var timer: Timer?
+    private var toastTask: Task<Void, Never>?
     private var clearAfterSeconds: Int
 
     public init(clearAfterSeconds: Int = 30) {
@@ -25,6 +27,7 @@ public final class ClipboardController {
         UIPasteboard.general.string = value
         copiedValue = value
         lastCopied = label
+        showToast("Copied \(label)")
         stopTimer()
         guard clearAfterSeconds > 0 else { return }
         var remaining = clearAfterSeconds
@@ -51,14 +54,19 @@ public final class ClipboardController {
         stopTimer()
     }
 
+    private func showToast(_ message: String) {
+        toastTask?.cancel()
+        toastMessage = message
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            guard !Task.isCancelled else { return }
+            toastMessage = nil
+        }
+    }
+
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
         secondsRemaining = nil
-    }
-
-    deinit {
-        // Best-effort; UIPasteboard from deinit is discouraged — timer cleared on lock.
-        timer?.invalidate()
     }
 }

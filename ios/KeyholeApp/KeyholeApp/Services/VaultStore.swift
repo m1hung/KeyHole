@@ -7,8 +7,12 @@ public enum VaultFileNames {
     public static let fileExtension = ".keyhole.json"
 }
 
-/// Atomic sealed-envelope persistence under Application Support.
-/// Never writes master password, MK, VEK, or sync auth secrets.
+public enum AppGroup {
+    public static let id = "group.app.keyhole.vault"
+}
+
+/// Atomic sealed-envelope persistence. Prefers the App Group container so the
+/// AutoFill extension can read the same vault file as the main app.
 @MainActor
 public final class VaultStore {
     public static let shared = VaultStore()
@@ -21,6 +25,10 @@ public final class VaultStore {
         let dir: URL
         if let directory {
             dir = directory
+        } else if let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: AppGroup.id
+        ) {
+            dir = group.appendingPathComponent("Keyhole", isDirectory: true)
         } else {
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
@@ -30,9 +38,27 @@ public final class VaultStore {
         self.vaultURL = dir.appendingPathComponent(VaultFileNames.vault)
         self.backupURL = dir.appendingPathComponent(VaultFileNames.backup)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        migrateFromLegacyApplicationSupportIfNeeded()
     }
 
     public var vaultFileURL: URL { vaultURL }
+
+    /// Copy an existing Application Support vault into the App Group once.
+    private func migrateFromLegacyApplicationSupportIfNeeded() {
+        guard !FileManager.default.fileExists(atPath: vaultURL.path) else { return }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        guard let legacy = base?
+            .appendingPathComponent("Keyhole", isDirectory: true)
+            .appendingPathComponent(VaultFileNames.vault),
+            FileManager.default.fileExists(atPath: legacy.path),
+            legacy.path != vaultURL.path
+        else { return }
+        try? FileManager.default.copyItem(at: legacy, to: vaultURL)
+        let legacyBak = legacy.deletingLastPathComponent().appendingPathComponent(VaultFileNames.backup)
+        if FileManager.default.fileExists(atPath: legacyBak.path) {
+            try? FileManager.default.copyItem(at: legacyBak, to: backupURL)
+        }
+    }
 
     public func load() -> VaultFile? {
         guard FileManager.default.fileExists(atPath: vaultURL.path) else { return nil }
@@ -40,7 +66,6 @@ public final class VaultStore {
             let text = try String(contentsOf: vaultURL, encoding: .utf8)
             return try parseVaultFile(text)
         } catch {
-            // Try backup
             if FileManager.default.fileExists(atPath: backupURL.path) {
                 do {
                     let text = try String(contentsOf: backupURL, encoding: .utf8)

@@ -42,7 +42,7 @@ public struct TotpOptions: Sendable {
     }
 }
 
-public enum TotpAlgorithm: String, Codable, Sendable {
+public enum TotpAlgorithm: String, Codable, Sendable, Hashable {
     case sha1 = "SHA-1"
     case sha256 = "SHA-256"
     case sha512 = "SHA-512"

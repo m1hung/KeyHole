@@ -81,14 +81,20 @@ Argon2id cost (~64 MiB) and can take a few seconds.
 
 ## Out of scope (this MVP)
 
-- AutoFill Credential Provider
 - Face ID / Keychain-wrapped unlock of the vault key
 - App Store signing / CI
-- **Trash management.** Deleting here is a soft delete, the same as on desktop and
-  in the extension — the entry disappears from the list and from autofill, and is
-  purged for good after 30 days. But there is no view to restore or purge early on
-  iOS yet, so use the desktop app or the extension for that. Nothing is lost
-  either way; it is only unreachable from this surface.
+- **Trash management UI on older builds.** Deleting is a soft delete; restore/purge live under the Trash filter now.
+- Public-suffix “domain” autofill mode (host / subdomain / exact only for now)
+
+## AutoFill
+
+The `KeyholeAutoFill` credential provider extension shares the sealed vault via the
+`group.app.keyhole.vault` App Group. Enable it in **Settings → Passwords →
+Password Options → AutoFill Passwords → Keyhole**. Unlock with the master
+password when the QuickType bar offers Keyhole — secrets are never cached unlocked.
+
+Requires an Apple Developer team for App Groups + AutoFill entitlements when
+running on a device.
 
 ## Argon2 embedding
 

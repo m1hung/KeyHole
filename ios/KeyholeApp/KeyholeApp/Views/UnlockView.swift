@@ -6,81 +6,141 @@ struct UnlockView: View {
     @State private var password = ""
     @State private var confirm = ""
     @State private var isCreateMode = false
+    @State private var confirmOverwrite = false
+    @State private var overwriteAck = ""
+    @State private var shake = 0
     @FocusState private var focused: Bool
 
+    private var creating: Bool {
+        session.status == .noVault || isCreateMode
+    }
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                Spacer(minLength: 40)
-                Text("Keyhole")
-                    .font(.system(.largeTitle, design: .serif).weight(.bold))
-                Text(session.status == .noVault || isCreateMode
-                     ? "Create a local vault. Your master password is never stored."
-                     : "Enter your master password to unlock.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+        ZStack {
+            KeyholeColors.bg.ignoresSafeArea()
+            VStack {
+                Spacer(minLength: 24)
+                KeyholeCard {
+                    HStack(spacing: 10) {
+                        KeyholeBrandMark(size: 28)
+                        Text("Keyhole")
+                            .font(KeyholeFonts.brand)
+                            .foregroundStyle(KeyholeColors.text)
+                        Spacer(minLength: 0)
+                        KeyholeLocalBadge()
+                    }
 
-                SecureField("Master password", text: $password)
-                    .textContentType(.password)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focused)
-                    .padding(.horizontal, 32)
+                    Text(creating
+                         ? "Create a local vault. Your master password is never stored."
+                         : "Enter your master password to unlock.")
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                if session.status == .noVault || isCreateMode {
-                    SecureField("Confirm master password", text: $confirm)
-                        .textContentType(.newPassword)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(.horizontal, 32)
-                }
+                    VStack(alignment: .leading, spacing: 8) {
+                        KeyholeFieldLabel(text: "Master password")
+                        SecureField("Master password", text: $password)
+                            .textContentType(creating ? .newPassword : .password)
+                            .textInputAutocapitalization(.never)
+                            .padding(12)
+                            .background(KeyholeColors.surface2)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .focused($focused)
+                    }
 
-                if let err = session.errorMessage {
-                    Text(err)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                }
+                    if creating {
+                        VStack(alignment: .leading, spacing: 8) {
+                            KeyholeFieldLabel(text: "Confirm")
+                            SecureField("Confirm master password", text: $confirm)
+                                .textContentType(.newPassword)
+                                .textInputAutocapitalization(.never)
+                                .padding(12)
+                                .background(KeyholeColors.surface2)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
 
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if session.busy {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text(session.status == .noVault || isCreateMode ? "Create vault" : "Unlock")
-                            .frame(maxWidth: .infinity)
+                    if isCreateMode, session.status == .locked {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Creating a new vault replaces the sealed file on this device. Type OVERWRITE to confirm.")
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.warn)
+                            TextField("OVERWRITE", text: $overwriteAck)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                                .padding(12)
+                                .background(KeyholeColors.dangerBg)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    }
+
+                    if let err = session.errorMessage {
+                        KeyholeErrorBanner(message: err)
+                    }
+
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        if session.busy {
+                            ProgressView()
+                                .tint(KeyholeColors.accentText)
+                        } else {
+                            Text(creating ? "Create vault" : "Unlock")
+                        }
+                    }
+                    .buttonStyle(KeyholePrimaryButtonStyle(disabled: !canSubmit))
+                    .disabled(!canSubmit || session.busy)
+
+                    if session.status == .locked {
+                        Button(isCreateMode ? "Unlock existing vault" : "Create a new vault instead") {
+                            isCreateMode.toggle()
+                            overwriteAck = ""
+                            confirm = ""
+                            session.clearError()
+                        }
+                        .buttonStyle(KeyholeGhostButtonStyle())
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(session.busy || password.count < MIN_MASTER_PASSWORD_LENGTH)
-                .padding(.horizontal, 32)
-
-                if session.status == .locked {
-                    Button(isCreateMode ? "Unlock existing vault" : "Create a new vault instead") {
-                        isCreateMode.toggle()
-                        session.clearError()
-                    }
-                    .font(.footnote)
-                }
-
+                .offset(x: shake == 0 ? 0 : (shake % 2 == 0 ? 8 : -8))
+                .padding(.horizontal, 24)
                 Spacer()
             }
-            .onAppear { focused = true }
-            .navigationBarTitleDisplayMode(.inline)
+        }
+        .onAppear { focused = true }
+        .onChange(of: session.errorMessage) { _, msg in
+            if msg != nil, !creating {
+                withAnimation(.default) { shake += 1 }
+            }
         }
     }
 
+    private var canSubmit: Bool {
+        if password.count < MIN_MASTER_PASSWORD_LENGTH { return false }
+        if creating {
+            if password != confirm { return false }
+            if isCreateMode, session.status == .locked, overwriteAck != "OVERWRITE" {
+                return false
+            }
+        }
+        return true
+    }
+
     private func submit() async {
-        if session.status == .noVault || isCreateMode {
+        if creating {
             guard password == confirm else {
                 session.errorMessage = "Passwords do not match."
+                return
+            }
+            if isCreateMode, session.status == .locked, overwriteAck != "OVERWRITE" {
+                session.errorMessage = "Type OVERWRITE to replace the existing vault."
                 return
             }
             await session.createVault(masterPassword: password)
             password = ""
             confirm = ""
+            overwriteAck = ""
+            isCreateMode = false
         } else {
             await session.unlock(masterPassword: password)
             password = ""
