@@ -129,7 +129,8 @@ export interface EntrySummary {
   username: string;
   /** Display host only. The full URL list stays in the service worker. */
   host: string | null;
-  matchStrength?: 'exact' | 'host' | 'subdomain';
+  /** Loosest is `domain`: same registrable domain, a different host. */
+  matchStrength?: 'exact' | 'host' | 'subdomain' | 'domain';
   hasTotp: boolean;
 }
 
@@ -165,7 +166,29 @@ export type Response =
   | { ok: true; type: 'SYNC_RESULT'; message: string }
   | { ok: true; type: 'SYNC_VAULT_MISMATCH'; message: string }
   | { ok: true; type: 'OK' }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      /**
+       * Host-level facts about a failed autofill, shown under the error and logged
+       * by the service worker: which frames were visible, which held a login
+       * field, which one got the credential, whether the site is allowed.
+       *
+       * Autofill can fail for structural reasons the user cannot see (a login form
+       * in a frame we are not permitted to touch looks identical to a page with no
+       * form at all), so "it didn't work" needs to be answerable without a
+       * debugger. Hosts only — never paths or query strings, which carry tokens.
+       */
+      detail?: string;
+      /**
+       * Set when the failure is "Keyhole is not allowed on this site" and a
+       * narrowly-scoped optional permission would fix it — a match pattern the
+       * popup can hand to `chrome.permissions.request` under the user's click.
+       * The service worker cannot request permissions itself; only a page with a
+       * user gesture can.
+       */
+      needsHostAccess?: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Service worker → content script

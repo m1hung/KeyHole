@@ -12,12 +12,24 @@
  * land on a label boundary.
  */
 
+import { registrableDomain } from './public-suffix.ts';
 import type { Entry } from './types.ts';
 
-export type MatchStrength = 'exact' | 'host' | 'subdomain' | 'none';
+export type MatchStrength = 'exact' | 'host' | 'subdomain' | 'domain' | 'none';
 
-/** How permissive host matching is. `host` is the default. */
-export type MatchMode = 'exact' | 'host' | 'subdomain';
+/**
+ * How permissive host matching is, loosest last. `host` is the default.
+ *
+ *  - `exact`      — same origin (scheme, host, port)
+ *  - `host`       — same hostname, any scheme or port
+ *  - `subdomain`  — the page is *below* the entry's host (entry github.com fills
+ *                   on gist.github.com, never the reverse)
+ *  - `domain`     — the page shares the entry's registrable domain, in either
+ *                   direction: an entry for accounts.example.com is offered on
+ *                   billing.example.com and on example.com. Public-suffix aware,
+ *                   so a.github.io and b.github.io stay strangers.
+ */
+export type MatchMode = 'exact' | 'host' | 'subdomain' | 'domain';
 
 export interface ParsedTarget {
   origin: string;
@@ -74,6 +86,13 @@ export function matchUrl(entryUrl: string, pageUrl: string, mode: MatchMode = 'h
   // Only the stored entry may act as the broader base. The reverse would let a
   // credential saved for accounts.example.com fill on example.com.
   if (isSubdomainOf(page.hostname, entry.hostname)) return 'subdomain';
+  if (mode === 'subdomain') return 'none';
+
+  // Same registrable domain, either direction. `registrableDomain` returns null
+  // rather than guessing, so an unknown namespace never widens the match — see
+  // public-suffix.ts for why that fail-closed default matters here.
+  const base = registrableDomain(entry.hostname);
+  if (base !== null && base === registrableDomain(page.hostname)) return 'domain';
   return 'none';
 }
 
@@ -85,7 +104,17 @@ export interface EntryMatch {
   strength: PositiveMatchStrength;
 }
 
-const RANK: Record<MatchStrength, number> = { exact: 3, host: 2, subdomain: 1, none: 0 };
+const RANK: Record<MatchStrength, number> = { exact: 4, host: 3, subdomain: 2, domain: 1, none: 0 };
+
+/**
+ * How strong a match is, higher being stronger. Exported so callers that rank
+ * candidates themselves — picking which frame of a tab to fill, say — order them
+ * the same way `findMatchingEntries` does, instead of keeping a second copy of
+ * this table that can drift out of step.
+ */
+export function matchRank(strength: MatchStrength): number {
+  return RANK[strength];
+}
 
 /** All entries usable on `pageUrl`, best match first. */
 export function findMatchingEntries(entries: readonly Entry[], pageUrl: string, mode: MatchMode = 'host'): EntryMatch[] {

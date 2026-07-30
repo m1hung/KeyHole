@@ -11,6 +11,7 @@ export * from './encoding.ts';
 export * from './crypto.ts';
 export * from './password-gen.ts';
 export * from './wordlist.ts';
+export * from './public-suffix.ts';
 export * from './url-match.ts';
 export * from './totp.ts';
 export * from './validation.ts';

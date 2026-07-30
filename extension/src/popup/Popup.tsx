@@ -25,6 +25,10 @@ export function Popup() {
   /** `${entryId}:${field}` of the button that was just used, for the pulse. */
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [tabHost, setTabHost] = useState<string | null>(null);
+  /** Set when a fill failed only because Keyhole lacks access to this site. */
+  const [accessRequest, setAccessRequest] = useState<{ pattern: string; entryId: string } | null>(null);
+  /** Why a fill failed, in host-level terms. Same line the service worker logs. */
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
 
   const refreshState = useCallback(async () => {
     const response = await sendToBackground({ type: 'GET_STATE' });
@@ -103,12 +107,40 @@ export function Popup() {
   const fill = async (entryId: string) => {
     if (tabId === null) return;
     setError(null);
+    setErrorDetail(null);
+    setAccessRequest(null);
     const response = await sendToBackground({ type: 'FILL', entryId, tabId });
     if (!response.ok) {
       setError(response.error);
+      setErrorDetail(response.detail ?? null);
+      // A fill that failed only for want of site access is recoverable right here,
+      // because this click is the user gesture chrome.permissions.request needs.
+      if (response.needsHostAccess !== undefined) {
+        setAccessRequest({ pattern: response.needsHostAccess, entryId });
+      }
       return;
     }
     window.close(); // credential delivered; nothing left to show
+  };
+
+  /** Ask for the site, then retry the fill that prompted the request. */
+  const grantAccessAndRetry = async () => {
+    if (!accessRequest) return;
+    setBusy(true);
+    let granted = false;
+    try {
+      granted = await chrome.permissions.request({ origins: [accessRequest.pattern] });
+    } catch {
+      granted = false;
+    }
+    setBusy(false);
+    if (!granted) {
+      setError('Keyhole was not allowed on this site, so nothing was filled.');
+      return;
+    }
+    const { entryId } = accessRequest;
+    setAccessRequest(null);
+    await fill(entryId);
   };
 
   if (screen === 'loading') return <div className="popup-center">Loading…</div>;
@@ -187,7 +219,22 @@ export function Popup() {
         autoFocus
       />
 
-      {error && <div className="popup-error">{error}</div>}
+      {error && (
+        <div className="popup-error">
+          {error}
+          {errorDetail && <div className="popup-error-detail">{errorDetail}</div>}
+          {accessRequest && (
+            <button
+              type="button"
+              className="primary popup-error-action"
+              disabled={busy}
+              onClick={() => void grantAccessAndRetry()}
+            >
+              {busy ? 'Requesting…' : `Allow Keyhole on ${tabHost ?? 'this site'} and retry`}
+            </button>
+          )}
+        </div>
+      )}
 
       {showingMatches && <p className="popup-section-label">Matches for {tabHost}</p>}
       {!showingMatches && shown.length > 0 && <p className="popup-section-label">All entries</p>}
@@ -204,6 +251,13 @@ export function Popup() {
                 <div className="popup-item-title">
                   {entry.title}
                   {entry.matchStrength === 'exact' && <span className="badge">exact</span>}
+                  {/* Saved on a different host of the same site — say so, so the
+                      user can tell a related suggestion from their own login. */}
+                  {entry.matchStrength === 'domain' && (
+                    <span className="badge soft" title="Saved for another host on this site">
+                      similar
+                    </span>
+                  )}
                 </div>
                 <div className="popup-item-meta">
                   {entry.username || <em>no username</em>}

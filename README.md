@@ -24,7 +24,7 @@ envelopes it cannot read.
 ## Repository layout
 
 ```
-core/         framework-agnostic crypto + vault (no I/O, 175 tests)
+core/         framework-agnostic crypto + vault (no I/O, 204 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
@@ -49,7 +49,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 245 tests: 175 core + 26 extension + 44 server
+npm test                    # 299 tests: 204 core + 51 extension + 44 server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 ```
 
@@ -93,8 +93,8 @@ Security claims are only meaningful with a stated adversary. Here is ours.
 | **Tampering with the vault file** | GCM tags authenticate both layers. The header (vault id, format version, KDF cost) is bound as associated data, so a spliced key blob or a downgraded KDF fails to decrypt. |
 | **KDF downgrade** | Parameters below 16 MiB / t=2 are rejected before derivation, independently of the AAD binding. |
 | **A malicious web page messaging the extension** | Every privileged handler requires `isTrustedExtensionSender`: correct extension id, a `chrome-extension://` sender URL, and no `sender.tab`. Content scripts are explicitly untrusted. `onMessageExternal` rejects everything. |
-| **Credential theft via lookalike domains** | Autofill matching parses URLs and compares hosts on label boundaries. `github.com.evil.com` never matches `github.com`. |
-| **Autofill into a page that navigated mid-flow** | The service worker re-reads the tab URL and re-runs matching immediately before dispatching, and the content script re-checks `location.origin` on arrival. |
+| **Credential theft via lookalike domains** | Autofill matching parses URLs and compares hosts on label boundaries. `github.com.evil.com` never matches `github.com`. Same-site suggestions are public-suffix aware, so `a.github.io` and `b.co.uk` are never pooled with their neighbours, and an unrecognised namespace narrows the match instead of widening it. |
+| **Autofill into a page that navigated mid-flow** | The service worker re-runs matching against the target frame's URL immediately before dispatching, and the content script re-checks `location.origin` on arrival. |
 | **XSS on a site reading a filled password** | Keyhole never pre-fills. A credential enters the DOM only after an explicit click in extension UI, and only that one credential. |
 | **Shoulder-surfing / stale sessions** | Idle auto-lock, lock on browser restart, optional lock-on-hide, clipboard auto-clear. |
 | **Casual snooping of an idle screen** | Hidden secrets render as bullets — the real value is not in the DOM until revealed. |
@@ -224,17 +224,96 @@ present at all.
 3. You click "Fill" on one specific entry     ← explicit, per-credential consent
 4. Service worker:
       a. verifies the sender is our popup (not a content script, not another extension)
-      b. RE-READS the tab URL and RE-RUNS matching   ← TOCTOU guard
-      c. injects content.js via chrome.scripting
-      d. sends exactly one credential
+      b. picks the FRAME to fill, and RE-RUNS matching against it  ← TOCTOU guard
+      c. injects content.js into that one frame via chrome.scripting
+      d. sends exactly one credential, addressed to that one frame id
 5. Content script re-checks location.origin, fills two fields, forgets the value
 ```
+
+### Logins inside an iframe
+
+Plenty of sites put their login form in a cross-origin frame — `hoyoverse.com`
+serves its whole login UI from an `account.hoyoverse.com` iframe, and every hosted
+IdP widget works the same way. Keyhole therefore runs in subframes and treats each
+frame separately:
+
+- **Matching is per frame.** Suggestions in a frame are matched against *that
+  frame's* URL, taken from Chrome (`sender.url`), never from the page. A
+  third-party frame sees only entries saved for its own origin — being embedded in
+  a page you have a login for grants it nothing.
+- **A credential goes to exactly one frame.** `tabs.sendMessage` without a
+  `frameId` broadcasts to every frame in the tab, which — once we inject into
+  subframes — would hand the password to every ad iframe on the page. Delivery is
+  always frame-addressed, and there is a test asserting it.
+- **A frame that asks is not re-injected.** The declared content script runs in
+  subframes, but `chrome.scripting` into a cross-origin child frame needs that
+  frame's own host permission — which `activeTab` does not give. So when a frame
+  asks for a fill, the script is already there and injection is skipped: otherwise
+  a redundant re-injection failure decides whether the fill happens, which is
+  exactly what made framed logins unfillable.
+- **The popup picks the frame by evidence.** Fill prefers the matching frame that
+  actually holds a login field, so an entry saved for `account.hoyoverse.com`
+  lands in the login iframe rather than the page containing it. Frames are
+  enumerated with our own isolated-world probe, deliberately avoiding the
+  `webNavigation` permission and its "read your browsing history" warning.
+- **No suggestion UI in a frame you cannot see it in.** A frame smaller than
+  200×100 gets no panel, so a hidden iframe on a hostile page cannot bait a click.
+  The popup's explicit Fill still works there, because that click happens in
+  extension UI where the origin is on screen.
+
+When a fill comes up empty, the popup shows a host-level account of the attempt
+under the error, and the service worker logs the same line:
+
+```
+page genshin.hoyoverse.com · frames seen 4 · login fields in account.hoyoverse.com
+  · tried account.hoyoverse.com · site access granted
+```
+
+A form in a frame Keyhole may not touch is indistinguishable from a page with no
+form at all — both fill nothing — so that distinction is written down rather than
+left to guesswork. Hosts only: login URLs carry tokens in their paths and queries.
+
+There is a permission wrinkle worth knowing, because it looks like a bug.
+`activeTab` — what clicking the toolbar icon grants — covers **only the top
+frame's origin**. A login form served from a different origin in a child frame is
+out of reach until you allow the site, so Fill appears to do nothing. Keyhole now
+detects that case and offers a one-click grant in the popup, scoped to the site's
+registrable domain (`*://*.hoyoverse.com/*`) rather than the whole web. Turning on
+"Login suggestions" in options grants all sites and covers it too.
+
+### What counts as a match
+
+A login does not have to be saved for the exact page you are on. Keyhole grades
+each entry and offers the best:
+
+| | Entry | Page | Offered |
+|---|---|---|---|
+| same origin | `https://example.com/login` | `https://example.com/app` | ✅ marked **exact** |
+| same host | `https://example.com` | `http://example.com:8443` | ✅ |
+| below the entry | `example.com` | `gist.example.com` | ✅ |
+| same site | `accounts.example.com` | `billing.example.com` | ✅ marked **similar** |
+| same site, upwards | `www.example.com` | `example.com` | ✅ marked **similar** |
+| shared hosting neighbour | `alice.github.io` | `bob.github.io` | ❌ different owners |
+| shared ccTLD neighbour | `mybank.co.uk` | `attacker.co.uk` | ❌ different owners |
+| lookalike | `github.com` | `github.com.evil.com` | ❌ |
+
+The last three are why the "same site" rows need a public suffix list rather than
+label counting. Keyhole carries a curated one (`core/src/public-suffix.ts`) with
+guards for the suffixes it does not list, and when it cannot establish where the
+suffix ends it declines to widen the match at all — you get exact/host/subdomain
+matching there and nothing looser. Suggestions marked **similar** were saved for
+a different host, and the row shows which one.
+
+Filling is symmetric with suggesting — one constant drives both, so a suggestion
+never turns out to be a button that refuses itself. Saving is not: the
+"update saved password?" offer only overwrites an entry that matches the page's
+own host, never a sibling's.
 
 The content script **imports nothing** — not zod, not the core. It runs in the
 page's process, so every kilobyte there is attack surface. It cannot read page
 passwords, cannot request anything from the service worker, and holds no vault
 data. The build fails if it exceeds 25 KB or acquires an `import` (currently
-20.1 KB).
+20.4 KB).
 
 ---
 
@@ -465,7 +544,7 @@ Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app
 ## Development
 
 ```sh
-npm test                                       # 245 tests across core + extension + server
+npm test                                       # 299 tests across core + extension + server
 npm run typecheck                              # tsc --noEmit, all workspaces
 npm run demo                                   # end-to-end crypto proof
 npm run demo:vault --workspace @keyhole/core   # regenerate examples/

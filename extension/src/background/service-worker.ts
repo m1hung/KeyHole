@@ -6,10 +6,15 @@
  *    and is NEVER written to chrome.storage, IndexedDB, or anywhere persistent.
  *  - Privileged messages are gated on `isTrustedExtensionSender`.
  *  - Content scripts may only send SUGGEST_FOR_PAGE / FILL_FROM_PAGE / SAVE_FROM_PAGE;
- *    matching always uses sender.tab's URL from Chrome, never a page-supplied URL.
- *  - Autofill re-verifies the target tab's URL immediately before dispatching,
+ *    matching always uses the URL Chrome attributes to the sender (sender.url for
+ *    the sending frame, sender.tab.url for the page), never a page-supplied URL.
+ *  - Autofill re-verifies the target frame's URL immediately before dispatching,
  *    closing the window where a page navigates between the user's click and the
  *    credential arriving.
+ *  - A credential is delivered to ONE frame, addressed by frame id. Never
+ *    `tabs.sendMessage` without a frameId: that broadcasts to every frame in the
+ *    tab, which since we inject into subframes would hand the password to every
+ *    ad iframe on the page.
  *
  * MV3 SERVICE WORKER LIFETIME — an honest note:
  * Chrome terminates idle service workers (~30s). When that happens the session
@@ -29,12 +34,15 @@ import {
   displayHost,
   findMatchingEntries,
   generateTotp,
+  matchRank,
   parseTarget,
+  registrableDomain,
   saveVault,
   searchEntries,
   unlockVault,
   updateEntry,
   type Entry,
+  type MatchMode,
   type VaultFile,
   type VaultSession,
 } from '@keyhole/core';
@@ -54,6 +62,34 @@ import { clearAllStoredData, hasVault, loadPrefs, loadSyncConfig, loadVaultFile,
 
 const AUTO_LOCK_ALARM = 'keyhole-auto-lock';
 const HEARTBEAT_ALARM = 'keyhole-heartbeat';
+
+/**
+ * How permissively autofill matches the page — see core/src/url-match.ts.
+ *
+ * `domain` also offers logins saved elsewhere on the same registrable domain, so
+ * an entry for accounts.example.com is suggested on billing.example.com, and an
+ * entry saved as www.example.com is suggested on example.com. It stays
+ * public-suffix aware: a.github.io never sees b.github.io's logins, and an
+ * unrecognised namespace falls back to the stricter host/subdomain rules rather
+ * than guessing.
+ *
+ * ONE CONSTANT FOR EVERY READ PATH — deliberately. Suggesting is a promise that
+ * Fill will work, and the fill path's TOCTOU re-check is the actual security
+ * boundary. If suggest were looser than fill, every similar-site suggestion
+ * would be a button that refuses itself; if fill were looser than suggest, we
+ * would fill on pages we never vetted. Do not fork these.
+ */
+const MATCH_MODE: MatchMode = 'domain';
+
+/**
+ * Matching for *overwriting* a stored entry from a page (the save/update offer).
+ *
+ * Intentionally stricter than MATCH_MODE. Reading is recoverable — a suggestion
+ * you did not want costs a dismissal. Writing is not: updating the login saved
+ * for a sibling host, because the usernames happened to agree, destroys the old
+ * password with nothing to restore from. A same-site page gets a new entry.
+ */
+const SAVE_MATCH_MODE: MatchMode = 'subdomain';
 
 /** THE session. Module scope, in-memory only, cleared on lock. */
 let session: VaultSession | null = null;
@@ -285,7 +321,7 @@ async function handle(request: Request): Promise<Response> {
       touch();
       const url = await tabUrl(request.tabId);
       if (!url) return { ok: true, type: 'ENTRIES', entries: [] };
-      const matches = findMatchingEntries(session.data.entries, url, 'subdomain');
+      const matches = findMatchingEntries(session.data.entries, url, MATCH_MODE);
       return {
         ok: true,
         type: 'ENTRIES',
@@ -390,9 +426,32 @@ async function handle(request: Request): Promise<Response> {
 // Autofill — the privileged path
 // ---------------------------------------------------------------------------
 
+/**
+ * One frame of a tab: the id to address it by, and the URL Chrome says it holds.
+ *
+ * Login forms very often live in a cross-origin child frame — hoyoverse.com puts
+ * its whole login UI in an `account.hoyoverse.com` iframe, and every hosted IdP
+ * widget works the same way. Matching and filling therefore happen per frame, not
+ * per tab. `url` must always come from Chrome (`sender.url`) or from our own
+ * isolated-world probe, never from a page-supplied value.
+ */
+interface FrameTarget {
+  frameId: number;
+  url: string;
+}
+
+/** The frame a content-script message came from. */
+function senderFrame(sender: chrome.runtime.MessageSender): FrameTarget | null {
+  if (typeof sender.url !== 'string' || sender.url.length === 0) return null;
+  return { frameId: typeof sender.frameId === 'number' ? sender.frameId : 0, url: sender.url };
+}
+
 async function handleContentScript(request: ContentScriptRequest, sender: chrome.runtime.MessageSender): Promise<Response> {
   const tabId = sender.tab?.id;
   if (typeof tabId !== 'number') return { ok: false, error: 'Cannot read that tab.' };
+  // The sending frame, per Chrome. A page cannot forge either field, and for a
+  // subframe this is the login form's real origin rather than the address bar's.
+  const frame = senderFrame(sender);
 
   switch (request.type) {
     case 'SUGGEST_FOR_PAGE': {
@@ -402,9 +461,9 @@ async function handleContentScript(request: ContentScriptRequest, sender: chrome
         return { ok: true, type: 'SUGGESTIONS', locked: true, theme, entries: [] };
       }
       touch();
-      const url = await tabUrl(tabId);
+      const url = frame?.url ?? (await tabUrl(tabId));
       if (!url) return { ok: true, type: 'SUGGESTIONS', locked: false, theme, entries: [] };
-      const matches = findMatchingEntries(session.data.entries, url, 'subdomain');
+      const matches = findMatchingEntries(session.data.entries, url, MATCH_MODE);
       return {
         ok: true,
         type: 'SUGGESTIONS',
@@ -414,9 +473,11 @@ async function handleContentScript(request: ContentScriptRequest, sender: chrome
       };
     }
     case 'FILL_FROM_PAGE':
-      return fill(request.entryId, tabId);
+      // The user clicked a suggestion rendered inside this frame, so fill exactly
+      // this frame — no probing, no guessing, no broadcast.
+      return fill(request.entryId, tabId, frame);
     case 'SAVE_FROM_PAGE':
-      return saveFromPage(tabId, request.username, request.password, request.entryId);
+      return saveFromPage(tabId, request.username, request.password, request.entryId, frame);
     default: {
       const exhaustive: never = request;
       return { ok: false, error: `Unhandled request: ${JSON.stringify(exhaustive)}` };
@@ -424,50 +485,274 @@ async function handleContentScript(request: ContentScriptRequest, sender: chrome
   }
 }
 
-async function fill(entryId: string, tabId: number): Promise<Response> {
+/**
+ * The narrowest match pattern that covers a URL's whole site, for an optional
+ * permission request.
+ *
+ * `activeTab` — what the popup's click grants — only covers the top frame's
+ * origin. A login form in a cross-origin child frame (`account.hoyoverse.com`
+ * inside `genshin.hoyoverse.com`) therefore stays out of reach until the user
+ * allows the site. Asking for `*://*.hoyoverse.com/*` covers the frame and its
+ * siblings without asking for the whole web.
+ */
+function siteAccessPattern(url: string): string | null {
+  const target = parseTarget(url);
+  if (!target) return null;
+  const base = registrableDomain(target.hostname);
+  // `*.example.com` includes example.com itself in Chrome's match-pattern rules.
+  return base !== null ? `*://*.${base}/*` : `*://${target.hostname}/*`;
+}
+
+async function hasSiteAccess(pattern: string): Promise<boolean> {
+  try {
+    return await chrome.permissions.contains({ origins: [pattern] });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enumerate the tab's frames, with a note on which ones hold a login field.
+ *
+ * Runs in our isolated world, so page JS cannot tamper with what it reports, and
+ * Chrome — not the page — supplies each `frameId`. Deliberately avoids the
+ * `webNavigation` permission, which would add a "read your browsing history"
+ * warning at install for information we can get from the injection we are about
+ * to perform anyway.
+ *
+ * Returns [] when we have no access to the tab; callers fall back to the top frame.
+ */
+async function probeFrames(tabId: number): Promise<Array<FrameTarget & { hasLoginField: boolean }>> {
+  let results: chrome.scripting.InjectionResult<{ href: string; hasLoginField: boolean }>[];
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      // Kept primitive on purpose: this function is serialised and injected, so it
+      // must not close over anything or rely on transpiler helpers.
+      func: function () {
+        var hasLogin = function (root: ParentNode): boolean {
+          if (root.querySelector('input[type="password"], input[autocomplete*="username" i]')) return true;
+          var hosts = root.querySelectorAll('*');
+          for (var i = 0; i < hosts.length; i += 1) {
+            var shadow = hosts[i]?.shadowRoot;
+            if (shadow && hasLogin(shadow)) return true;
+          }
+          return false;
+        };
+        return { href: location.href, hasLoginField: hasLogin(document) };
+      },
+    });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(results)) return [];
+
+  const frames: Array<FrameTarget & { hasLoginField: boolean }> = [];
+  for (const injection of results) {
+    const value = injection.result;
+    if (!value || typeof value.href !== 'string') continue;
+    frames.push({
+      frameId: injection.frameId,
+      url: value.href,
+      hasLoginField: value.hasLoginField === true,
+    });
+  }
+  return frames;
+}
+
+/**
+ * Pick the frame to fill when the request came from the popup, which knows only a
+ * tab id.
+ *
+ * Preference order among frames the entry actually matches: the one holding a
+ * login field, then the strongest match, then the outermost frame. That ordering
+ * is what makes an entry saved for `account.hoyoverse.com` land in the login
+ * iframe instead of the `genshin.hoyoverse.com` page that merely contains it.
+ */
+function chooseFillFrame(entry: Entry, candidates: ReadonlyArray<FrameTarget & { hasLoginField: boolean }>): FrameTarget | null {
+  const ranked: Array<{ frame: (typeof candidates)[number]; rank: number }> = [];
+  for (const frame of candidates) {
+    const strength = findMatchingEntries([entry], frame.url, MATCH_MODE)[0]?.strength;
+    if (strength === undefined) continue;
+    ranked.push({ frame, rank: matchRank(strength) });
+  }
+  ranked.sort(
+    (a, b) =>
+      Number(b.frame.hasLoginField) - Number(a.frame.hasLoginField) ||
+      b.rank - a.rank ||
+      a.frame.frameId - b.frame.frameId,
+  );
+
+  const best = ranked[0];
+  return best ? { frameId: best.frame.frameId, url: best.frame.url } : null;
+}
+
+/**
+ * Host-level account of an autofill attempt, for the error the user sees and for
+ * the service-worker log.
+ *
+ * A login form inside a frame we may not touch is indistinguishable, from the
+ * outside, from a page with no form at all — both fill nothing. This is what tells
+ * those apart without attaching a debugger. Hosts only: paths and query strings on
+ * login URLs carry tokens.
+ */
+function describeFillAttempt(opts: {
+  page: string;
+  probed: ReadonlyArray<FrameTarget & { hasLoginField: boolean }> | null;
+  target: FrameTarget | null;
+  siteAccess: boolean;
+}): string {
+  const hostOf = (url: string): string => parseTarget(url)?.hostname ?? url.split('?')[0] ?? '?';
+  const parts = [`page ${opts.page}`];
+
+  if (opts.probed !== null) {
+    if (opts.probed.length === 0) {
+      parts.push('frames seen none (no access)');
+    } else {
+      const withFields = [...new Set(opts.probed.filter((f) => f.hasLoginField).map((f) => hostOf(f.url)))];
+      parts.push(`frames seen ${opts.probed.length}`);
+      parts.push(`login fields in ${withFields.length > 0 ? withFields.join(', ') : 'none of them'}`);
+    }
+  }
+
+  parts.push(`tried ${opts.target !== null ? hostOf(opts.target.url) : 'nothing — no frame matched'}`);
+  parts.push(`site access ${opts.siteAccess ? 'granted' : 'not granted'}`);
+  return parts.join(' · ');
+}
+
+/**
+ * Deliver one credential to one frame.
+ *
+ * `requestedFrame` is set when a content script asked on behalf of a suggestion it
+ * rendered — that frame is the target, full stop. When it is absent (the popup's
+ * Fill button, which knows only a tab), the frame is resolved here.
+ */
+async function fill(entryId: string, tabId: number, requestedFrame?: FrameTarget | null): Promise<Response> {
   if (!session) return { ok: false, error: 'Vault is locked.' };
   touch();
 
   const entry = session.data.entries.find((e) => e.id === entryId);
   if (!entry) return { ok: false, error: 'Entry not found.' };
 
-  // TOCTOU GUARD. The popup resolved this entry against the tab's URL some
-  // moments ago. Between then and now the page could have navigated — including
-  // to an attacker's origin. Re-read the URL and re-run matching *here*, at the
-  // instant before the credential leaves this process.
+  // The tab's own URL, for the error message and as the fallback frame.
   const currentUrl = await tabUrl(tabId);
   if (!currentUrl) return { ok: false, error: 'Cannot read that tab.' };
+  const pageTarget = parseTarget(currentUrl);
+  if (!pageTarget) return { ok: false, error: 'Keyhole only fills on http(s) pages.' };
 
-  const target = parseTarget(currentUrl);
-  if (!target) return { ok: false, error: 'Keyhole only fills on http(s) pages.' };
-
-  const stillMatches = findMatchingEntries([entry], currentUrl, 'subdomain').length > 0;
-  if (!stillMatches) {
-    return { ok: false, error: `That page (${target.hostname}) does not match this entry. Nothing was filled.` };
+  // Probed only on the popup path; a content script already told us its frame.
+  let probed: Array<FrameTarget & { hasLoginField: boolean }> | null = null;
+  let frame = requestedFrame ?? null;
+  if (frame === null) {
+    probed = await probeFrames(tabId);
+    // No access to enumerate frames (or a page that refuses injection): fall back
+    // to exactly what this did before it knew about frames.
+    frame = chooseFillFrame(entry, probed.length > 0 ? probed : [{ frameId: 0, url: currentUrl, hasLoginField: true }]);
   }
 
-  try {
-    // Injected on demand under `activeTab`, so Keyhole has no standing access to
-    // any site. The grant exists only because the user just invoked the popup.
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: false }, files: ['content.js'] });
-  } catch {
-    return { ok: false, error: 'Cannot inject into this page. Chrome blocks extension pages and the Web Store.' };
+  const accessPattern = siteAccessPattern(currentUrl);
+  const siteAccess = accessPattern !== null && (await hasSiteAccess(accessPattern));
+  /** Attach to every failure below, and log it, so "it didn't fill" is answerable. */
+  const detailFor = (target: FrameTarget | null): string =>
+    describeFillAttempt({ page: pageTarget.hostname, probed, target, siteAccess });
+
+  if (frame === null) {
+    const detail = detailFor(null);
+    console.warn('[Keyhole] nothing filled:', detail);
+    return {
+      ok: false,
+      error: `That page (${pageTarget.hostname}) does not match this entry. Nothing was filled.`,
+      detail,
+    };
+  }
+
+  const target = parseTarget(frame.url);
+  if (!target) return { ok: false, error: 'Keyhole only fills on http(s) pages.', detail: detailFor(frame) };
+
+  // TOCTOU GUARD. Whoever asked resolved this entry against a URL some moments
+  // ago. Between then and now the frame could have navigated — including to an
+  // attacker's origin. Re-run matching against the frame we are about to fill,
+  // *here*, at the instant before the credential leaves this process. The content
+  // script re-checks `location.origin` on arrival as the second layer.
+  const stillMatches = findMatchingEntries([entry], frame.url, MATCH_MODE).length > 0;
+  if (!stillMatches) {
+    return {
+      ok: false,
+      error: `That page (${target.hostname}) does not match this entry. Nothing was filled.`,
+      detail: detailFor(frame),
+    };
+  }
+
+  // Injection is for the popup path only, where the script may not be present yet:
+  // it goes in on demand under `activeTab`, so Keyhole has no standing access to
+  // any site.
+  //
+  // A content script that asked for this fill is, by definition, already running in
+  // the frame. Re-injecting is not merely redundant there — it FAILS, because
+  // `chrome.scripting` into a cross-origin child frame needs that frame's own host
+  // permission, while `activeTab` covers only the top document. Refusing the fill
+  // on that error is what made every framed login (hoyoverse.com and every embedded
+  // IdP) unfillable from its own suggestion panel.
+  if (requestedFrame === undefined || requestedFrame === null) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId, frameIds: [frame.frameId] }, files: ['content.js'] });
+    } catch {
+      const detail = detailFor(frame);
+      console.warn('[Keyhole] injection refused:', detail);
+      if (!siteAccess && accessPattern !== null) {
+        return {
+          ok: false,
+          error: `Keyhole could not reach the login form on ${target.hostname}. Chrome grants access to the page you clicked on, not to frames inside it — allow this site to fill here.`,
+          detail,
+          needsHostAccess: accessPattern,
+        };
+      }
+      return {
+        ok: false,
+        error: 'Cannot inject into this page. Chrome blocks extension pages and the Web Store.',
+        detail,
+      };
+    }
   }
 
   try {
     const totp =
       entry.totpSecret !== null ? (await generateTotp(entry.totpSecret)).code : undefined;
-    const result = (await chrome.tabs.sendMessage(tabId, {
-      type: 'KEYHOLE_FILL',
-      username: entry.username,
-      password: entry.password,
-      ...(totp !== undefined ? { totp } : {}),
-      expectedOrigin: target.origin,
-    })) as { filledUsername?: boolean; filledPassword?: boolean; filledTotp?: boolean } | undefined;
+    // `{ frameId }` is load-bearing, not a hint: without it Chrome delivers the
+    // password to every frame in the tab.
+    const result = (await chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: 'KEYHOLE_FILL',
+        username: entry.username,
+        password: entry.password,
+        ...(totp !== undefined ? { totp } : {}),
+        expectedOrigin: target.origin,
+      },
+      { frameId: frame.frameId },
+    )) as { filledUsername?: boolean; filledPassword?: boolean; filledTotp?: boolean } | undefined;
 
-    if (!result) return { ok: false, error: 'No login form responded on that page.' };
+    const detail = detailFor(frame);
+    if (!result) {
+      console.warn('[Keyhole] no response from the target frame:', detail);
+      return { ok: false, error: 'No login form responded on that page.', detail };
+    }
     if (!result.filledUsername && !result.filledPassword && !result.filledTotp) {
-      return { ok: false, error: 'No login fields found on that page.' };
+      console.warn('[Keyhole] nothing filled:', detail);
+      // Most often this really is "no form here". But it is also exactly what a
+      // login form inside a cross-origin frame looks like from the outside: we
+      // filled the only frame we are allowed to touch, and the fields are in one
+      // we are not. Do not leave the user at a dead end — name the cause and hand
+      // the popup a pattern it can ask for.
+      if (!siteAccess && accessPattern !== null) {
+        return {
+          ok: false,
+          error: `Nothing filled on ${pageTarget.hostname}. If the login form is inside an embedded frame, Keyhole needs access to this site to reach it.`,
+          detail,
+          needsHostAccess: accessPattern,
+        };
+      }
+      return { ok: false, error: 'No login fields found on that page.', detail };
     }
     return {
       ok: true,
@@ -477,7 +762,9 @@ async function fill(entryId: string, tabId: number): Promise<Response> {
       filledTotp: result.filledTotp === true,
     };
   } catch {
-    return { ok: false, error: 'The page did not accept the fill request.' };
+    const detail = detailFor(frame);
+    console.warn('[Keyhole] the target frame rejected the fill:', detail);
+    return { ok: false, error: 'The page did not accept the fill request.', detail };
   }
 }
 
@@ -486,11 +773,14 @@ async function saveFromPage(
   username: string,
   password: string,
   entryId?: string,
+  frame?: FrameTarget | null,
 ): Promise<Response> {
   if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
   touch();
 
-  const currentUrl = await tabUrl(tabId);
+  // The credential was typed into a form in `frame`, and that frame's origin is
+  // where it will be sent — so that, not the address bar, is what we record.
+  const currentUrl = frame?.url ?? (await tabUrl(tabId));
   if (!currentUrl) return { ok: false, error: 'Cannot read that tab.' };
   const target = parseTarget(currentUrl);
   if (!target) return { ok: false, error: 'Keyhole only saves logins for http(s) pages.' };
@@ -499,7 +789,7 @@ async function saveFromPage(
     if (typeof entryId === 'string') {
       const entry = session.data.entries.find((e) => e.id === entryId);
       if (!entry) return { ok: false, error: 'Entry not found.' };
-      const stillMatches = findMatchingEntries([entry], currentUrl, 'subdomain').length > 0;
+      const stillMatches = findMatchingEntries([entry], currentUrl, SAVE_MATCH_MODE).length > 0;
       if (!stillMatches) {
         return { ok: false, error: `That page (${target.hostname}) does not match this entry.` };
       }
@@ -809,6 +1099,11 @@ async function clearMatchBadge(): Promise<void> {
  * Inject the content script when we have host access (optional permissions or
  * localhost). Declarative content_scripts miss some SPA navigations; this keeps
  * Reddit-style logins covered after unlock / tab changes.
+ *
+ * `allFrames` because the login form is frequently not in the top document —
+ * hoyoverse.com, and every embedded IdP widget, put it in a cross-origin iframe.
+ * Each frame gets its own instance, holding no vault data and answering only our
+ * extension id; suggestions in a frame are matched against that frame's own URL.
  */
 async function ensureContentScript(tabId: number, url?: string | undefined): Promise<void> {
   if (!session) return;
@@ -816,7 +1111,7 @@ async function ensureContentScript(tabId: number, url?: string | undefined): Pro
   if (!pageUrl || !/^https?:/i.test(pageUrl)) return;
   try {
     await chrome.scripting.executeScript({
-      target: { tabId, allFrames: false },
+      target: { tabId, allFrames: true },
       files: ['content.js'],
     });
   } catch {
@@ -859,7 +1154,7 @@ async function updateMatchBadge(tabId?: number): Promise<void> {
     return;
   }
 
-  const count = findMatchingEntries(session.data.entries, url, 'subdomain').length;
+  const count = findMatchingEntries(session.data.entries, url, MATCH_MODE).length;
   const text = count <= 0 ? '' : count > 99 ? '99+' : String(count);
   try {
     await chrome.action.setBadgeText({ tabId: id, text });

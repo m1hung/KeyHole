@@ -577,7 +577,29 @@ function onKeyDown(event: KeyboardEvent): void {
 
 let activeTheme: 'light' | 'dark' | 'system' = 'system';
 
+/**
+ * Whether this frame may offer suggestions on focus.
+ *
+ * The script runs in subframes now, because login forms are so often iframed
+ * (hoyoverse.com hosts its whole login in an `account.hoyoverse.com` frame). That
+ * reintroduces an old trick: embed a real login origin in a frame too small or too
+ * hidden to read, then bait a click on the suggestion. A frame the user cannot see
+ * the panel in does not get one — the popup's explicit Fill still works there,
+ * because that click happens in extension UI where the origin is shown.
+ *
+ * The service worker is what decides *which entries* a frame may see, and it
+ * matches on the frame's own URL from Chrome. This is only about the click target.
+ */
+const MIN_FRAME_WIDTH = 200;
+const MIN_FRAME_HEIGHT = 100;
+
+function mayOfferSuggestions(): boolean {
+  if (window === window.top) return true;
+  return window.innerWidth >= MIN_FRAME_WIDTH && window.innerHeight >= MIN_FRAME_HEIGHT;
+}
+
 async function showSuggestions(field: HTMLInputElement): Promise<void> {
+  if (!mayOfferSuggestions()) return;
   const requestId = ++suggestRequestId;
   ensureSuggestHost();
   positionSuggest(field);
@@ -837,6 +859,10 @@ function suggestStyles(): string {
       padding: 1px 5px;
       border-radius: 3px;
     }
+    .badge.soft {
+      background: var(--surface-2);
+      color: var(--text-dim);
+    }
     .fill-button {
       flex-shrink: 0;
       background: var(--accent);
@@ -925,10 +951,12 @@ function renderSuggestList(entries: SuggestEntry[]): void {
     const title = document.createElement('div');
     title.className = 'popup-item-title';
     title.appendChild(document.createTextNode(entry.title || entry.host || 'Login'));
-    if (entry.matchStrength === 'exact') {
+    // `domain` matches were saved on another host of the same site, so label them
+    // instead of letting them pass as a login for this exact page.
+    if (entry.matchStrength === 'exact' || entry.matchStrength === 'domain') {
       const badge = document.createElement('span');
-      badge.className = 'badge';
-      badge.textContent = 'exact';
+      badge.className = entry.matchStrength === 'exact' ? 'badge' : 'badge soft';
+      badge.textContent = entry.matchStrength === 'exact' ? 'exact' : 'similar';
       title.appendChild(badge);
     }
 
@@ -1019,6 +1047,8 @@ function onFormSubmit(event: Event): void {
 async function maybeOfferSave(): Promise<void> {
   const pending = pendingSave;
   if (!pending) return;
+  // Same reasoning as the suggestion panel: no UI in a frame it cannot be read in.
+  if (!mayOfferSuggestions()) return;
 
   const offerKey = `${pending.host}|${pending.username}|${pending.password.length}`;
   if (offerKey === lastOfferKey && saveOfferHost) return;
@@ -1046,7 +1076,11 @@ async function maybeOfferSave(): Promise<void> {
     return;
   }
 
-  const entries = response.entries ?? [];
+  // Suggestions include same-site (`domain`) matches saved on *other* hosts. Those
+  // may be offered for filling, but never as the target of an update: overwriting
+  // a sibling host's password because the usernames happen to agree is quiet data
+  // loss. Same-site logins get a new entry for this host instead.
+  const entries = (response.entries ?? []).filter((e) => e.matchStrength !== 'domain');
   const exact = entries.find(
     (e) => e.username === pending.username && pending.username.length > 0,
   );

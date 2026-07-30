@@ -330,6 +330,27 @@ label {
   font-size: 12px;
 }
 
+/* Why the fill failed, in host terms. Quieter than the message itself, and
+   selectable — its job is to be read out or pasted into a bug report. */
+.popup-error-detail {
+  margin-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  opacity: 0.85;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* Recovery action inside an error — full width so it reads as "do this next"
+   rather than as a second control competing with the row's Fill button. */
+.popup-error-action {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
 @keyframes shake {
   10%, 90% { transform: translateX(-2px); }
   30%, 50%, 70% { transform: translateX(-5px); }
@@ -404,4 +425,11 @@ button.icon.just-copied {
 .badge {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* A same-site match is a weaker claim than an exact one, and should look like a
+   weaker claim — neutral, not accented. */
+.badge.soft {
+  background: var(--surface-2);
+  color: var(--text-dim);
 }

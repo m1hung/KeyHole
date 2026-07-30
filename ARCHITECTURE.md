@@ -12,6 +12,7 @@ graph TD
     validation["validation.ts<br/>zod schemas"]
     gen["password-gen.ts"]
     urlmatch["url-match.ts<br/>autofill matching"]
+    psl["public-suffix.ts<br/>registrable domain, fail-closed"]
     totp["totp.ts<br/>RFC 6238"]
   end
 
@@ -52,6 +53,8 @@ graph TD
   preload --> main
   main --> vaultFile
   main -.serves app:// .-> appUI
+
+  urlmatch --> psl
 
   sw --> vault
   sw --> urlmatch
@@ -148,12 +151,13 @@ sequenceDiagram
   U->>P: clicks "Fill" on ONE entry
   P->>SW: FILL {entryId, tabId}
   SW->>SW: isTrustedExtensionSender? ✓
-  SW->>SW: RE-READ tab URL, RE-RUN match (TOCTOU guard)
-  alt page navigated away
+  SW->>SW: probe frames, pick the one holding a matching login field
+  SW->>SW: RE-RUN match against THAT frame's URL (TOCTOU guard)
+  alt frame navigated away / no matching frame
     SW-->>P: refused — host mismatch, nothing filled
   else still matches
-    SW->>CS: inject content.js (chrome.scripting, activeTab)
-    SW->>CS: KEYHOLE_FILL {username, password, expectedOrigin}
+    SW->>CS: inject content.js into that frame id (chrome.scripting, activeTab)
+    SW->>CS: KEYHOLE_FILL {username, password, expectedOrigin} → one frame id
     CS->>CS: sender.id === runtime.id? ✓
     CS->>CS: location.origin === expectedOrigin? ✓
     CS->>Page: set two field values via native setter + input/change
@@ -161,6 +165,36 @@ sequenceDiagram
     SW-->>P: FILLED → popup closes
   end
 ```
+
+### What counts as a match
+
+`findMatchingEntries` grades every entry URL against the page and keeps the
+strongest result. The extension runs in `domain` mode, the loosest rung:
+
+| Strength | Rule | Example (entry → page) |
+|---|---|---|
+| `exact` | same origin | `https://example.com/login` → `https://example.com/app` |
+| `host` | same hostname, any scheme or port | `https://example.com` → `http://example.com` |
+| `subdomain` | page sits *below* the entry's host | `example.com` → `gist.example.com` |
+| `domain` | same registrable domain, either direction | `accounts.example.com` → `billing.example.com` |
+
+Only `domain` needs to know where the public suffix ends, and that question is
+where a loose matcher leaks credentials: `a.example.com` and `b.example.com` are
+one site, but `a.co.uk` and `b.co.uk` are two registrants and `a.github.io` and
+`b.github.io` are two people. `core/src/public-suffix.ts` answers it from a
+curated suffix list plus guards that catch entries the list is missing, and
+returns `null` — no `domain` match, fall back to the stricter rungs — whenever it
+cannot prove the answer. Suggest, fill, and the toolbar badge all read one
+constant in the service worker, so what gets offered is exactly what gets filled.
+
+Writing back is stricter than reading: the save/update offer will only overwrite
+an entry matched at `subdomain` or better, so a login saved for a sibling host is
+never clobbered because the usernames happened to agree.
+
+Matching is per *frame*, not per tab — login forms are routinely iframed from
+another origin. The URL matched against is the one Chrome attributes to the asking
+frame (`sender.url`), and a filled credential is addressed to a single frame id,
+never broadcast across the tab. See "Logins inside an iframe" in the README.
 
 ### Why a content script cannot extract the vault
 
