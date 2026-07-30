@@ -32,6 +32,7 @@ import {
   changeMasterPassword,
   createVault,
   deleteEntry as coreDeleteEntry,
+  deleteEntries as coreDeleteEntries,
   deriveSyncAuthSecret,
   displayHost,
   findMatchingEntries,
@@ -515,6 +516,20 @@ async function handle(request: Request): Promise<Response> {
       touch();
       try {
         session.data = coreDeleteEntry(session.data, request.entryId);
+        await persist();
+        void updateMatchBadge();
+        return { ok: true, type: 'OK' };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
+    }
+
+    /** The health panel's batch action: one save, one deletedAt, one badge update. */
+    case 'DELETE_ENTRIES': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        session.data = coreDeleteEntries(session.data, request.entryIds);
         await persist();
         void updateMatchBadge();
         return { ok: true, type: 'OK' };

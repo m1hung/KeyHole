@@ -272,6 +272,17 @@ describe('requestSchema', () => {
     expect(requestSchema.safeParse({ ...request, currentPassword: '' }).success).toBe(false);
   });
 
+  it('accepts DELETE_ENTRIES as a list of entry ids', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const other = '22222222-2222-4222-8222-222222222222';
+    expect(requestSchema.safeParse({ type: 'DELETE_ENTRIES', entryIds: [id, other] }).success).toBe(true);
+    // Every id is validated, so one bad member cannot slip a non-uuid into the
+    // batch path, and an empty batch is a bug rather than a no-op worth serving.
+    expect(requestSchema.safeParse({ type: 'DELETE_ENTRIES', entryIds: [id, 'nope'] }).success).toBe(false);
+    expect(requestSchema.safeParse({ type: 'DELETE_ENTRIES', entryIds: [] }).success).toBe(false);
+    expect(requestSchema.safeParse({ type: 'DELETE_ENTRIES', entryId: id }).success).toBe(false);
+  });
+
   it('accepts SET_THEME', () => {
     expect(requestSchema.safeParse({ type: 'SET_THEME', theme: 'dark' }).success).toBe(true);
     expect(requestSchema.safeParse({ type: 'SET_THEME', theme: 'neon' }).success).toBe(false);

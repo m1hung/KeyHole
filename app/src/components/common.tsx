@@ -4,6 +4,16 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { estimateStrength, strengthFromBits } from '@keyhole/core';
 import { Icon } from './Icon.tsx';
 
+/**
+ * How many health findings are listed before the tail is folded away.
+ *
+ * Shared rather than duplicated per surface: it is quoted in the "Show N more"
+ * label, and the app and the extension disagreeing about it would mean the same
+ * vault reports a different number of hidden findings depending on where you
+ * looked.
+ */
+export const FINDINGS_PAGE = 40;
+
 // ------------------------------------------------------------------ secrets
 
 interface SecretFieldProps {

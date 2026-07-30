@@ -1,19 +1,22 @@
 /** Settings: lock behaviour, theme, local storage, export/import, master password, delete vault. */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   MIN_MASTER_PASSWORD_LENGTH,
+  TRASH_RETENTION_DAYS,
   applyMigration,
   analyzeVaultHealth,
   createEntry,
   createFolder,
+  deleteEntries,
   deriveSyncAuthSecret,
+  groupIssuesByEntry,
   parseMigrationPayload,
+  type HealthIssueKind,
   type Settings,
   type VaultFile,
-  type VaultHealthReport,
 } from '@keyhole/core';
-import { ConfirmDialog, StrengthMeter } from './common.tsx';
+import { ConfirmDialog, FINDINGS_PAGE, StrengthMeter } from './common.tsx';
 import { Icon } from './Icon.tsx';
 import {
   downloadVaultFile,
@@ -534,16 +537,97 @@ function VaultHealthSection({
   breachCheckEnabled: boolean;
   onOpenEntry?: ((id: string) => void) | undefined;
 }) {
-  const [report, setReport] = useState<VaultHealthReport | null>(null);
+  /** 0 = never scanned. Bumped by the button; the report itself is derived. */
+  const [scanToken, setScanToken] = useState(0);
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [breachBusy, setBreachBusy] = useState(false);
   const [breachError, setBreachError] = useState<string | null>(null);
   const [breaches, setBreaches] = useState<
     { entryId: string; title: string; count: number }[] | null
   >(null);
 
+  const data = vault.data;
+
+  /* Derived from `data` rather than frozen at the click, so acting on the report
+     cannot leave it describing a vault that no longer exists. A list still
+     offering to delete something already binned is how a bulk action deletes the
+     wrong thing. */
+  const report = useMemo(() => (scanToken === 0 || !data ? null : analyzeVaultHealth(data)), [scanToken, data]);
+  const findings = useMemo(() => (report ? groupIssuesByEntry(report.issues) : []), [report]);
+
+  /* The selection is intersected with what is currently on screen, so an id that
+     has since been deleted or fixed can never be swept up by an action. */
+  const selectedIds = useMemo(
+    () => findings.filter((f) => selection.has(f.entryId)).map((f) => f.entryId),
+    [findings, selection],
+  );
+
+  const kindCounts = useMemo(() => {
+    const counts = new Map<HealthIssueKind, number>();
+    for (const finding of findings) {
+      for (const kind of finding.kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return [...counts.entries()];
+  }, [findings]);
+
+  const visible = showAll ? findings : findings.slice(0, FINDINGS_PAGE);
+
+  /* Breach results are a snapshot of one deliberate network call, so they are kept
+     across a bulk delete rather than thrown away — but an entry that has since
+     been binned drops out, for the same reason the scan is derived from `data`. */
+  const liveBreaches = useMemo(
+    () =>
+      breaches === null || !data
+        ? breaches
+        : breaches.filter((hit) => data.entries.some((e) => e.id === hit.entryId && e.deletedAt === null)),
+    [breaches, data],
+  );
+
+  const toggle = (entryId: string) =>
+    setSelection((current) => {
+      const next = new Set(current);
+      if (!next.delete(entryId)) next.add(entryId);
+      return next;
+    });
+
+  const selectKind = (kind: HealthIssueKind) =>
+    setSelection((current) => {
+      const next = new Set(current);
+      for (const finding of findings) if (finding.kinds.includes(kind)) next.add(finding.entryId);
+      return next;
+    });
+
   const run = () => {
-    if (!vault.data) return;
-    setReport(analyzeVaultHealth(vault.data));
+    setSelection(new Set());
+    setNotice(null);
+    setShowAll(false);
+    setScanToken((token) => token + 1);
+  };
+
+  /**
+   * Bulk trash. One edit, not a loop: see `deleteEntries`.
+   *
+   * Deliberately the reversible delete — these entries go to the trash, stop
+   * appearing in autofill immediately, and can be restored for
+   * `TRASH_RETENTION_DAYS`. Acting on many entries at once from a list of
+   * automated findings is exactly the place not to offer the irreversible one.
+   */
+  const trashSelected = async () => {
+    const ids = selectedIds;
+    if (ids.length === 0) return;
+    setBusy(true);
+    setNotice(null);
+    vault.clearError();
+    await vault.mutate((current) => deleteEntries(current, ids));
+    setSelection(new Set());
+    setBusy(false);
+    setNotice(
+      `Moved ${ids.length} ${ids.length === 1 ? 'entry' : 'entries'} to the trash. Restore from the Trash filter in the vault list.`,
+    );
   };
 
   const runBreachCheck = async () => {
@@ -582,38 +666,139 @@ function VaultHealthSection({
         Offline check for reused, weak, empty, or stale passwords. Nothing leaves this device.
       </p>
       <button type="button" onClick={run}>
-        Scan vault
+        {report ? 'Scan again' : 'Scan vault'}
       </button>
+      {/* Suppressed when the save failed — `vault.mutate` reports through
+          `vault.error`, which the shell shows above this panel, and a success
+          line beside it would contradict it. */}
+      {notice && !vault.error && <p className="hint">{notice}</p>}
       {report && (
         <div style={{ marginTop: 12 }}>
           <p className="hint">
-            Checked {report.loginCount} logins — {report.issues.length === 0 ? 'no issues found.' : `${report.issues.length} finding(s).`}
+            Checked {report.loginCount} logins —{' '}
+            {findings.length === 0
+              ? 'no issues found.'
+              : `${report.issues.length} finding${report.issues.length === 1 ? '' : 's'} across ${findings.length} ${findings.length === 1 ? 'entry' : 'entries'}.`}
           </p>
-          {report.issues.length > 0 && (
-            <ul className="entry-list" style={{ marginTop: 8 }}>
-              {report.issues.slice(0, 40).map((issue) => (
-                <li key={`${issue.kind}-${issue.entryId}`}>
-                  <button
-                    type="button"
-                    className="entry-item"
-                    onClick={() => onOpenEntry?.(issue.entryId)}
-                  >
-                    <span className="entry-body">
-                      <div className="title">
-                        <span className="tag" style={{ marginRight: 6 }}>
-                          {issue.kind}
-                        </span>
-                        {issue.title}
-                      </div>
-                      <div className="meta">{issue.detail}</div>
-                    </span>
+
+          {findings.length > 0 && (
+            <>
+              <div className="findings-toolbar">
+                <div className="checkbox-row" style={{ margin: 0 }}>
+                  <input
+                    id="findings-select-all"
+                    type="checkbox"
+                    checked={selectedIds.length === findings.length}
+                    // Inline so it re-applies on every render: `indeterminate` is a
+                    // DOM property with no React attribute.
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedIds.length > 0 && selectedIds.length < findings.length;
+                    }}
+                    onChange={() =>
+                      setSelection(
+                        selectedIds.length === findings.length ? new Set() : new Set(findings.map((f) => f.entryId)),
+                      )
+                    }
+                  />
+                  <label htmlFor="findings-select-all">
+                    {selectedIds.length > 0
+                      ? `${selectedIds.length} of ${findings.length} selected`
+                      : `Select all ${findings.length}`}
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="ghost danger-text"
+                  disabled={selectedIds.length === 0 || busy || vault.busy}
+                  onClick={() => setConfirmTrash(true)}
+                >
+                  <Icon name="trash" size={14} />
+                  {busy ? 'Moving…' : `Move ${selectedIds.length || ''} to trash`}
+                </button>
+              </div>
+
+              {/* Whole categories are the usual unit of "deal with this": every
+                  empty-password entry, every reused one. */}
+              <div className="filter-row" style={{ marginBottom: 10 }}>
+                <span className="hint" style={{ alignSelf: 'center', marginRight: 2 }}>
+                  Select all:
+                </span>
+                {kindCounts.map(([kind, count]) => (
+                  <button key={kind} type="button" className="filter-chip" onClick={() => selectKind(kind)}>
+                    {kind}
+                    <span className="filter-count">{count}</span>
                   </button>
-                </li>
-              ))}
-            </ul>
+                ))}
+                {selectedIds.length > 0 && (
+                  <button type="button" className="filter-chip" onClick={() => setSelection(new Set())}>
+                    clear
+                  </button>
+                )}
+              </div>
+
+              <ul className="entry-list">
+                {visible.map((finding) => (
+                  <li key={finding.entryId} className="finding-row">
+                    <input
+                      type="checkbox"
+                      checked={selection.has(finding.entryId)}
+                      onChange={() => toggle(finding.entryId)}
+                      aria-label={`Select ${finding.title}`}
+                    />
+                    <button type="button" className="entry-item" onClick={() => onOpenEntry?.(finding.entryId)}>
+                      <span className="entry-body">
+                        <div className="title">
+                          {finding.kinds.map((kind) => (
+                            <span className="tag" key={kind}>
+                              {kind}
+                            </span>
+                          ))}
+                          {finding.title}
+                        </div>
+                        <div className="meta">{finding.issues.map((issue) => issue.detail).join(' ')}</div>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              {/* "Select all" covers findings the list has folded away, so the
+                  tail is never silently out of view while a count includes it. */}
+              {!showAll && findings.length > visible.length && (
+                <button type="button" className="ghost" style={{ marginTop: 8 }} onClick={() => setShowAll(true)}>
+                  Show {findings.length - visible.length} more
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmTrash}
+        title={`Move ${selectedIds.length} ${selectedIds.length === 1 ? 'entry' : 'entries'} to the trash?`}
+        confirmLabel="Move to trash"
+        danger
+        onCancel={() => setConfirmTrash(false)}
+        onConfirm={() => {
+          setConfirmTrash(false);
+          void trashSelected();
+        }}
+      >
+        <p>
+          They stop appearing in your list and in autofill straight away. Nothing is destroyed: restore any of them
+          from the Trash filter, or leave them to be removed for good after {TRASH_RETENTION_DAYS} days.
+        </p>
+        <ul className="hint" style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+          {findings
+            .filter((f) => selection.has(f.entryId))
+            .slice(0, 8)
+            .map((f) => (
+              <li key={f.entryId}>{f.title}</li>
+            ))}
+          {selectedIds.length > 8 && <li>and {selectedIds.length - 8} more</li>}
+        </ul>
+      </ConfirmDialog>
 
       {breachCheckEnabled && (
         <div style={{ marginTop: 20 }}>
@@ -626,16 +811,16 @@ function VaultHealthSection({
             {breachBusy ? 'Checking…' : breaches ? 'Check again' : 'Check passwords'}
           </button>
           {breachError && <p className="hint" style={{ color: 'var(--danger)' }}>{breachError}</p>}
-          {breaches && (
+          {liveBreaches && (
             <div style={{ marginTop: 12 }}>
               <p className="hint">
-                {breaches.length === 0
+                {liveBreaches.length === 0
                   ? 'No checked passwords appear in the breach corpus.'
-                  : `${breaches.length} password(s) found in known breaches.`}
+                  : `${liveBreaches.length} password(s) found in known breaches.`}
               </p>
-              {breaches.length > 0 && (
+              {liveBreaches.length > 0 && (
                 <ul className="entry-list" style={{ marginTop: 8 }}>
-                  {breaches.map((hit) => (
+                  {liveBreaches.map((hit) => (
                     <li key={hit.entryId}>
                       <button type="button" className="entry-item" onClick={() => onOpenEntry?.(hit.entryId)}>
                         <span className="entry-body">

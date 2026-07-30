@@ -11,17 +11,19 @@ import {
   MIN_MASTER_PASSWORD_LENGTH,
   TRASH_RETENTION_DAYS,
   estimateStrength,
+  groupIssuesByEntry,
   generatePassword,
   DEFAULT_GENERATOR_OPTIONS,
   normalizeTotpConfig,
   parseOtpAuthUri,
   type Attachment,
   type CustomField,
+  type HealthIssueKind,
   type TotpConfig,
 } from '@keyhole/core';
 import { sendToBackground, type EntrySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
-import { ConfirmDialog } from '../../../app/src/components/common.tsx';
+import { ConfirmDialog, FINDINGS_PAGE } from '../../../app/src/components/common.tsx';
 import { SyncPanel } from './SyncPanel.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
@@ -66,6 +68,13 @@ export function Options() {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<View>('entries');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
+  /**
+   * Bumped whenever a panel mutates the vault. Panels below hold their own copies
+   * of it — the trash in particular — and a bulk delete in one of them has to
+   * reach the others, or the trash keeps claiming to be empty while holding what
+   * was just deleted.
+   */
+  const [vaultVersion, setVaultVersion] = useState(0);
 
   useEffect(() => {
     document.documentElement.dataset['theme'] = theme;
@@ -88,6 +97,11 @@ export function Options() {
   }, [query]);
 
   useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const vaultChanged = useCallback(() => {
+    setVaultVersion((version) => version + 1);
     void refresh();
   }, [refresh]);
 
@@ -326,8 +340,8 @@ export function Options() {
                 void sendToBackground({ type: 'SET_THEME', theme: next });
               }}
             />
-            <VaultHealth />
-            <Trash onChanged={() => void refresh()} />
+            <VaultHealth onChanged={vaultChanged} />
+            <Trash version={vaultVersion} onChanged={vaultChanged} />
             <ChangeMasterPassword />
             <DangerZone entryCount={entryCount} busy={busy} onReset={() => void resetVault()} />
           </main>
@@ -346,7 +360,7 @@ export function Options() {
  * an entry beyond reach with no way to get it back or to destroy it deliberately —
  * the same gap that left them unable to change their master password.
  */
-function Trash({ onChanged }: { onChanged: () => void }) {
+function Trash({ version, onChanged }: { version: number; onChanged: () => void }) {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   const [confirming, setConfirming] = useState<EntrySummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -360,9 +374,11 @@ function Trash({ onChanged }: { onChanged: () => void }) {
     if (response.type === 'ENTRIES') setEntries(response.entries);
   }, []);
 
+  // `version` is the dependency that matters: it changes when another panel
+  // deletes something, which is what puts entries in here.
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, version]);
 
   const act = async (message: { type: 'RESTORE_ENTRY' | 'PURGE_ENTRY'; entryId: string }) => {
     const response = await sendToBackground(message);
@@ -440,10 +456,14 @@ function Trash({ onChanged }: { onChanged: () => void }) {
  * (the only process holding decrypted entries) and returns findings, never
  * passwords. Nothing leaves the device and nothing is stored.
  */
-function VaultHealth() {
+function VaultHealth({ onChanged }: { onChanged: () => void }) {
   const [report, setReport] = useState<Extract<BackgroundResponse, { type: 'HEALTH' }> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [breachEnabled, setBreachEnabled] = useState(false);
   const [breachBusy, setBreachBusy] = useState(false);
   const [breachError, setBreachError] = useState<string | null>(null);
@@ -455,9 +475,31 @@ function VaultHealth() {
     });
   }, []);
 
-  const run = async () => {
+  /* One row per entry, not per issue: a login that is weak *and* reused *and*
+     stale appears three times in the flat list, and a checkbox on each would make
+     "3 selected" mean one password. See groupIssuesByEntry. */
+  const findings = report ? groupIssuesByEntry(report.issues) : [];
+  const selectedIds = findings.filter((f) => selection.has(f.entryId)).map((f) => f.entryId);
+  const visible = showAll ? findings : findings.slice(0, FINDINGS_PAGE);
+
+  const kindCounts = new Map<HealthIssueKind, number>();
+  for (const finding of findings) {
+    for (const kind of finding.kinds) kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+  }
+
+  /** Whole categories are the usual unit of "deal with this": every reused password. */
+  const selectKind = (kind: HealthIssueKind) =>
+    setSelection((current) => {
+      const next = new Set(current);
+      for (const finding of findings) if (finding.kinds.includes(kind)) next.add(finding.entryId);
+      return next;
+    });
+
+  const scan = async () => {
     setBusy(true);
     setError(null);
+    setSelection(new Set());
+    setShowAll(false);
     const response = await sendToBackground({ type: 'HEALTH_REPORT' });
     setBusy(false);
     if (!response.ok) {
@@ -465,6 +507,37 @@ function VaultHealth() {
       return;
     }
     if (response.type === 'HEALTH') setReport(response);
+  };
+
+  const run = async () => {
+    setNotice(null);
+    await scan();
+  };
+
+  /**
+   * Bulk trash, then re-scan.
+   *
+   * The re-scan is not cosmetic: unlike the app this report is a snapshot from
+   * another process, so leaving it on screen would keep offering to delete
+   * entries that are already binned.
+   */
+  const trashSelected = async () => {
+    const entryIds = selectedIds;
+    if (entryIds.length === 0) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const response = await sendToBackground({ type: 'DELETE_ENTRIES', entryIds });
+    setBusy(false);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    onChanged();
+    await scan();
+    setNotice(
+      `Moved ${entryIds.length} ${entryIds.length === 1 ? 'entry' : 'entries'} to the trash — restorable below.`,
+    );
   };
 
   const setBreach = async (enabled: boolean) => {
@@ -538,34 +611,126 @@ function VaultHealth() {
       </button>
 
       {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
+      {notice && <p className="hint" style={{ color: 'var(--ok)' }}>{notice}</p>}
 
       {report && (
         <div style={{ marginTop: 12 }}>
           <p className="hint">
             Checked {report.loginCount} logins —{' '}
-            {report.issues.length === 0 ? 'no issues found.' : `${report.issues.length} finding(s).`}
+            {findings.length === 0
+              ? 'no issues found.'
+              : `${report.issues.length} finding${report.issues.length === 1 ? '' : 's'} across ${findings.length} ${findings.length === 1 ? 'entry' : 'entries'}.`}
           </p>
-          {report.issues.length > 0 && (
-            <ul className="entry-list" style={{ marginTop: 8 }}>
-              {report.issues.slice(0, 40).map((issue) => (
-                <li key={`${issue.kind}-${issue.entryId}`}>
-                  <span className="entry-item">
-                    <span className="entry-body">
-                      <div className="title">
-                        <span className="tag" style={{ marginRight: 6 }}>
-                          {issue.kind}
-                        </span>
-                        {issue.title}
-                      </div>
-                      <div className="meta">{issue.detail}</div>
+          {findings.length > 0 && (
+            <>
+              <div className="findings-toolbar">
+                <div className="checkbox-row" style={{ margin: 0 }}>
+                  <input
+                    id="health-select-all"
+                    type="checkbox"
+                    checked={selectedIds.length === findings.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedIds.length > 0 && selectedIds.length < findings.length;
+                    }}
+                    onChange={() =>
+                      setSelection(
+                        selectedIds.length === findings.length ? new Set() : new Set(findings.map((f) => f.entryId)),
+                      )
+                    }
+                  />
+                  <label htmlFor="health-select-all">
+                    {selectedIds.length > 0
+                      ? `${selectedIds.length} of ${findings.length} selected`
+                      : `Select all ${findings.length}`}
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="ghost danger-text"
+                  disabled={selectedIds.length === 0 || busy}
+                  onClick={() => setConfirmTrash(true)}
+                >
+                  Move {selectedIds.length || ''} to trash
+                </button>
+              </div>
+
+              <div className="filter-row" style={{ marginBottom: 10 }}>
+                <span className="hint" style={{ alignSelf: 'center', marginRight: 2 }}>
+                  Select all:
+                </span>
+                {[...kindCounts.entries()].map(([kind, count]) => (
+                  <button key={kind} type="button" className="filter-chip" onClick={() => selectKind(kind)}>
+                    {kind}
+                    <span className="filter-count">{count}</span>
+                  </button>
+                ))}
+                {selectedIds.length > 0 && (
+                  <button type="button" className="filter-chip" onClick={() => setSelection(new Set())}>
+                    clear
+                  </button>
+                )}
+              </div>
+
+              <ul className="entry-list">
+                {visible.map((finding) => (
+                  <li key={finding.entryId} className="finding-row">
+                    <input
+                      type="checkbox"
+                      checked={selection.has(finding.entryId)}
+                      aria-label={`Select ${finding.title}`}
+                      onChange={() =>
+                        setSelection((current) => {
+                          const next = new Set(current);
+                          if (!next.delete(finding.entryId)) next.add(finding.entryId);
+                          return next;
+                        })
+                      }
+                    />
+                    <span className="entry-item">
+                      <span className="entry-body">
+                        <div className="title">
+                          {finding.kinds.map((kind) => (
+                            <span className="tag" key={kind}>
+                              {kind}
+                            </span>
+                          ))}
+                          {finding.title}
+                        </div>
+                        <div className="meta">{finding.issues.map((issue) => issue.detail).join(' ')}</div>
+                      </span>
                     </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+
+              {/* "Select all" covers findings the list has folded away, so the
+                  tail is never silently out of view while a count includes it. */}
+              {!showAll && findings.length > visible.length && (
+                <button type="button" className="ghost" style={{ marginTop: 8 }} onClick={() => setShowAll(true)}>
+                  Show {findings.length - visible.length} more
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmTrash}
+        title={`Move ${selectedIds.length} ${selectedIds.length === 1 ? 'entry' : 'entries'} to the trash?`}
+        confirmLabel="Move to trash"
+        danger
+        onCancel={() => setConfirmTrash(false)}
+        onConfirm={() => {
+          setConfirmTrash(false);
+          void trashSelected();
+        }}
+      >
+        <p>
+          They stop appearing in your list and in autofill straight away. Nothing is destroyed: restore any of them
+          from the trash below, or leave them to be removed for good after {TRASH_RETENTION_DAYS} days.
+        </p>
+      </ConfirmDialog>
 
       <div style={{ marginTop: 20 }}>
         <h3>Breach check</h3>

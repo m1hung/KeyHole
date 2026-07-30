@@ -369,6 +369,35 @@ label {
   background: none;
 }
 
+/* Health findings: a checkbox for the batch, the rest of the row still opens the
+   entry. Selecting and inspecting are different intents and get different targets. */
+.findings-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.finding-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 4px;
+}
+
+.finding-row input[type='checkbox'] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.finding-row .entry-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 4px;
+}
+
 /* Previous-password rows: timestamp on the left, actions on the right. */
 .history-row {
   display: flex;

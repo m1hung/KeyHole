@@ -5,6 +5,7 @@ import {
   createFolder,
   createVault,
   deleteEntry,
+  deleteEntries,
   purgeEntry,
   purgeExpiredTrash,
   restoreEntry,
@@ -650,6 +651,57 @@ describe('trash', () => {
     const { data } = createEntry(emptyVaultData(), { title: 'Ancient', password: 'p' });
     const swept = purgeExpiredTrash(data, Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
     expect(swept).toBe(data);
+  });
+});
+
+describe('deleteEntries', () => {
+  const three = () => {
+    let data = emptyVaultData();
+    const ids: string[] = [];
+    for (const title of ['A', 'B', 'C']) {
+      const result = createEntry(data, { title, password: 'p' });
+      data = result.data;
+      ids.push(result.entry.id);
+    }
+    return { data, ids };
+  };
+
+  it('bins exactly the named entries, in one stamp', () => {
+    const { data, ids } = three();
+    const binned = deleteEntries(data, [ids[0]!, ids[2]!]);
+
+    expect(trashedEntries(binned).map((e) => e.title).sort()).toEqual(['A', 'C']);
+    expect(getEntry(binned, ids[1]!)?.deletedAt).toBeNull();
+    // One user action, one moment — not N timestamps milliseconds apart.
+    expect(getEntry(binned, ids[0]!)!.deletedAt).toBe(getEntry(binned, ids[2]!)!.deletedAt);
+  });
+
+  it('skips unknown and already-trashed ids instead of failing the batch', () => {
+    const { data, ids } = three();
+    const first = deleteEntry(data, ids[0]!);
+    // A is already gone and the uuid is a stranger; B must still be binned.
+    const binned = deleteEntries(first, [ids[0]!, ids[1]!, 'not-a-real-id']);
+
+    expect(trashedEntries(binned).map((e) => e.title).sort()).toEqual(['A', 'B']);
+    // The earlier deletion keeps its own timestamp rather than being re-stamped.
+    expect(getEntry(binned, ids[0]!)!.deletedAt).toBe(getEntry(first, ids[0]!)!.deletedAt);
+  });
+
+  it('is a no-op when nothing would change', () => {
+    const { data, ids } = three();
+    expect(deleteEntries(data, [])).toBe(data);
+    expect(deleteEntries(data, ['nope'])).toBe(data);
+    const binned = deleteEntries(data, ids);
+    expect(deleteEntries(binned, ids)).toBe(binned);
+  });
+
+  it('leaves the deleted entries restorable and searchable again', () => {
+    const { data, ids } = three();
+    const binned = deleteEntries(data, ids);
+    expect(searchEntries(binned, '')).toHaveLength(0);
+    expect(searchEntries(restoreEntry(binned, ids[1]!), '')).toHaveLength(1);
+    // No tombstones: a bulk trash is reversible, unlike purge.
+    expect(binned.tombstones).toHaveLength(0);
   });
 });
 
