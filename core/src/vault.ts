@@ -25,15 +25,20 @@ import { UnsupportedVersionError, ValidationError, VaultFormatError } from './er
 import { DEFAULT_GENERATOR_OPTIONS } from './password-gen.ts';
 import {
   FORMAT_VERSION,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_VAULT_BYTES,
   PASSWORD_HISTORY_LIMIT,
   SCHEMA_VERSION,
   TRASH_RETENTION_DAYS,
   VAULT_FORMAT_ID,
+  type Attachment,
+  type CustomField,
   type Entry,
   type PasswordHistoryEntry,
   type Folder,
   type Settings,
   type Tombstone,
+  type TotpConfig,
   type VaultData,
   type VaultFile,
   type VaultSession,
@@ -46,6 +51,7 @@ export const DEFAULT_SETTINGS: Settings = {
   generator: DEFAULT_GENERATOR_OPTIONS,
   theme: 'system',
   lockOnHide: false,
+  breachCheckEnabled: false,
 };
 
 /** Master passwords shorter than this are refused outright. */
@@ -328,6 +334,34 @@ export interface EntryInput {
   tags?: string[];
   folderId?: string | null;
   totpSecret?: string | null;
+  totpConfig?: TotpConfig | null;
+  customFields?: CustomField[];
+  attachments?: Attachment[];
+}
+
+/** Bytes used by attachments across the vault (pre-base64). */
+export function vaultAttachmentBytes(data: VaultData): number {
+  return data.entries.reduce(
+    (sum, entry) => sum + entry.attachments.reduce((s, a) => s + a.sizeBytes, 0),
+    0,
+  );
+}
+
+function assertAttachmentsWithinBudget(data: VaultData): void {
+  for (const entry of data.entries) {
+    for (const att of entry.attachments) {
+      if (att.sizeBytes > MAX_ATTACHMENT_BYTES) {
+        throw new ValidationError(
+          `Attachment "${att.name}" is too large (max ${MAX_ATTACHMENT_BYTES} bytes per file).`,
+        );
+      }
+    }
+  }
+  if (vaultAttachmentBytes(data) > MAX_ATTACHMENTS_VAULT_BYTES) {
+    throw new ValidationError(
+      `Attachments would exceed the vault budget of ${MAX_ATTACHMENTS_VAULT_BYTES} bytes.`,
+    );
+  }
 }
 
 export function createEntry(data: VaultData, input: EntryInput): { data: VaultData; entry: Entry } {
@@ -344,13 +378,18 @@ export function createEntry(data: VaultData, input: EntryInput): { data: VaultDa
     tags: input.tags ?? [],
     folderId: input.folderId ?? null,
     totpSecret: input.totpSecret ?? null,
+    totpConfig: input.totpConfig ?? null,
+    customFields: input.customFields ?? [],
+    attachments: input.attachments ?? [],
     createdAt: timestamp,
     updatedAt: timestamp,
     passwordUpdatedAt: timestamp,
     history: [],
     deletedAt: null,
   };
-  return { data: { ...data, entries: [...data.entries, entry] }, entry };
+  const next = { ...data, entries: [...data.entries, entry] };
+  assertAttachmentsWithinBudget(next);
+  return { data: next, entry };
 }
 
 /**
@@ -394,6 +433,9 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
     ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
     ...(patch.folderId !== undefined ? { folderId: patch.folderId } : {}),
     ...(patch.totpSecret !== undefined ? { totpSecret: patch.totpSecret } : {}),
+    ...(patch.totpConfig !== undefined ? { totpConfig: patch.totpConfig } : {}),
+    ...(patch.customFields !== undefined ? { customFields: patch.customFields } : {}),
+    ...(patch.attachments !== undefined ? { attachments: patch.attachments } : {}),
     updatedAt: changedAt,
     passwordUpdatedAt: passwordChanged ? changedAt : existing.passwordUpdatedAt,
   };
@@ -401,7 +443,9 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
 
   const entries = [...data.entries];
   entries[index] = updated;
-  return { ...data, entries };
+  const next = { ...data, entries };
+  assertAttachmentsWithinBudget(next);
+  return next;
 }
 
 /**
@@ -542,6 +586,8 @@ export function searchEntries(data: VaultData, query: string): Entry[] {
         e.username.toLowerCase().includes(q) ||
         e.tags.some((t) => t.toLowerCase().includes(q)) ||
         e.urls.some((u) => u.toLowerCase().includes(q)) ||
+        // Labels only — never values, matching the rule that passwords are never searched.
+        e.customFields.some((f) => f.label.toLowerCase().includes(q)) ||
         (e.kind === 'note' && e.notes.toLowerCase().includes(q))
       );
     })

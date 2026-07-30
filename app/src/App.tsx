@@ -19,6 +19,7 @@ import {
   TRASH_RETENTION_DAYS,
   updateEntry,
   updateSettings,
+  vaultAttachmentBytes,
   type Entry,
   type EntryKind,
   type GeneratorOptions,
@@ -412,6 +413,7 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
               entry={selected}
               folders={data.folders}
               generatorDefaults={settings.generator ?? DEFAULT_GENERATOR_OPTIONS}
+              vaultAttachmentTotalBytes={vaultAttachmentBytes(data)}
               onCopy={(value, label) => void clipboard.copy(value, label)}
               onClose={() => setView({ kind: 'none' })}
               onSave={(patch) => void vault.mutate((current) => updateEntry(current, selected.id, patch))}

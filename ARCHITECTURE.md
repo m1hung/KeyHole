@@ -14,6 +14,8 @@ graph TD
     urlmatch["url-match.ts<br/>autofill matching"]
     psl["public-suffix.ts<br/>registrable domain, fail-closed"]
     totp["totp.ts<br/>RFC 6238"]
+    health["health.ts<br/>offline audit"]
+    breach["breach.ts<br/>HIBP k-anonymity (no I/O)"]
   end
 
   subgraph app["@keyhole/app — the renderer"]

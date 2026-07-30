@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var autoLockMinutes: Double = 15
     @State private var clipboardClear: Double = 30
     @State private var lockOnHide = false
+    @State private var breachCheckEnabled = false
     @State private var theme: ThemePreference = .system
     @State private var currentPassword = ""
     @State private var newPassword = ""
@@ -44,6 +45,18 @@ struct SettingsView: View {
                         step: 5
                     )
                     Toggle("Lock when app backgrounds", isOn: $lockOnHide)
+                    Toggle("Enable breach checking", isOn: $breachCheckEnabled)
+                    if breachCheckEnabled {
+                        Text(
+                            """
+                            Opt-in Have I Been Pwned lookup. Nothing is sent automatically — \
+                            each check requires an explicit tap, and only a 5-character hash prefix \
+                            leaves the device. Full breach UI is available on desktop and extension for now.
+                            """
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                     Picker("Theme", selection: $theme) {
                         Text("System").tag(ThemePreference.system)
                         Text("Light").tag(ThemePreference.light)
@@ -157,6 +170,7 @@ struct SettingsView: View {
         autoLockMinutes = s.autoLockMinutes
         clipboardClear = s.clipboardClearSeconds
         lockOnHide = s.lockOnHide
+        breachCheckEnabled = s.breachCheckEnabled
         theme = s.theme
         if let cfg = session.syncConfig {
             syncBaseUrl = cfg.baseUrl
@@ -170,6 +184,7 @@ struct SettingsView: View {
                 $0.autoLockMinutes = autoLockMinutes
                 $0.clipboardClearSeconds = clipboardClear
                 $0.lockOnHide = lockOnHide
+                $0.breachCheckEnabled = breachCheckEnabled
                 $0.theme = theme
             }
         }

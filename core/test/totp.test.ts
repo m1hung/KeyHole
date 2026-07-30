@@ -95,3 +95,41 @@ describe('parseOtpAuthUri', () => {
     expect(parseOtpAuthUri('nonsense')).toBeNull();
   });
 });
+
+describe('normalizeTotpConfig', () => {
+  it('collapses the defaults to null', async () => {
+    const { normalizeTotpConfig } = await import('../src/totp.ts');
+    expect(normalizeTotpConfig({ digits: 6, periodSeconds: 30, algorithm: 'SHA-1' })).toBeNull();
+    expect(normalizeTotpConfig({})).toBeNull();
+    expect(normalizeTotpConfig(null)).toBeNull();
+  });
+
+  it('keeps non-default parameters', async () => {
+    const { normalizeTotpConfig } = await import('../src/totp.ts');
+    expect(normalizeTotpConfig({ digits: 8, periodSeconds: 60, algorithm: 'SHA-256' })).toEqual({
+      digits: 8,
+      periodSeconds: 60,
+      algorithm: 'SHA-256',
+    });
+  });
+});
+
+describe('generateTotp with stored config', () => {
+  it('matches an 8-digit 60-second issuer', async () => {
+    const uri = `otpauth://totp/Issuer:user?secret=${RFC_SECRET_B32}&digits=8&period=60&algorithm=SHA1`;
+    const parsed = parseOtpAuthUri(uri);
+    expect(parsed).not.toBeNull();
+    const { normalizeTotpConfig } = await import('../src/totp.ts');
+    const config = normalizeTotpConfig(parsed!.options);
+    expect(config).toEqual({ digits: 8, periodSeconds: 60, algorithm: 'SHA-1' });
+
+    // Same counter as the RFC vector at T=59 with period 30 would differ; with
+    // period 60, T=59 is still in the first window (counter 0).
+    const result = await generateTotp(parsed!.secret, config ?? undefined, 59_000);
+    expect(result.code).toHaveLength(8);
+    expect(result.periodSeconds).toBe(60);
+    // Independent check: same options must be stable.
+    const again = await generateTotp(parsed!.secret, { digits: 8, periodSeconds: 60 }, 59_000);
+    expect(again.code).toBe(result.code);
+  });
+});

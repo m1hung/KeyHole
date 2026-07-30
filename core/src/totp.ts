@@ -6,6 +6,7 @@
  */
 
 import { ValidationError } from './errors.ts';
+import type { TotpConfig } from './types.ts';
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
@@ -106,4 +107,17 @@ export function parseOtpAuthUri(uri: string): { secret: string; options: TotpOpt
     options: { digits, periodSeconds: period, algorithm },
     label: decodeURIComponent(url.pathname.replace(/^\//, '')),
   };
+}
+
+/**
+ * Collapse TOTP options to `null` when they match the generateTotp defaults, so
+ * existing entries stay indistinguishable from "never set a config".
+ */
+export function normalizeTotpConfig(options: TotpOptions | null | undefined): TotpConfig | null {
+  if (!options) return null;
+  const digits = options.digits ?? 6;
+  const periodSeconds = options.periodSeconds ?? 30;
+  const algorithm = options.algorithm ?? 'SHA-1';
+  if (digits === 6 && periodSeconds === 30 && algorithm === 'SHA-1') return null;
+  return { digits, periodSeconds, algorithm };
 }

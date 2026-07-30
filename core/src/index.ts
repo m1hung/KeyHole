@@ -20,3 +20,4 @@ export * from './sync.ts';
 export * from './envelope-sync.ts';
 export * from './migrate.ts';
 export * from './health.ts';
+export * from './breach.ts';

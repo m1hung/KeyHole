@@ -9,11 +9,20 @@ import {
   generatePassphrase,
   generatorEntropyBits,
   generateTotp,
+  normalizeTotpConfig,
   parseOtpAuthUri,
   PASSPHRASE_WORDLIST,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_VAULT_BYTES,
+  bytesToB64,
+  b64ToBytes,
+  randomUuid,
+  type Attachment,
+  type CustomField,
   type Entry,
   type Folder,
   type GeneratorOptions,
+  type TotpConfig,
 } from '@keyhole/core';
 import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
 import { GeneratorOptionsForm } from './GeneratorOptionsForm.tsx';
@@ -23,6 +32,8 @@ interface EntryEditorProps {
   entry: Entry;
   folders: Folder[];
   generatorDefaults: GeneratorOptions;
+  /** Total attachment bytes across the vault (for the budget meter). */
+  vaultAttachmentTotalBytes: number;
   onSave: (patch: Partial<Entry>) => void;
   onDelete: () => void;
   onCopy: (value: string, label: string) => void;
@@ -33,6 +44,7 @@ export function EntryEditor({
   entry,
   folders,
   generatorDefaults,
+  vaultAttachmentTotalBytes,
   onSave,
   onDelete,
   onCopy,
@@ -94,6 +106,9 @@ export function EntryEditor({
     draft.urls.join('\n') !== entry.urls.join('\n') ||
     draft.tags.join(',') !== entry.tags.join(',') ||
     draft.totpSecret !== entry.totpSecret ||
+    JSON.stringify(draft.totpConfig) !== JSON.stringify(entry.totpConfig) ||
+    JSON.stringify(draft.customFields) !== JSON.stringify(entry.customFields) ||
+    JSON.stringify(draft.attachments) !== JSON.stringify(entry.attachments) ||
     draft.folderId !== entry.folderId;
 
   const save = () => {
@@ -105,6 +120,9 @@ export function EntryEditor({
       urls: draft.urls,
       tags: draft.tags,
       totpSecret: draft.totpSecret,
+      totpConfig: draft.totpConfig,
+      customFields: draft.customFields,
+      attachments: draft.attachments,
       folderId: draft.folderId,
     });
   };
@@ -146,7 +164,15 @@ export function EntryEditor({
     const trimmed = raw.trim();
     // Accept a pasted otpauth:// URI as well as a bare base32 seed.
     const parsed = parseOtpAuthUri(trimmed);
-    setDraft({ ...draft, totpSecret: trimmed.length === 0 ? null : (parsed?.secret ?? trimmed) });
+    if (trimmed.length === 0) {
+      setDraft({ ...draft, totpSecret: null, totpConfig: null });
+      return;
+    }
+    setDraft({
+      ...draft,
+      totpSecret: parsed?.secret ?? trimmed,
+      totpConfig: parsed ? normalizeTotpConfig(parsed.options) : draft.totpConfig,
+    });
   };
 
   return (
@@ -321,11 +347,31 @@ export function EntryEditor({
       {!isNote && (
         <TotpSection
           secret={draft.totpSecret}
+          config={draft.totpConfig}
           entryTitle={draft.title}
           onChange={setTotp}
           onCopy={onCopy}
         />
       )}
+
+      <CustomFieldsSection
+        fields={draft.customFields}
+        onChange={(customFields) => setDraft({ ...draft, customFields })}
+        onCopy={onCopy}
+      />
+
+      <AttachmentsSection
+        attachments={draft.attachments}
+        vaultAttachmentBytes={
+          vaultAttachmentTotalBytes -
+          entry.attachments.reduce((s, a) => s + a.sizeBytes, 0) +
+          draft.attachments.reduce((s, a) => s + a.sizeBytes, 0)
+        }
+        onChange={(attachments) => setDraft({ ...draft, attachments })}
+        onError={(message) => {
+          window.alert(message);
+        }}
+      />
 
       {/* Previous passwords. The reason this exists: you rotate a password here,
           the site rejects the change, and without this the one that still works is
@@ -397,16 +443,18 @@ export function EntryEditor({
 
 function TotpSection({
   secret,
+  config,
   entryTitle,
   onChange,
   onCopy,
 }: {
   secret: string | null;
+  config: TotpConfig | null;
   entryTitle: string;
   onChange: (value: string) => void;
   onCopy: (value: string, label: string) => void;
 }) {
-  const [code, setCode] = useState<{ code: string; secondsRemaining: number } | null>(null);
+  const [code, setCode] = useState<{ code: string; secondsRemaining: number; periodSeconds: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -418,9 +466,13 @@ function TotpSection({
     let cancelled = false;
     const refresh = async () => {
       try {
-        const result = await generateTotp(secret);
+        const result = await generateTotp(secret, config ?? undefined);
         if (!cancelled) {
-          setCode({ code: result.code, secondsRemaining: result.secondsRemaining });
+          setCode({
+            code: result.code,
+            secondsRemaining: result.secondsRemaining,
+            periodSeconds: result.periodSeconds,
+          });
           setError(null);
         }
       } catch {
@@ -436,11 +488,15 @@ function TotpSection({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [secret]);
+  }, [secret, config]);
 
   const otpauthUri =
     secret && !error
-      ? `otpauth://totp/${encodeURIComponent(entryTitle || 'Keyhole')}?secret=${secret.replace(/\s+/g, '')}&issuer=Keyhole`
+      ? `otpauth://totp/${encodeURIComponent(entryTitle || 'Keyhole')}?secret=${secret.replace(/\s+/g, '')}&issuer=Keyhole${
+          config
+            ? `&digits=${config.digits}&period=${config.periodSeconds}&algorithm=${config.algorithm.replace('-', '')}`
+            : ''
+        }`
       : null;
 
   return (
@@ -458,6 +514,11 @@ function TotpSection({
           onChange={(e) => onChange(e.target.value)}
         />
         <p className="hint">Paste a base32 secret or a full otpauth:// URI from your authenticator export.</p>
+        {config && (
+          <p className="hint">
+            Non-default parameters: {config.digits} digits · {config.periodSeconds}s · {config.algorithm}
+          </p>
+        )}
         {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
       </div>
       {code && (
@@ -482,6 +543,185 @@ function TotpSection({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function CustomFieldsSection({
+  fields,
+  onChange,
+  onCopy,
+}: {
+  fields: CustomField[];
+  onChange: (fields: CustomField[]) => void;
+  onCopy: (value: string, label: string) => void;
+}) {
+  const update = (id: string, patch: Partial<CustomField>) => {
+    onChange(fields.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  };
+
+  return (
+    <div className="section">
+      <h3>Custom fields</h3>
+      <p className="hint" style={{ marginBottom: 8 }}>
+        Labels are searchable; values are not. Mark a field secret to mask it and clear the clipboard after copy.
+      </p>
+      {fields.map((field) => (
+        <div key={field.id} className="field" style={{ marginBottom: 12 }}>
+          <div className="field-row">
+            <input
+              aria-label="Field label"
+              placeholder="Label"
+              value={field.label}
+              onChange={(e) => update(field.id, { label: e.target.value })}
+            />
+            <button
+              type="button"
+              className="icon"
+              title="Remove field"
+              onClick={() => onChange(fields.filter((f) => f.id !== field.id))}
+            >
+              <Icon name="trash" />
+            </button>
+          </div>
+          <div className="field-row" style={{ marginTop: 6 }}>
+            <input
+              className={field.secret ? 'mono' : undefined}
+              type={field.secret ? 'password' : 'text'}
+              aria-label={field.label || 'Field value'}
+              placeholder="Value"
+              value={field.value}
+              autoComplete="off"
+              onChange={(e) => update(field.id, { value: e.target.value })}
+            />
+            {field.value.length > 0 && (
+              <button type="button" className="icon" title="Copy" onClick={() => onCopy(field.value, field.label || 'Field')}>
+                <Icon name="copy" />
+              </button>
+            )}
+          </div>
+          <div className="checkbox-row" style={{ marginTop: 6 }}>
+            <input
+              id={`secret-${field.id}`}
+              type="checkbox"
+              checked={field.secret}
+              onChange={(e) => update(field.id, { secret: e.target.checked })}
+            />
+            <label htmlFor={`secret-${field.id}`}>Secret (mask and clear clipboard after copy)</label>
+          </div>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="ghost"
+        onClick={() =>
+          onChange([
+            ...fields,
+            { id: randomUuid(), label: '', value: '', secret: false },
+          ])
+        }
+      >
+        Add field
+      </button>
+    </div>
+  );
+}
+
+function AttachmentsSection({
+  attachments,
+  vaultAttachmentBytes,
+  onChange,
+  onError,
+}: {
+  attachments: Attachment[];
+  /** Bytes already used by this entry's attachments (siblings checked on save). */
+  vaultAttachmentBytes: number;
+  onChange: (attachments: Attachment[]) => void;
+  onError: (message: string) => void;
+}) {
+  const used = vaultAttachmentBytes;
+  const remaining = Math.max(0, MAX_ATTACHMENTS_VAULT_BYTES - used);
+
+  const addFiles = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    const next = [...attachments];
+    let running = used;
+    for (const file of Array.from(list)) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        onError(`"${file.name}" is over the ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB per-file limit.`);
+        continue;
+      }
+      if (running + file.size > MAX_ATTACHMENTS_VAULT_BYTES) {
+        onError(`"${file.name}" does not fit in the remaining vault attachment budget.`);
+        continue;
+      }
+      const buffer = new Uint8Array(await file.arrayBuffer());
+      next.push({
+        id: randomUuid(),
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+        dataB64: bytesToB64(buffer),
+      });
+      running += file.size;
+    }
+    onChange(next);
+  };
+
+  const download = (att: Attachment) => {
+    const bytes = b64ToBytes(att.dataB64);
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: att.mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = att.name;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="section">
+      <h3>Attachments</h3>
+      <p className="hint" style={{ marginBottom: 8 }}>
+        Stored inside the encrypted vault. Max {Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB per file,{' '}
+        {Math.round(MAX_ATTACHMENTS_VAULT_BYTES / 1024 / 1024)} MB per vault —{' '}
+        {(used / 1024 / 1024).toFixed(2)} MB used in this vault,{' '}
+        {(remaining / 1024 / 1024).toFixed(2)} MB remaining of the{' '}
+        {Math.round(MAX_ATTACHMENTS_VAULT_BYTES / 1024 / 1024)} MB budget.
+      </p>
+      {attachments.length > 0 && (
+        <ul className="entry-list" style={{ marginBottom: 8 }}>
+          {attachments.map((att) => (
+            <li key={att.id}>
+              <div className="history-row">
+                <span className="meta">
+                  {att.name} · {(att.sizeBytes / 1024).toFixed(1)} KB
+                </span>
+                <div className="button-row">
+                  <button type="button" onClick={() => download(att)}>
+                    Download
+                  </button>
+                  <button type="button" className="danger" onClick={() => onChange(attachments.filter((a) => a.id !== att.id))}>
+                    Remove
+                  </button>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <label className="ghost" style={{ display: 'inline-block', cursor: 'pointer' }}>
+        Add file
+        <input
+          type="file"
+          className="sr-only"
+          multiple
+          onChange={(e) => {
+            void addFiles(e.target.files);
+            e.target.value = '';
+          }}
+        />
+      </label>
     </div>
   );
 }

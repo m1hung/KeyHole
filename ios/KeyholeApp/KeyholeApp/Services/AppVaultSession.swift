@@ -88,9 +88,18 @@ public final class AppVaultSession {
             return
         }
         do {
-            let unlocked = try await Task.detached(priority: .userInitiated) {
+            var unlocked = try await Task.detached(priority: .userInitiated) {
                 try unlockVault(file: file, masterPassword: masterPassword)
             }.value
+            // Sweep expired trash here, not in unlockVault: core stays pure, and a
+            // read that silently rewrites the vault would surprise every caller.
+            let swept = purgeExpiredTrash(data: unlocked.data)
+            if swept != unlocked.data {
+                unlocked.data = swept
+                let saved = try saveVault(session: &unlocked, previous: file)
+                try store.save(saved)
+                self.file = saved
+            }
             session = unlocked
             data = unlocked.data
             status = .unlocked

@@ -215,8 +215,9 @@ struct EntryDetailView: View {
     private func startTotp(_ entry: Entry) {
         timer?.invalidate()
         guard let secret = entry.totpSecret, !secret.isEmpty else { return }
+        let options = totpOptions(from: entry.totpConfig)
         func tick() {
-            totpCode = try? generateTotp(base32Secret: secret)
+            totpCode = try? generateTotp(base32Secret: secret, options: options)
         }
         tick()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in

@@ -9,10 +9,11 @@ vault format (desktop/extension via `@keyhole/core`; iOS via a Swift port):
 | **Chrome extension** | Manifest V3: popup, service worker, on-demand autofill. | Autofill has to happen in the browser. |
 | **iOS app** | Native SwiftUI vault client ([`ios/`](ios/README.md)). | Use the same sealed vault on iPhone/iPad (Vault MVP; no AutoFill yet). |
 
-No accounts. No telemetry. No phone-home of any kind. Your vault is a single
-encrypted file that never leaves your device — unless you opt in to a sync
-server that **you** run ([`server/`](server/README.md)), which stores encrypted
-envelopes it cannot read.
+No accounts. No telemetry. Your vault is a single encrypted file that never
+leaves your device — unless you opt in to a sync server that **you** run
+([`server/`](server/README.md)), which stores encrypted envelopes it cannot
+read, or you explicitly enable optional Have I Been Pwned checks (see the
+threat-model row below).
 
 **Contents** — [Quick start](#quick-start) · [Threat model](#threat-model) ·
 [Cryptographic design](#cryptographic-design) · [Autofill](#autofill-the-security-critical-path) ·
@@ -24,7 +25,7 @@ envelopes it cannot read.
 ## Repository layout
 
 ```
-core/         framework-agnostic crypto + vault (no I/O, 227 tests)
+core/         framework-agnostic crypto + vault (no I/O, 238 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
@@ -49,7 +50,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 338 tests: 227 core + 64 extension + 47 server
+npm test                    # 351 tests: 238 core + 66 extension + 47 server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 ```
 
@@ -98,6 +99,7 @@ Security claims are only meaningful with a stated adversary. Here is ours.
 | **XSS on a site reading a filled password** | Keyhole never pre-fills. A credential enters the DOM only after an explicit click in extension UI, and only that one credential. |
 | **Shoulder-surfing / stale sessions** | Idle auto-lock, lock on browser restart, optional lock-on-hide, clipboard auto-clear. |
 | **Casual snooping of an idle screen** | Hidden secrets render as bullets — the real value is not in the DOM until revealed. |
+| **Optional breach check (opt-in)** | Off by default. When enabled, an explicit click in the health panel sends only the first five hex characters of a password's SHA-1 hash to `api.pwnedpasswords.com` (k-anonymity range query, `Add-Padding: true`). The operator can infer that someone using that prefix range checked a password at that moment — nothing else (no account id, no full hash, no vault metadata). Results stay in memory and are never written to the vault. |
 
 ### Not defended — be honest about this
 
@@ -245,7 +247,8 @@ autofill immediately, and are destroyed for good after 30 days or when you say
 "delete forever". Before, a delete removed the entry and told every synced device to
 do the same — one misclick, gone everywhere, with the vault often the only copy.
 
-Both are `schemaVersion: 3`. History merges as a **union keyed by the change
+Both are `schemaVersion: 4` (along with `totpConfig`, custom fields, attachments and
+the breach-check setting). History merges as a **union keyed by the change
 timestamp** rather than last-write-wins: rotate on your phone and on your desktop
 before they sync, and plain LWW would keep one row and silently drop the other —
 which is precisely the password this feature exists to preserve. Deletion needs no
@@ -565,7 +568,7 @@ Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app
 ## Development
 
 ```sh
-npm test                                       # 338 tests across core + extension + server
+npm test                                       # 351 tests across core + extension + server
 npm run typecheck                              # tsc --noEmit, all workspaces
 npm run demo                                   # end-to-end crypto proof
 npm run demo:vault --workspace @keyhole/core   # regenerate examples/

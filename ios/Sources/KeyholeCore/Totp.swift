@@ -42,7 +42,7 @@ public struct TotpOptions: Sendable {
     }
 }
 
-public enum TotpAlgorithm: String, Sendable {
+public enum TotpAlgorithm: String, Codable, Sendable {
     case sha1 = "SHA-1"
     case sha256 = "SHA-256"
     case sha512 = "SHA-512"
@@ -145,5 +145,28 @@ public func parseOtpAuthUri(_ uri: String) -> OtpAuthParsed? {
         secret: secret,
         options: TotpOptions(digits: digits, periodSeconds: period, algorithm: algorithm),
         label: label
+    )
+}
+
+/// Collapse TOTP options to `nil` when they match the generateTotp defaults, so
+/// existing entries stay indistinguishable from "never set a config".
+public func normalizeTotpConfig(_ options: TotpOptions?) -> TotpConfig? {
+    guard let options else { return nil }
+    if options.digits == 6 && options.periodSeconds == 30 && options.algorithm == .sha1 {
+        return nil
+    }
+    return TotpConfig(
+        digits: options.digits,
+        periodSeconds: options.periodSeconds,
+        algorithm: options.algorithm
+    )
+}
+
+public func totpOptions(from config: TotpConfig?) -> TotpOptions {
+    guard let config else { return TotpOptions() }
+    return TotpOptions(
+        digits: config.digits,
+        periodSeconds: config.periodSeconds,
+        algorithm: config.algorithm
     )
 }

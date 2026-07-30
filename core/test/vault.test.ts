@@ -19,7 +19,7 @@ import {
   updateSettings,
 } from '../src/vault.ts';
 import { DecryptionError, UnsupportedVersionError, ValidationError, VaultFormatError } from '../src/errors.ts';
-import { PASSWORD_HISTORY_LIMIT, TRASH_RETENTION_DAYS, type VaultFile } from '../src/types.ts';
+import { PASSWORD_HISTORY_LIMIT, TRASH_RETENTION_DAYS, MAX_ATTACHMENT_BYTES, type VaultFile } from '../src/types.ts';
 import { bytesToB64 } from '../src/encoding.ts';
 import { randomBytes } from '../src/crypto.ts';
 import { parseVaultData } from '../src/validation.ts';
@@ -433,6 +433,23 @@ describe('search', () => {
   it('is case-insensitive', () => {
     expect(searchEntries(build(), 'GITHUB')).toHaveLength(1);
   });
+
+  it('matches custom field labels but never their values', () => {
+    let data = emptyVaultData();
+    data = createEntry(data, {
+      title: 'Bank',
+      customFields: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          label: 'PIN hint',
+          value: 'mothers-maiden-secret',
+          secret: true,
+        },
+      ],
+    }).data;
+    expect(searchEntries(data, 'pin hint').map((e) => e.title)).toEqual(['Bank']);
+    expect(searchEntries(data, 'mothers-maiden-secret')).toHaveLength(0);
+  });
 });
 
 describe('cross-surface interoperability', () => {
@@ -633,5 +650,101 @@ describe('trash', () => {
     const { data } = createEntry(emptyVaultData(), { title: 'Ancient', password: 'p' });
     const swept = purgeExpiredTrash(data, Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
     expect(swept).toBe(data);
+  });
+});
+
+describe('schema 4 fields', () => {
+  it('defaults totpConfig, customFields, attachments and breachCheckEnabled on a schema-3 payload', () => {
+    const raw = {
+      schemaVersion: 3,
+      entries: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          kind: 'login',
+          title: 'Legacy v3',
+          username: 'a',
+          password: 'b',
+          urls: [],
+          notes: '',
+          tags: [],
+          folderId: null,
+          totpSecret: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          passwordUpdatedAt: '2026-01-01T00:00:00.000Z',
+          history: [],
+          deletedAt: null,
+        },
+      ],
+      folders: [],
+      tombstones: [],
+      settings: {
+        autoLockMinutes: 15,
+        clipboardClearSeconds: 30,
+        generator: {
+          length: 20,
+          lowercase: true,
+          uppercase: true,
+          digits: true,
+          symbols: true,
+          excludeAmbiguous: false,
+        },
+        theme: 'system',
+        lockOnHide: false,
+      },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const data = parseVaultData(raw);
+    expect(data.entries[0]?.totpConfig).toBeNull();
+    expect(data.entries[0]?.customFields).toEqual([]);
+    expect(data.entries[0]?.attachments).toEqual([]);
+    expect(data.settings.breachCheckEnabled).toBe(false);
+  });
+
+  it('stores totpConfig and custom fields through create/update', () => {
+    const { data, entry } = createEntry(emptyVaultData(), {
+      title: 'With extras',
+      totpSecret: 'JBSWY3DPEHPK3PXP',
+      totpConfig: { digits: 8, periodSeconds: 60, algorithm: 'SHA-1' },
+      customFields: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          label: 'Security question',
+          value: 'blue',
+          secret: false,
+        },
+      ],
+    });
+    expect(entry.totpConfig?.digits).toBe(8);
+    expect(entry.customFields[0]?.label).toBe('Security question');
+
+    const updated = updateEntry(data, entry.id, {
+      customFields: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          label: 'Security question',
+          value: 'green',
+          secret: false,
+        },
+      ],
+    });
+    expect(getEntry(updated, entry.id)?.customFields[0]?.value).toBe('green');
+  });
+
+  it('refuses an attachment over the per-file budget', () => {
+    expect(() =>
+      createEntry(emptyVaultData(), {
+        title: 'Too big',
+        attachments: [
+          {
+            id: '33333333-3333-4333-8333-333333333333',
+            name: 'huge.bin',
+            mimeType: 'application/octet-stream',
+            sizeBytes: MAX_ATTACHMENT_BYTES + 1,
+            dataB64: 'AA==',
+          },
+        ],
+      }),
+    ).toThrow(ValidationError);
   });
 });

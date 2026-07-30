@@ -8,7 +8,7 @@
  */
 
 /** Current version of the decrypted vault model. Bump when `VaultData` changes shape. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Superseded passwords kept per entry, newest first.
@@ -21,6 +21,17 @@ export const PASSWORD_HISTORY_LIMIT = 20;
 
 /** How long a soft-deleted entry stays restorable before it is purged for real. */
 export const TRASH_RETENTION_DAYS = 30;
+
+/**
+ * Per-file ceiling for attachments inside the encrypted payload.
+ *
+ * Driven by the extension's 10 MB storage budget (refused above 9 MB) and the
+ * sync envelope's 16 MB cap, after base64's +33% overhead — see ARCHITECTURE.
+ */
+export const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024;
+
+/** Total attachment payload across the whole vault. */
+export const MAX_ATTACHMENTS_VAULT_BYTES = 5 * 1024 * 1024;
 
 /** Current version of the on-disk envelope. Bump when `VaultFile` changes shape. */
 export const FORMAT_VERSION = 1;
@@ -42,6 +53,36 @@ export interface PasswordHistoryEntry {
   changedAt: string;
 }
 
+/**
+ * Non-default TOTP parameters. `null` on the entry means the usual defaults
+ * (6 digits, 30 s, SHA-1) — matching every issuer that never puts them in the URI.
+ */
+export interface TotpConfig {
+  digits: number;
+  periodSeconds: number;
+  algorithm: 'SHA-1' | 'SHA-256' | 'SHA-512';
+}
+
+/** Free-form field on an entry. `secret: true` masks the value like a password. */
+export interface CustomField {
+  id: string;
+  label: string;
+  value: string;
+  secret: boolean;
+}
+
+/**
+ * File stored inside the encrypted payload. Size is gated by
+ * `MAX_ATTACHMENT_BYTES` / `MAX_ATTACHMENTS_VAULT_BYTES`.
+ */
+export interface Attachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataB64: string;
+}
+
 export interface Entry {
   id: string;
   /** Defaults to `login` for vaults created before this field existed. */
@@ -56,6 +97,15 @@ export interface Entry {
   folderId: string | null;
   /** Base32 TOTP seed. Encrypted with the rest of the vault; codes derived in-memory only. */
   totpSecret: string | null;
+  /**
+   * Digits / period / algorithm when they differ from the defaults. Null keeps
+   * existing entries generating the same codes they always have.
+   */
+  totpConfig: TotpConfig | null;
+  /** User-defined fields. Searchable by label, never by value. */
+  customFields: CustomField[];
+  /** Files sealed with the entry. Empty until the attachments UI is used. */
+  attachments: Attachment[];
   createdAt: string;
   updatedAt: string;
   /** Tracked separately from `updatedAt` so the UI can flag stale passwords. */
@@ -111,6 +161,12 @@ export interface Settings {
   theme: 'light' | 'dark' | 'system';
   /** Lock as soon as the browser/tab is hidden. Off by default: it is disruptive. */
   lockOnHide: boolean;
+  /**
+   * Opt-in Have I Been Pwned range checks. Off by default; never automatic —
+   * one explicit click per check, and only the 5-character hash prefix leaves
+   * the device. See `breach.ts` and the README threat-model row.
+   */
+  breachCheckEnabled: boolean;
 }
 
 export interface VaultData {

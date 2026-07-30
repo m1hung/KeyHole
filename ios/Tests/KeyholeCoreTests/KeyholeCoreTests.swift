@@ -199,6 +199,31 @@ final class GeneratorAndTotpTests: XCTestCase {
         XCTAssertEqual(code.code, "94287082")
     }
 
+    func testNormalizeTotpConfigCollapsesDefaults() {
+        XCTAssertNil(normalizeTotpConfig(TotpOptions()))
+        XCTAssertNil(normalizeTotpConfig(nil))
+        let custom = normalizeTotpConfig(TotpOptions(digits: 8, periodSeconds: 30, algorithm: .sha1))
+        XCTAssertEqual(custom?.digits, 8)
+    }
+
+    func testSearchMatchesCustomFieldLabelsNotValues() throws {
+        let field = CustomField(
+            id: "22222222-2222-4222-8222-222222222222",
+            label: "PIN code",
+            value: "secret-pin",
+            secret: true
+        )
+        var data = try createEntry(data: emptyVaultData(), input: EntryInput(title: "Bank")).data
+        let id = data.entries[0].id
+        data = try updateEntry(
+            data: data,
+            id: id,
+            patch: UpdateEntryPatch(customFields: [field])
+        )
+        XCTAssertEqual(searchEntries(data: data, query: "PIN").count, 1)
+        XCTAssertEqual(searchEntries(data: data, query: "secret-pin").count, 0)
+    }
+
     func testWordlistLoaded() {
         XCTAssertEqual(PassphraseWordlist.words.count, 2048)
     }
@@ -228,7 +253,7 @@ final class PayloadInteropTests: XCTestCase {
         )
     }
 
-    /// The TS schema declares `folderId` / `totpSecret` nullable, not optional. A
+    /// The TS schema declares `folderId` / `totpSecret` / `totpConfig` nullable, not optional. A
     /// synthesised Swift encoder would `encodeIfPresent` and omit them, which made
     /// every vault this app saved unreadable on desktop — almost no entry has a TOTP
     /// secret. The keys must be present and null.
@@ -236,8 +261,60 @@ final class PayloadInteropTests: XCTestCase {
         let json = try encodedEntryJSON(sampleEntry())
         XCTAssertTrue(json.keys.contains("folderId"), "folderId must be present, not omitted")
         XCTAssertTrue(json.keys.contains("totpSecret"), "totpSecret must be present, not omitted")
+        XCTAssertTrue(json.keys.contains("totpConfig"), "totpConfig must be present, not omitted")
         XCTAssertTrue(json["folderId"] is NSNull)
         XCTAssertTrue(json["totpSecret"] is NSNull)
+        XCTAssertTrue(json["totpConfig"] is NSNull)
+    }
+
+    /// Schema-3 entries omit the new fields; they must decode with the TS defaults.
+    func testSchema3EntryDefaultsNewFields() throws {
+        let json = """
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "kind": "login",
+          "title": "Legacy",
+          "username": "",
+          "password": "",
+          "urls": [],
+          "notes": "",
+          "tags": [],
+          "folderId": null,
+          "totpSecret": null,
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "updatedAt": "2026-01-01T00:00:00.000Z",
+          "passwordUpdatedAt": "2026-01-01T00:00:00.000Z",
+          "history": [],
+          "deletedAt": null
+        }
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let entry = try JSONDecoder().decode(Entry.self, from: data)
+        XCTAssertNil(entry.totpConfig)
+        XCTAssertEqual(entry.customFields, [])
+        XCTAssertEqual(entry.attachments, [])
+    }
+
+    func testSchema3SettingsDefaultsBreachCheckOff() throws {
+        let json = """
+        {
+          "autoLockMinutes": 15,
+          "clipboardClearSeconds": 30,
+          "generator": {
+            "length": 20,
+            "lowercase": true,
+            "uppercase": true,
+            "digits": true,
+            "symbols": true,
+            "excludeAmbiguous": false
+          },
+          "theme": "system",
+          "lockOnHide": false
+        }
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let settings = try JSONDecoder().decode(Settings.self, from: data)
+        XCTAssertFalse(settings.breachCheckEnabled)
     }
 
     /// Fields written by a newer Keyhole must survive being read and re-saved here,

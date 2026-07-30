@@ -1,7 +1,13 @@
 import Foundation
 
 /// Current version of the decrypted vault model. Bump when `VaultData` changes shape.
-public let SCHEMA_VERSION = 3
+public let SCHEMA_VERSION = 4
+
+/// Per-file ceiling for attachments inside the encrypted payload.
+public let MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024
+
+/// Total attachment payload across the whole vault.
+public let MAX_ATTACHMENTS_VAULT_BYTES = 5 * 1024 * 1024
 
 /// Current version of the on-disk envelope. Bump when `VaultFile` changes shape.
 public let FORMAT_VERSION = 1
@@ -35,6 +41,52 @@ public struct PasswordHistoryEntry: Codable, Sendable, Equatable {
     }
 }
 
+/// Non-default TOTP parameters. `null` on the entry means the usual defaults
+/// (6 digits, 30 s, SHA-1).
+public struct TotpConfig: Codable, Sendable, Equatable {
+    public var digits: Int
+    public var periodSeconds: Int
+    public var algorithm: TotpAlgorithm
+
+    public init(digits: Int, periodSeconds: Int, algorithm: TotpAlgorithm) {
+        self.digits = digits
+        self.periodSeconds = periodSeconds
+        self.algorithm = algorithm
+    }
+}
+
+/// Free-form field on an entry. `secret: true` masks the value like a password.
+public struct CustomField: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var label: String
+    public var value: String
+    public var secret: Bool
+
+    public init(id: String, label: String, value: String, secret: Bool) {
+        self.id = id
+        self.label = label
+        self.value = value
+        self.secret = secret
+    }
+}
+
+/// File stored inside the encrypted payload.
+public struct Attachment: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var mimeType: String
+    public var sizeBytes: Int
+    public var dataB64: String
+
+    public init(id: String, name: String, mimeType: String, sizeBytes: Int, dataB64: String) {
+        self.id = id
+        self.name = name
+        self.mimeType = mimeType
+        self.sizeBytes = sizeBytes
+        self.dataB64 = dataB64
+    }
+}
+
 public struct Entry: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var kind: EntryKind
@@ -46,6 +98,13 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
     public var tags: [String]
     public var folderId: String?
     public var totpSecret: String?
+    /// Digits / period / algorithm when they differ from the defaults. Null keeps
+    /// existing entries generating the same codes they always have.
+    public var totpConfig: TotpConfig?
+    /// User-defined fields. Searchable by label, never by value.
+    public var customFields: [CustomField]
+    /// Files sealed with the entry.
+    public var attachments: [Attachment]
     public var createdAt: String
     public var updatedAt: String
     public var passwordUpdatedAt: String
@@ -62,7 +121,8 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
     /// list must stay in step with the stored properties above.
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, kind, title, username, password, urls, notes, tags
-        case folderId, totpSecret, createdAt, updatedAt, passwordUpdatedAt
+        case folderId, totpSecret, totpConfig, customFields, attachments
+        case createdAt, updatedAt, passwordUpdatedAt
         case history, deletedAt
     }
 
@@ -77,6 +137,9 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         tags: [String] = [],
         folderId: String? = nil,
         totpSecret: String? = nil,
+        totpConfig: TotpConfig? = nil,
+        customFields: [CustomField] = [],
+        attachments: [Attachment] = [],
         createdAt: String,
         updatedAt: String,
         passwordUpdatedAt: String,
@@ -94,6 +157,9 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         self.tags = tags
         self.folderId = folderId
         self.totpSecret = totpSecret
+        self.totpConfig = totpConfig
+        self.customFields = customFields
+        self.attachments = attachments
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.passwordUpdatedAt = passwordUpdatedAt
@@ -116,6 +182,9 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         tags = try c.decode([String].self, forKey: .tags)
         folderId = try c.decodeIfPresent(String.self, forKey: .folderId)
         totpSecret = try c.decodeIfPresent(String.self, forKey: .totpSecret)
+        totpConfig = try c.decodeIfPresent(TotpConfig.self, forKey: .totpConfig)
+        customFields = try c.decodeIfPresent([CustomField].self, forKey: .customFields) ?? []
+        attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
         createdAt = try c.decode(String.self, forKey: .createdAt)
         updatedAt = try c.decode(String.self, forKey: .updatedAt)
         passwordUpdatedAt = try c.decode(String.self, forKey: .passwordUpdatedAt)
@@ -139,6 +208,9 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         // rather than optional keys.
         try c.encode(folderId, forKey: AnyCodingKey(stringValue: CodingKeys.folderId.stringValue))
         try c.encode(totpSecret, forKey: AnyCodingKey(stringValue: CodingKeys.totpSecret.stringValue))
+        try c.encode(totpConfig, forKey: AnyCodingKey(stringValue: CodingKeys.totpConfig.stringValue))
+        try c.encode(customFields, forKey: AnyCodingKey(stringValue: CodingKeys.customFields.stringValue))
+        try c.encode(attachments, forKey: AnyCodingKey(stringValue: CodingKeys.attachments.stringValue))
         try c.encode(createdAt, forKey: AnyCodingKey(stringValue: CodingKeys.createdAt.stringValue))
         try c.encode(updatedAt, forKey: AnyCodingKey(stringValue: CodingKeys.updatedAt.stringValue))
         try c.encode(
@@ -223,19 +295,47 @@ public struct Settings: Codable, Sendable, Equatable {
     public var generator: GeneratorOptions
     public var theme: ThemePreference
     public var lockOnHide: Bool
+    /// Opt-in Have I Been Pwned range checks. Off by default.
+    public var breachCheckEnabled: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case autoLockMinutes, clipboardClearSeconds, generator, theme, lockOnHide, breachCheckEnabled
+    }
 
     public init(
         autoLockMinutes: Double = 15,
         clipboardClearSeconds: Double = 30,
         generator: GeneratorOptions = GeneratorOptions(),
         theme: ThemePreference = .system,
-        lockOnHide: Bool = false
+        lockOnHide: Bool = false,
+        breachCheckEnabled: Bool = false
     ) {
         self.autoLockMinutes = autoLockMinutes
         self.clipboardClearSeconds = clipboardClearSeconds
         self.generator = generator
         self.theme = theme
         self.lockOnHide = lockOnHide
+        self.breachCheckEnabled = breachCheckEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoLockMinutes = try c.decode(Double.self, forKey: .autoLockMinutes)
+        clipboardClearSeconds = try c.decode(Double.self, forKey: .clipboardClearSeconds)
+        generator = try c.decode(GeneratorOptions.self, forKey: .generator)
+        theme = try c.decode(ThemePreference.self, forKey: .theme)
+        lockOnHide = try c.decode(Bool.self, forKey: .lockOnHide)
+        breachCheckEnabled = try c.decodeIfPresent(Bool.self, forKey: .breachCheckEnabled) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(autoLockMinutes, forKey: .autoLockMinutes)
+        try c.encode(clipboardClearSeconds, forKey: .clipboardClearSeconds)
+        try c.encode(generator, forKey: .generator)
+        try c.encode(theme, forKey: .theme)
+        try c.encode(lockOnHide, forKey: .lockOnHide)
+        try c.encode(breachCheckEnabled, forKey: .breachCheckEnabled)
     }
 }
 

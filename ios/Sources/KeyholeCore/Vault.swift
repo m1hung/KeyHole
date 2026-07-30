@@ -7,7 +7,8 @@ public let DEFAULT_SETTINGS = Settings(
     clipboardClearSeconds: 30,
     generator: DEFAULT_GENERATOR_OPTIONS,
     theme: .system,
-    lockOnHide: false
+    lockOnHide: false,
+    breachCheckEnabled: false
 )
 
 public struct CreateVaultOptions: Sendable {
@@ -30,6 +31,9 @@ public struct EntryInput: Sendable {
     public var tags: [String]?
     public var folderId: String?
     public var totpSecret: String?
+    public var totpConfig: TotpConfig?
+    public var customFields: [CustomField]?
+    public var attachments: [Attachment]?
 
     public init(
         title: String,
@@ -40,7 +44,10 @@ public struct EntryInput: Sendable {
         notes: String? = nil,
         tags: [String]? = nil,
         folderId: String? = nil,
-        totpSecret: String? = nil
+        totpSecret: String? = nil,
+        totpConfig: TotpConfig? = nil,
+        customFields: [CustomField]? = nil,
+        attachments: [Attachment]? = nil
     ) {
         self.title = title
         self.kind = kind
@@ -51,6 +58,9 @@ public struct EntryInput: Sendable {
         self.tags = tags
         self.folderId = folderId
         self.totpSecret = totpSecret
+        self.totpConfig = totpConfig
+        self.customFields = customFields
+        self.attachments = attachments
     }
 }
 
@@ -321,6 +331,30 @@ public func foreignSchemaVersion(_ data: VaultData) -> Int? {
 
 // MARK: - CRUD
 
+/// Bytes used by attachments across the vault (pre-base64).
+public func vaultAttachmentBytes(_ data: VaultData) -> Int {
+    data.entries.reduce(0) { sum, entry in
+        sum + entry.attachments.reduce(0) { $0 + $1.sizeBytes }
+    }
+}
+
+private func assertAttachmentsWithinBudget(_ data: VaultData) throws {
+    for entry in data.entries {
+        for att in entry.attachments {
+            if att.sizeBytes > MAX_ATTACHMENT_BYTES {
+                throw KeyholeError.validation(
+                    "Attachment \"\(att.name)\" is too large (max \(MAX_ATTACHMENT_BYTES) bytes per file)."
+                )
+            }
+        }
+    }
+    if vaultAttachmentBytes(data) > MAX_ATTACHMENTS_VAULT_BYTES {
+        throw KeyholeError.validation(
+            "Attachments would exceed the vault budget of \(MAX_ATTACHMENTS_VAULT_BYTES) bytes."
+        )
+    }
+}
+
 public func createEntry(data: VaultData, input: EntryInput) throws -> (data: VaultData, entry: Entry) {
     if input.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         throw KeyholeError.validation("Entry title must not be empty.")
@@ -337,6 +371,9 @@ public func createEntry(data: VaultData, input: EntryInput) throws -> (data: Vau
         tags: input.tags ?? [],
         folderId: input.folderId,
         totpSecret: input.totpSecret,
+        totpConfig: input.totpConfig,
+        customFields: input.customFields ?? [],
+        attachments: input.attachments ?? [],
         createdAt: timestamp,
         updatedAt: timestamp,
         passwordUpdatedAt: timestamp,
@@ -345,6 +382,7 @@ public func createEntry(data: VaultData, input: EntryInput) throws -> (data: Vau
     )
     var next = data
     next.entries.append(entry)
+    try assertAttachmentsWithinBudget(next)
     return (next, entry)
 }
 
@@ -358,6 +396,9 @@ public struct UpdateEntryPatch: Sendable {
     public var tags: [String]?
     public var folderId: String??
     public var totpSecret: String??
+    public var totpConfig: TotpConfig??
+    public var customFields: [CustomField]?
+    public var attachments: [Attachment]?
 
     public init(
         title: String? = nil,
@@ -368,7 +409,10 @@ public struct UpdateEntryPatch: Sendable {
         notes: String? = nil,
         tags: [String]? = nil,
         folderId: String?? = nil,
-        totpSecret: String?? = nil
+        totpSecret: String?? = nil,
+        totpConfig: TotpConfig?? = nil,
+        customFields: [CustomField]? = nil,
+        attachments: [Attachment]? = nil
     ) {
         self.title = title
         self.kind = kind
@@ -379,6 +423,9 @@ public struct UpdateEntryPatch: Sendable {
         self.tags = tags
         self.folderId = folderId
         self.totpSecret = totpSecret
+        self.totpConfig = totpConfig
+        self.customFields = customFields
+        self.attachments = attachments
     }
 }
 
@@ -408,6 +455,9 @@ public func updateEntry(data: VaultData, id: String, patch: UpdateEntryPatch) th
     if let tags = patch.tags { existing.tags = tags }
     if let folderId = patch.folderId { existing.folderId = folderId }
     if let totpSecret = patch.totpSecret { existing.totpSecret = totpSecret }
+    if let totpConfig = patch.totpConfig { existing.totpConfig = totpConfig }
+    if let customFields = patch.customFields { existing.customFields = customFields }
+    if let attachments = patch.attachments { existing.attachments = attachments }
     existing.updatedAt = changedAt
     if passwordChanged { existing.passwordUpdatedAt = changedAt }
     if existing.title.isEmpty {
@@ -416,6 +466,7 @@ public func updateEntry(data: VaultData, id: String, patch: UpdateEntryPatch) th
 
     var next = data
     next.entries[index] = existing
+    try assertAttachmentsWithinBudget(next)
     return next
 }
 
@@ -579,6 +630,7 @@ public func searchEntries(data: VaultData, query: String) -> [Entry] {
             || e.username.lowercased().contains(q)
             || e.tags.contains(where: { $0.lowercased().contains(q) })
             || e.urls.contains(where: { $0.lowercased().contains(q) })
+            || e.customFields.contains(where: { $0.label.lowercased().contains(q) })
             || (e.kind == .note && e.notes.lowercased().contains(q))
     }.sorted(by: sorted)
 }

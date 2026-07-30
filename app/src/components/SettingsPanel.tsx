@@ -87,6 +87,22 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
             Lock immediately when this {isDesktop() ? 'window is hidden' : 'tab is hidden'}
           </label>
         </div>
+
+        <div className="checkbox-row">
+          <input
+            id="breach-check"
+            type="checkbox"
+            checked={settings.breachCheckEnabled}
+            onChange={(e) => onSettingsChange({ breachCheckEnabled: e.target.checked })}
+          />
+          <label htmlFor="breach-check">Allow optional Have I Been Pwned password checks</label>
+        </div>
+        <p className="hint">
+          Off by default. When enabled, the health panel can send the first five characters of a password&apos;s
+          SHA-1 hash to api.pwnedpasswords.com — only on an explicit click, never automatically. The operator can
+          infer that someone using that prefix range checked a password at that moment. Nothing else leaves the
+          device.
+        </p>
       </div>
 
       <div className="section">
@@ -109,7 +125,11 @@ export function SettingsPanel({ settings, onSettingsChange, vault, entryCount, o
       <LocalStorageSection vault={vault} />
       <SyncSection vault={vault} />
       <MigrateSection vault={vault} />
-      <VaultHealthSection vault={vault} onOpenEntry={onOpenEntry} />
+      <VaultHealthSection
+        vault={vault}
+        breachCheckEnabled={settings.breachCheckEnabled}
+        onOpenEntry={onOpenEntry}
+      />
       <BackupSection vault={vault} entryCount={entryCount} />
       <ChangeMasterPassword vault={vault} />
       <DangerZone vault={vault} entryCount={entryCount} />
@@ -507,16 +527,52 @@ function MigrateSection({ vault }: { vault: VaultController }) {
 
 function VaultHealthSection({
   vault,
+  breachCheckEnabled,
   onOpenEntry,
 }: {
   vault: VaultController;
+  breachCheckEnabled: boolean;
   onOpenEntry?: ((id: string) => void) | undefined;
 }) {
   const [report, setReport] = useState<VaultHealthReport | null>(null);
+  const [breachBusy, setBreachBusy] = useState(false);
+  const [breachError, setBreachError] = useState<string | null>(null);
+  const [breaches, setBreaches] = useState<
+    { entryId: string; title: string; count: number }[] | null
+  >(null);
 
   const run = () => {
     if (!vault.data) return;
     setReport(analyzeVaultHealth(vault.data));
+  };
+
+  const runBreachCheck = async () => {
+    if (!vault.data || !breachCheckEnabled) return;
+    setBreachBusy(true);
+    setBreachError(null);
+    setBreaches(null);
+    try {
+      const { checkPasswordBreachCount } = await import('../breach/check.ts');
+      const { liveEntries } = await import('@keyhole/core');
+      const findings: { entryId: string; title: string; count: number }[] = [];
+      // One range request per unique password — not per entry — so a reused
+      // password is not counted out to the network by how often it appears.
+      const seen = new Map<string, number>();
+      for (const entry of liveEntries(vault.data)) {
+        if (entry.kind !== 'login' || entry.password.length === 0) continue;
+        let count = seen.get(entry.password);
+        if (count === undefined) {
+          count = await checkPasswordBreachCount(entry.password);
+          seen.set(entry.password, count);
+        }
+        if (count > 0) findings.push({ entryId: entry.id, title: entry.title, count });
+      }
+      setBreaches(findings);
+    } catch (err) {
+      setBreachError(err instanceof Error ? err.message : 'Breach check failed.');
+    } finally {
+      setBreachBusy(false);
+    }
   };
 
   return (
@@ -555,6 +611,43 @@ function VaultHealthSection({
                 </li>
               ))}
             </ul>
+          )}
+        </div>
+      )}
+
+      {breachCheckEnabled && (
+        <div style={{ marginTop: 20 }}>
+          <h3>Breach check</h3>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Sends only a 5-character SHA-1 prefix to Have I Been Pwned, once per unique password, when you click.
+            Results stay in memory and are never written to the vault.
+          </p>
+          <button type="button" disabled={breachBusy} onClick={() => void runBreachCheck()}>
+            {breachBusy ? 'Checking…' : breaches ? 'Check again' : 'Check passwords'}
+          </button>
+          {breachError && <p className="hint" style={{ color: 'var(--danger)' }}>{breachError}</p>}
+          {breaches && (
+            <div style={{ marginTop: 12 }}>
+              <p className="hint">
+                {breaches.length === 0
+                  ? 'No checked passwords appear in the breach corpus.'
+                  : `${breaches.length} password(s) found in known breaches.`}
+              </p>
+              {breaches.length > 0 && (
+                <ul className="entry-list" style={{ marginTop: 8 }}>
+                  {breaches.map((hit) => (
+                    <li key={hit.entryId}>
+                      <button type="button" className="entry-item" onClick={() => onOpenEntry?.(hit.entryId)}>
+                        <span className="entry-body">
+                          <div className="title">{hit.title}</div>
+                          <div className="meta">Seen {hit.count.toLocaleString()} times in breaches</div>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}

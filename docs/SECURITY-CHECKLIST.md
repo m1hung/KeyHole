@@ -104,3 +104,15 @@ Back to the [README](../README.md).
 - [ ] *Settings* has no *App* section in a browser tab, and no install offer anywhere in the UI.
 - [ ] `npm run build --workspace @keyhole/app` → `dist/` contains no `sw.js` and no `manifest.webmanifest`.
 - [ ] With sync configured, click *Sync now* → the request appears in the network log as a real request.
+
+## Breach check (opt-in network)
+
+- [ ] With *Allow Have I Been Pwned password checks* **off**, interact with the vault (unlock, edit, health scan, autofill) → DevTools network log shows **no** request to `api.pwnedpasswords.com`.
+- [ ] Enable the setting → still no request until you click *Check passwords*.
+- [ ] Click *Check passwords* once → exactly one range request per unique password checked; URL path is five hex characters only; request carries `Add-Padding: true`; no account id or vault metadata in headers/body.
+- [ ] Results appear in the health panel and vanish on lock / reload (not written into the vault file).
+- [ ] Extension: first use prompts for `https://api.pwnedpasswords.com/*` via `optional_host_permissions`; denying it shows an error and makes no request.
+
+## Trash retention
+
+- [ ] Unlock a vault with an entry trashed 31+ days ago → it is gone and a tombstone exists; an entry trashed yesterday remains in the trash. *(Automated for the extension unlock path; confirm desktop and iOS manually.)*

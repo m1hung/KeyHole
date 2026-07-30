@@ -13,6 +13,11 @@ import {
   estimateStrength,
   generatePassword,
   DEFAULT_GENERATOR_OPTIONS,
+  normalizeTotpConfig,
+  parseOtpAuthUri,
+  type Attachment,
+  type CustomField,
+  type TotpConfig,
 } from '@keyhole/core';
 import { sendToBackground, type EntrySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
@@ -31,6 +36,9 @@ interface EntryDraft {
   notes: string;
   tags: string[];
   totpSecret: string | null;
+  totpConfig: TotpConfig | null;
+  customFields: CustomField[];
+  attachments: Attachment[];
 }
 
 const blankDraft = (): EntryDraft => ({
@@ -41,6 +49,9 @@ const blankDraft = (): EntryDraft => ({
   notes: '',
   tags: [],
   totpSecret: null,
+  totpConfig: null,
+  customFields: [],
+  attachments: [],
 });
 
 export function Options() {
@@ -86,22 +97,24 @@ export function Options() {
   };
 
   const openEntry = async (id: string) => {
-    // Fetch the two secret fields explicitly; the list never carried them.
-    const [pw, user] = await Promise.all([
-      sendToBackground({ type: 'REVEAL_SECRET', entryId: id, field: 'password' }),
-      sendToBackground({ type: 'REVEAL_SECRET', entryId: id, field: 'username' }),
-    ]);
-    const summary = entries.find((e) => e.id === id);
-    if (!summary) return;
+    const response = await sendToBackground({ type: 'GET_ENTRY', entryId: id });
+    if (!response.ok || response.type !== 'ENTRY') {
+      setError(response.ok ? 'Unexpected response.' : response.error);
+      return;
+    }
+    const { entry } = response;
     setDraft({
-      id,
-      title: summary.title,
-      username: user.ok && user.type === 'SECRET' ? user.value : '',
-      password: pw.ok && pw.type === 'SECRET' ? pw.value : '',
-      urls: summary.host ? [`https://${summary.host}`] : [],
-      notes: '',
-      tags: [],
-      totpSecret: null,
+      id: entry.id,
+      title: entry.title,
+      username: entry.username,
+      password: entry.password,
+      urls: entry.urls,
+      notes: entry.notes,
+      tags: entry.tags,
+      totpSecret: entry.totpSecret,
+      totpConfig: entry.totpConfig,
+      customFields: entry.customFields,
+      attachments: entry.attachments,
     });
   };
 
@@ -431,6 +444,16 @@ function VaultHealth() {
   const [report, setReport] = useState<Extract<BackgroundResponse, { type: 'HEALTH' }> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [breachEnabled, setBreachEnabled] = useState(false);
+  const [breachBusy, setBreachBusy] = useState(false);
+  const [breachError, setBreachError] = useState<string | null>(null);
+  const [breaches, setBreaches] = useState<{ title: string; count: number }[] | null>(null);
+
+  useEffect(() => {
+    void sendToBackground({ type: 'GET_STATE' }).then((state) => {
+      if (state.ok && state.type === 'STATE') setBreachEnabled(state.breachCheckEnabled);
+    });
+  }, []);
 
   const run = async () => {
     setBusy(true);
@@ -442,6 +465,64 @@ function VaultHealth() {
       return;
     }
     if (response.type === 'HEALTH') setReport(response);
+  };
+
+  const setBreach = async (enabled: boolean) => {
+    const response = await sendToBackground({ type: 'SET_BREACH_CHECK', enabled });
+    if (!response.ok) {
+      setBreachError(response.error);
+      return;
+    }
+    setBreachEnabled(enabled);
+    if (!enabled) {
+      setBreaches(null);
+      setBreachError(null);
+    }
+  };
+
+  const runBreachCheck = async () => {
+    setBreachBusy(true);
+    setBreachError(null);
+    setBreaches(null);
+    try {
+      const origin = 'https://api.pwnedpasswords.com/*';
+      const have = await chrome.permissions.contains({ origins: [origin] });
+      if (!have) {
+        const granted = await chrome.permissions.request({ origins: [origin] });
+        if (!granted) {
+          setBreachError('Permission denied. Breach checks need access to api.pwnedpasswords.com.');
+          return;
+        }
+      }
+      const { checkPasswordBreachCount } = await import('../../../app/src/breach/check.ts');
+      const listed = await sendToBackground({ type: 'LIST_ENTRIES' });
+      if (!listed.ok || listed.type !== 'ENTRIES') {
+        setBreachError(listed.ok ? 'Unexpected response.' : listed.error);
+        return;
+      }
+      // Reveal each password one at a time — same trusted path as the editor.
+      const findings: { title: string; count: number }[] = [];
+      const seen = new Map<string, number>();
+      for (const summary of listed.entries) {
+        const secret = await sendToBackground({
+          type: 'REVEAL_SECRET',
+          entryId: summary.id,
+          field: 'password',
+        });
+        if (!secret.ok || secret.type !== 'SECRET' || secret.value.length === 0) continue;
+        let count = seen.get(secret.value);
+        if (count === undefined) {
+          count = await checkPasswordBreachCount(secret.value);
+          seen.set(secret.value, count);
+        }
+        if (count > 0) findings.push({ title: summary.title, count });
+      }
+      setBreaches(findings);
+    } catch (err) {
+      setBreachError(err instanceof Error ? err.message : 'Breach check failed.');
+    } finally {
+      setBreachBusy(false);
+    }
   };
 
   return (
@@ -465,8 +546,6 @@ function VaultHealth() {
             {report.issues.length === 0 ? 'no issues found.' : `${report.issues.length} finding(s).`}
           </p>
           {report.issues.length > 0 && (
-            /* Same markup as the desktop panel, so the two surfaces read alike and
-               there is one set of styles to maintain. */
             <ul className="entry-list" style={{ marginTop: 8 }}>
               {report.issues.slice(0, 40).map((issue) => (
                 <li key={`${issue.kind}-${issue.entryId}`}>
@@ -487,6 +566,52 @@ function VaultHealth() {
           )}
         </div>
       )}
+
+      <div style={{ marginTop: 20 }}>
+        <h3>Breach check</h3>
+        <div className="checkbox-row" style={{ marginBottom: 8 }}>
+          <input
+            id="ext-breach-check"
+            type="checkbox"
+            checked={breachEnabled}
+            onChange={(e) => void setBreach(e.target.checked)}
+          />
+          <label htmlFor="ext-breach-check">Allow Have I Been Pwned password checks</label>
+        </div>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          Off by default. When enabled, a click sends only a 5-character SHA-1 prefix to
+          api.pwnedpasswords.com. Results stay in memory.
+        </p>
+        {breachEnabled && (
+          <button type="button" disabled={breachBusy} onClick={() => void runBreachCheck()}>
+            {breachBusy ? 'Checking…' : breaches ? 'Check again' : 'Check passwords'}
+          </button>
+        )}
+        {breachError && <p className="hint" style={{ color: 'var(--danger)' }}>{breachError}</p>}
+        {breaches && (
+          <div style={{ marginTop: 12 }}>
+            <p className="hint">
+              {breaches.length === 0
+                ? 'No checked passwords appear in the breach corpus.'
+                : `${breaches.length} password(s) found in known breaches.`}
+            </p>
+            {breaches.length > 0 && (
+              <ul className="entry-list" style={{ marginTop: 8 }}>
+                {breaches.map((hit) => (
+                  <li key={`${hit.title}-${hit.count}`}>
+                    <span className="entry-item">
+                      <span className="entry-body">
+                        <div className="title">{hit.title}</div>
+                        <div className="meta">Seen {hit.count.toLocaleString()} times in breaches</div>
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -768,9 +893,45 @@ function EntryForm({
           className="mono"
           value={draft.totpSecret ?? ''}
           autoComplete="off"
-          onChange={(e) => onChange({ ...draft, totpSecret: e.target.value.trim() || null })}
+          onChange={(e) => {
+            const trimmed = e.target.value.trim();
+            if (trimmed.length === 0) {
+              onChange({ ...draft, totpSecret: null, totpConfig: null });
+              return;
+            }
+            const parsed = parseOtpAuthUri(trimmed);
+            onChange({
+              ...draft,
+              totpSecret: parsed?.secret ?? trimmed,
+              totpConfig: parsed ? normalizeTotpConfig(parsed.options) : draft.totpConfig,
+            });
+          }}
         />
+        {draft.totpConfig && (
+          <p className="hint">
+            Non-default parameters: {draft.totpConfig.digits} digits · {draft.totpConfig.periodSeconds}s ·{' '}
+            {draft.totpConfig.algorithm}
+          </p>
+        )}
       </div>
+
+      {draft.customFields.length > 0 && (
+        <div className="field">
+          <label>Custom fields</label>
+          <p className="hint">
+            {draft.customFields.map((f) => f.label || '(unnamed)').join(', ')} — edit these in the desktop app for now.
+          </p>
+        </div>
+      )}
+
+      {draft.attachments.length > 0 && (
+        <div className="field">
+          <label>Attachments</label>
+          <p className="hint">
+            {draft.attachments.map((a) => a.name).join(', ')} — download or replace from the desktop app.
+          </p>
+        </div>
+      )}
 
       {onDelete && (
         <div className="section">

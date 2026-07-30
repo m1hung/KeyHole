@@ -14,6 +14,7 @@
  */
 
 import { z } from 'zod';
+import type { Attachment, CustomField, TotpConfig } from '@keyhole/core';
 
 // ---------------------------------------------------------------------------
 // Requests: extension pages (popup / options) → service worker
@@ -47,6 +48,8 @@ export const requestSchema = z.discriminatedUnion('type', [
   /** Entries whose URLs match a tab. Returns metadata only — never passwords. */
   z.object({ type: z.literal('MATCH_TAB'), tabId: z.number().int().nonnegative() }).strict(),
   z.object({ type: z.literal('LIST_ENTRIES'), query: z.string().max(256).optional() }).strict(),
+  /** Full entry for the options editor. Trusted senders only — includes secrets. */
+  z.object({ type: z.literal('GET_ENTRY'), entryId: z.uuid() }).strict(),
   /** Offline vault audit. Returns findings only — never a password. */
   z.object({ type: z.literal('HEALTH_REPORT') }).strict(),
   /** Entries in the trash — deleted but still restorable. */
@@ -66,6 +69,12 @@ export const requestSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('SET_THEME'),
       theme: z.enum(['light', 'dark', 'system']),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('SET_BREACH_CHECK'),
+      enabled: z.boolean(),
     })
     .strict(),
   z
@@ -163,6 +172,8 @@ export type Response =
       entryCount: number;
       autoLockMinutes: number;
       theme: 'light' | 'dark' | 'system';
+      /** Opt-in HIBP range checks. Only meaningful while unlocked. */
+      breachCheckEnabled: boolean;
       /**
        * Set when the open vault was written by a newer Keyhole than this build.
        * It works and unknown fields survive a save, but they are not shown here.
@@ -170,6 +181,24 @@ export type Response =
       foreignSchemaVersion: number | null;
     }
   | { ok: true; type: 'ENTRIES'; entries: EntrySummary[] }
+  | {
+      ok: true;
+      type: 'ENTRY';
+      /** Full entry for editing. Only returned to trusted extension pages. */
+      entry: {
+        id: string;
+        title: string;
+        username: string;
+        password: string;
+        urls: string[];
+        notes: string;
+        tags: string[];
+        totpSecret: string | null;
+        totpConfig: TotpConfig | null;
+        customFields: CustomField[];
+        attachments: Attachment[];
+      };
+    }
   | {
       ok: true;
       type: 'SUGGESTIONS';

@@ -224,6 +224,7 @@ describe('requestSchema', () => {
       { type: 'MATCH_TAB', tabId: 3 },
       { type: 'FILL', entryId: '11111111-1111-4111-8111-111111111111', tabId: 0 },
       { type: 'REVEAL_SECRET', entryId: '11111111-1111-4111-8111-111111111111', field: 'password' },
+      { type: 'GET_ENTRY', entryId: '11111111-1111-4111-8111-111111111111' },
       { type: 'GET_SYNC_CONFIG' },
       {
         type: 'SYNC_REGISTER',

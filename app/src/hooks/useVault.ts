@@ -15,6 +15,7 @@ import {
   DecryptionError,
   changeMasterPassword as coreChangeMasterPassword,
   createVault as coreCreateVault,
+  purgeExpiredTrash,
   saveVault as coreSaveVault,
   unlockVault as coreUnlockVault,
   SCHEMA_VERSION,
@@ -146,8 +147,17 @@ export function useVault(): VaultController {
           return;
         }
         const session = await coreUnlockVault(file, masterPassword);
+        // Sweep expired trash here, not in unlockVault: core stays pure, and a
+        // read that silently rewrites the vault would surprise every caller.
+        const swept = purgeExpiredTrash(session.data);
+        if (swept !== session.data) {
+          session.data = swept;
+          const updated = await coreSaveVault(session, file);
+          await persist(updated);
+        } else {
+          fileRef.current = file;
+        }
         sessionRef.current = session;
-        fileRef.current = file;
         setData(session.data);
         registerActivity();
         setStatus('unlocked');
@@ -161,7 +171,7 @@ export function useVault(): VaultController {
         setBusy(false);
       }
     },
-    [registerActivity],
+    [persist, registerActivity],
   );
 
   const mutate = useCallback(

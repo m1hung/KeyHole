@@ -853,4 +853,124 @@ describe('trash', () => {
     // Gone: a second purge has nothing to work on.
     expect((await send({ type: 'PURGE_ENTRY', entryId: id })).ok).toBe(false);
   }, 60_000);
+
+  it('sweeps trash older than 30 days on unlock, and leaves yesterday alone', async () => {
+    const {
+      createEntry,
+      createVault,
+      deleteEntry,
+      saveVault,
+      TRASH_RETENTION_DAYS,
+      unlockVault,
+    } = await import('@keyhole/core');
+    const dayMs = 24 * 60 * 60 * 1000;
+    const password = 'trash-sweep-master-pw';
+
+    // Keep the shared vault so later tests in this file still unlock.
+    const backup = await send({ type: 'EXPORT_VAULT' });
+    if (!backup.ok || backup.type !== 'EXPORT') throw new Error('expected export');
+
+    // Build a vault outside the shared stub so we can fabricate deletedAt
+    // without a test-only mutation path in the service worker.
+    const { file: created, session } = await createVault(password);
+    const expired = createEntry(session.data, {
+      title: 'Expired trash',
+      username: 'old@test',
+      password: 'x',
+      urls: ['https://expired-sweep.org'],
+    });
+    const fresh = createEntry(expired.data, {
+      title: 'Fresh trash',
+      username: 'new@test',
+      password: 'y',
+      urls: ['https://fresh-sweep.org'],
+    });
+    session.data = deleteEntry(deleteEntry(fresh.data, expired.entry.id), fresh.entry.id);
+
+    const expiredIndex = session.data.entries.findIndex((e) => e.id === expired.entry.id);
+    const freshIndex = session.data.entries.findIndex((e) => e.id === fresh.entry.id);
+    const now = Date.now();
+    session.data.entries[expiredIndex] = {
+      ...session.data.entries[expiredIndex]!,
+      deletedAt: new Date(now - (TRASH_RETENTION_DAYS + 1) * dayMs).toISOString(),
+    };
+    session.data.entries[freshIndex] = {
+      ...session.data.entries[freshIndex]!,
+      deletedAt: new Date(now - dayMs).toISOString(),
+    };
+
+    const seeded = await saveVault(session, created);
+    expect((await send({ type: 'IMPORT_VAULT', file: seeded })).ok).toBe(true);
+    expect((await send({ type: 'UNLOCK', masterPassword: password })).ok).toBe(true);
+
+    const trash = await send({ type: 'LIST_TRASH' });
+    if (!trash.ok || trash.type !== 'ENTRIES') throw new Error('expected entries');
+    expect(trash.entries.map((e) => e.id)).not.toContain(expired.entry.id);
+    expect(trash.entries.map((e) => e.id)).toContain(fresh.entry.id);
+
+    // Confirm a tombstone was written for the purge.
+    const exported = await send({ type: 'EXPORT_VAULT' });
+    if (!exported.ok || exported.type !== 'EXPORT') throw new Error('expected export');
+    const reopened = await unlockVault(exported.file, password);
+    expect(reopened.data.tombstones.some((t) => t.id === expired.entry.id && t.kind === 'entry')).toBe(true);
+    expect(reopened.data.entries.some((e) => e.id === expired.entry.id)).toBe(false);
+
+    expect((await send({ type: 'IMPORT_VAULT', file: backup.file })).ok).toBe(true);
+    expect((await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD })).ok).toBe(true);
+  }, 60_000);
+});
+
+/**
+ * Opening an existing entry and pressing Save used to wipe every field the
+ * options editor did not load from the summary (notes, tags, TOTP, extra URLs).
+ */
+describe('entry editor round-trip', () => {
+  it('preserves fields absent from a partial SAVE_ENTRY patch', async () => {
+    await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD });
+    const created = await send({
+      type: 'SAVE_ENTRY',
+      entry: {
+        title: 'Round trip',
+        username: 'user@example.test',
+        password: 'keep-me',
+        urls: ['https://one.example.org/login', 'https://two.example.org/app'],
+        notes: 'recovery codes live here',
+        tags: ['work', 'important'],
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      },
+    });
+    expect(created.ok).toBe(true);
+
+    const listed = await send({ type: 'LIST_ENTRIES', query: 'Round trip' });
+    if (!listed.ok || listed.type !== 'ENTRIES') throw new Error('expected entries');
+    const id = listed.entries[0]?.id;
+    expect(id).toBeTruthy();
+
+    const loaded = await send({ type: 'GET_ENTRY', entryId: id! });
+    if (!loaded.ok || loaded.type !== 'ENTRY') throw new Error('expected entry');
+    expect(loaded.entry.notes).toBe('recovery codes live here');
+    expect(loaded.entry.tags).toEqual(['work', 'important']);
+    expect(loaded.entry.totpSecret).toBe('JBSWY3DPEHPK3PXP');
+    expect(loaded.entry.urls).toHaveLength(2);
+
+    // Title only — the bug defaulted every missing key to empty.
+    const saved = await send({
+      type: 'SAVE_ENTRY',
+      entry: { id, title: 'Round trip renamed' },
+    });
+    expect(saved.ok).toBe(true);
+
+    const after = await send({ type: 'GET_ENTRY', entryId: id! });
+    if (!after.ok || after.type !== 'ENTRY') throw new Error('expected entry');
+    expect(after.entry.title).toBe('Round trip renamed');
+    expect(after.entry.username).toBe('user@example.test');
+    expect(after.entry.password).toBe('keep-me');
+    expect(after.entry.notes).toBe('recovery codes live here');
+    expect(after.entry.tags).toEqual(['work', 'important']);
+    expect(after.entry.totpSecret).toBe('JBSWY3DPEHPK3PXP');
+    expect(after.entry.urls).toEqual([
+      'https://one.example.org/login',
+      'https://two.example.org/app',
+    ]);
+  }, 60_000);
 });

@@ -40,6 +40,7 @@ import {
   matchRank,
   parseTarget,
   purgeEntry,
+  purgeExpiredTrash,
   registrableDomain,
   restoreEntry,
   saveVault,
@@ -48,6 +49,7 @@ import {
   unlockVault,
   updateEntry,
   type Entry,
+  type EntryInput,
   type MatchMode,
   type VaultFile,
   type VaultSession,
@@ -124,9 +126,17 @@ async function markUnlocked(newSession: VaultSession, file: VaultFile): Promise<
   vaultFile = file;
   lastActivity = Date.now();
 
+  // Sweep expired trash here, not in unlockVault: core stays pure, and a read
+  // that silently rewrites the vault would surprise every caller.
+  const swept = purgeExpiredTrash(session.data);
+  if (swept !== session.data) {
+    session.data = swept;
+    await persist();
+  }
+
   await savePrefs({
-    autoLockMinutes: newSession.data.settings.autoLockMinutes,
-    theme: newSession.data.settings.theme,
+    autoLockMinutes: session.data.settings.autoLockMinutes,
+    theme: session.data.settings.theme,
   });
   // 0.5 min is Chrome's practical minimum alarm period.
   await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 0.4 });
@@ -313,6 +323,7 @@ async function handle(request: Request): Promise<Response> {
         entryCount: session ? liveEntries(session.data).length : 0,
         autoLockMinutes: session?.data.settings.autoLockMinutes ?? prefs.autoLockMinutes,
         theme: session?.data.settings.theme ?? prefs.theme,
+        breachCheckEnabled: session?.data.settings.breachCheckEnabled ?? false,
         foreignSchemaVersion: session?.foreignSchemaVersion ?? null,
       };
     }
@@ -397,6 +408,30 @@ async function handle(request: Request): Promise<Response> {
       return { ok: true, type: 'ENTRIES', entries: entries.map(toSummary) };
     }
 
+    case 'GET_ENTRY': {
+      if (!session) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      const entry = session.data.entries.find((e) => e.id === request.entryId);
+      if (!entry) return { ok: false, error: 'Entry not found.' };
+      return {
+        ok: true,
+        type: 'ENTRY',
+        entry: {
+          id: entry.id,
+          title: entry.title,
+          username: entry.username,
+          password: entry.password,
+          urls: entry.urls,
+          notes: entry.notes,
+          tags: entry.tags,
+          totpSecret: entry.totpSecret,
+          totpConfig: entry.totpConfig,
+          customFields: entry.customFields,
+          attachments: entry.attachments,
+        },
+      };
+    }
+
     case 'MATCH_TAB': {
       if (!session) return { ok: false, error: 'Vault is locked.' };
       touch();
@@ -421,7 +456,7 @@ async function handle(request: Request): Promise<Response> {
       else if (request.field === 'username') value = entry.username;
       else {
         if (!entry.totpSecret) return { ok: false, error: 'No TOTP secret on this entry.' };
-        value = (await generateTotp(entry.totpSecret)).code;
+        value = (await generateTotp(entry.totpSecret, entry.totpConfig ?? undefined)).code;
       }
       return {
         ok: true,
@@ -511,6 +546,20 @@ async function handle(request: Request): Promise<Response> {
         };
         await persist();
       }
+      return { ok: true, type: 'OK' };
+    }
+
+    case 'SET_BREACH_CHECK': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      session = {
+        ...session,
+        data: {
+          ...session.data,
+          settings: { ...session.data.settings, breachCheckEnabled: request.enabled },
+        },
+      };
+      await persist();
       return { ok: true, type: 'OK' };
     }
 
@@ -833,7 +882,9 @@ async function fill(entryId: string, tabId: number, requestedFrame?: FrameTarget
 
   try {
     const totp =
-      entry.totpSecret !== null ? (await generateTotp(entry.totpSecret)).code : undefined;
+      entry.totpSecret !== null
+        ? (await generateTotp(entry.totpSecret, entry.totpConfig ?? undefined)).code
+        : undefined;
     // `{ frameId }` is load-bearing, not a hint: without it Chrome delivers the
     // password to every frame in the tab.
     const result = (await chrome.tabs.sendMessage(
@@ -935,28 +986,62 @@ async function saveEntry(raw: unknown): Promise<Response> {
   if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
   touch();
 
-  const input = raw as Partial<Entry> | null;
+  const input = raw as Record<string, unknown> | null;
   if (!input || typeof input.title !== 'string') return { ok: false, error: 'Invalid entry.' };
 
-  const patch = {
-    title: input.title,
-    username: input.username ?? '',
-    password: input.password ?? '',
-    urls: Array.isArray(input.urls) ? input.urls : [],
-    notes: input.notes ?? '',
-    tags: Array.isArray(input.tags) ? input.tags : [],
-    totpSecret: input.totpSecret ?? null,
-  };
+  const existingId =
+    typeof input.id === 'string' && session.data.entries.some((e) => e.id === input.id) ? input.id : null;
 
   try {
-    session.data =
-      typeof input.id === 'string' && session.data.entries.some((e) => e.id === input.id)
-        ? updateEntry(session.data, input.id, patch)
-        : createEntry(session.data, patch).data;
+    if (existingId) {
+      // Partial patch: only keys present in the message. Defaulting absent ones
+      // to empty used to wipe notes, tags, TOTP and every URL but the first when
+      // the options editor opened from a summary and saved.
+      const patch: Partial<EntryInput> = { title: input.title };
+      if ('username' in input && typeof input.username === 'string') patch.username = input.username;
+      if ('password' in input && typeof input.password === 'string') patch.password = input.password;
+      if ('urls' in input && Array.isArray(input.urls)) patch.urls = input.urls as string[];
+      if ('notes' in input && typeof input.notes === 'string') patch.notes = input.notes;
+      if ('tags' in input && Array.isArray(input.tags)) patch.tags = input.tags as string[];
+      if ('totpSecret' in input) {
+        patch.totpSecret = typeof input.totpSecret === 'string' ? input.totpSecret : null;
+      }
+      if ('totpConfig' in input) {
+        patch.totpConfig = (input.totpConfig as EntryInput['totpConfig']) ?? null;
+      }
+      if ('customFields' in input && Array.isArray(input.customFields)) {
+        patch.customFields = input.customFields as NonNullable<EntryInput['customFields']>;
+      }
+      if ('attachments' in input && Array.isArray(input.attachments)) {
+        patch.attachments = input.attachments as NonNullable<EntryInput['attachments']>;
+      }
+      session.data = updateEntry(session.data, existingId, patch);
+    } else {
+      session.data = createEntry(session.data, {
+        title: input.title,
+        username: typeof input.username === 'string' ? input.username : '',
+        password: typeof input.password === 'string' ? input.password : '',
+        urls: Array.isArray(input.urls) ? (input.urls as string[]) : [],
+        notes: typeof input.notes === 'string' ? input.notes : '',
+        tags: Array.isArray(input.tags) ? (input.tags as string[]) : [],
+        totpSecret: typeof input.totpSecret === 'string' ? input.totpSecret : null,
+        totpConfig: (input.totpConfig as EntryInput['totpConfig']) ?? null,
+        customFields: Array.isArray(input.customFields)
+          ? (input.customFields as NonNullable<EntryInput['customFields']>)
+          : [],
+        attachments: Array.isArray(input.attachments)
+          ? (input.attachments as NonNullable<EntryInput['attachments']>)
+          : [],
+      }).data;
+    }
     await persist();
     return { ok: true, type: 'OK' };
   } catch (err) {
-    return { ok: false, error: describe(err) };
+    const message = describe(err);
+    if (/too large for extension storage/i.test(message) || /attachment/i.test(message)) {
+      return { ok: false, error: 'This attachment does not fit. Remove a file or use a smaller one.' };
+    }
+    return { ok: false, error: message };
   }
 }
 

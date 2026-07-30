@@ -29,7 +29,11 @@
  */
 
 import { z } from 'zod';
-import { VAULT_FORMAT_ID } from './types.ts';
+import {
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_VAULT_BYTES,
+  VAULT_FORMAT_ID,
+} from './types.ts';
 import { MAX_LENGTH, MIN_LENGTH } from './password-gen.ts';
 import { VaultFormatError } from './errors.ts';
 
@@ -72,6 +76,35 @@ export const settingsSchema = z
     generator: generatorOptionsSchema,
     theme: z.enum(['light', 'dark', 'system']),
     lockOnHide: z.boolean(),
+    // Absent on schema-3 vaults — off by default, never opt someone in.
+    breachCheckEnabled: z.boolean().default(false),
+  })
+  .loose();
+
+export const totpConfigSchema = z
+  .object({
+    digits: z.int().min(6).max(10),
+    periodSeconds: z.int().min(1).max(3600),
+    algorithm: z.enum(['SHA-1', 'SHA-256', 'SHA-512']),
+  })
+  .loose();
+
+export const customFieldSchema = z
+  .object({
+    id: z.uuid(),
+    label: z.string().max(128),
+    value: z.string().max(4096),
+    secret: z.boolean(),
+  })
+  .loose();
+
+export const attachmentSchema = z
+  .object({
+    id: z.uuid(),
+    name: z.string().min(1).max(512),
+    mimeType: z.string().min(1).max(128),
+    sizeBytes: z.int().min(0).max(MAX_ATTACHMENT_BYTES),
+    dataB64: b64,
   })
   .loose();
 
@@ -96,6 +129,13 @@ export const entrySchema = z
      */
     folderId: z.uuid().nullable().default(null),
     totpSecret: z.string().max(512).nullable().default(null),
+    /*
+     * Schema-4 fields. Defaulted so a schema-3 vault opens without a rewrite:
+     * null / [] match "never set", which is exactly what older entries mean.
+     */
+    totpConfig: totpConfigSchema.nullable().default(null),
+    customFields: z.array(customFieldSchema).max(64).default([]),
+    attachments: z.array(attachmentSchema).max(32).default([]),
     createdAt: isoDate,
     updatedAt: isoDate,
     passwordUpdatedAt: isoDate,
@@ -145,7 +185,29 @@ export const vaultDataSchema = z
     settings: settingsSchema,
     updatedAt: isoDate,
   })
-  .loose();
+  .loose()
+  .superRefine((data, ctx) => {
+    let total = 0;
+    for (const entry of data.entries) {
+      for (const att of entry.attachments) {
+        total += att.sizeBytes;
+        if (att.sizeBytes > MAX_ATTACHMENT_BYTES) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Attachment "${att.name}" exceeds the ${MAX_ATTACHMENT_BYTES} byte per-file limit.`,
+            path: ['entries'],
+          });
+        }
+      }
+    }
+    if (total > MAX_ATTACHMENTS_VAULT_BYTES) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `Vault attachments exceed the ${MAX_ATTACHMENTS_VAULT_BYTES} byte total budget.`,
+        path: ['entries'],
+      });
+    }
+  });
 
 export const vaultFileSchema = z
   .object({
