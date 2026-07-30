@@ -18,11 +18,12 @@ import {
   parseOtpAuthUri,
   type Attachment,
   type CustomField,
+  type HealthIssueKind,
   type TotpConfig,
 } from '@keyhole/core';
 import { sendToBackground, type EntrySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
-import { ConfirmDialog } from '../../../app/src/components/common.tsx';
+import { ConfirmDialog, FINDINGS_PAGE } from '../../../app/src/components/common.tsx';
 import { SyncPanel } from './SyncPanel.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
@@ -461,6 +462,7 @@ function VaultHealth({ onChanged }: { onChanged: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmTrash, setConfirmTrash] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [breachEnabled, setBreachEnabled] = useState(false);
   const [breachBusy, setBreachBusy] = useState(false);
@@ -478,11 +480,26 @@ function VaultHealth({ onChanged }: { onChanged: () => void }) {
      "3 selected" mean one password. See groupIssuesByEntry. */
   const findings = report ? groupIssuesByEntry(report.issues) : [];
   const selectedIds = findings.filter((f) => selection.has(f.entryId)).map((f) => f.entryId);
+  const visible = showAll ? findings : findings.slice(0, FINDINGS_PAGE);
+
+  const kindCounts = new Map<HealthIssueKind, number>();
+  for (const finding of findings) {
+    for (const kind of finding.kinds) kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+  }
+
+  /** Whole categories are the usual unit of "deal with this": every reused password. */
+  const selectKind = (kind: HealthIssueKind) =>
+    setSelection((current) => {
+      const next = new Set(current);
+      for (const finding of findings) if (finding.kinds.includes(kind)) next.add(finding.entryId);
+      return next;
+    });
 
   const scan = async () => {
     setBusy(true);
     setError(null);
     setSelection(new Set());
+    setShowAll(false);
     const response = await sendToBackground({ type: 'HEALTH_REPORT' });
     setBusy(false);
     if (!response.ok) {
@@ -636,8 +653,26 @@ function VaultHealth({ onChanged }: { onChanged: () => void }) {
                   Move {selectedIds.length || ''} to trash
                 </button>
               </div>
+
+              <div className="filter-row" style={{ marginBottom: 10 }}>
+                <span className="hint" style={{ alignSelf: 'center', marginRight: 2 }}>
+                  Select all:
+                </span>
+                {[...kindCounts.entries()].map(([kind, count]) => (
+                  <button key={kind} type="button" className="filter-chip" onClick={() => selectKind(kind)}>
+                    {kind}
+                    <span className="filter-count">{count}</span>
+                  </button>
+                ))}
+                {selectedIds.length > 0 && (
+                  <button type="button" className="filter-chip" onClick={() => setSelection(new Set())}>
+                    clear
+                  </button>
+                )}
+              </div>
+
               <ul className="entry-list">
-                {findings.map((finding) => (
+                {visible.map((finding) => (
                   <li key={finding.entryId} className="finding-row">
                     <input
                       type="checkbox"
@@ -667,6 +702,14 @@ function VaultHealth({ onChanged }: { onChanged: () => void }) {
                   </li>
                 ))}
               </ul>
+
+              {/* "Select all" covers findings the list has folded away, so the
+                  tail is never silently out of view while a count includes it. */}
+              {!showAll && findings.length > visible.length && (
+                <button type="button" className="ghost" style={{ marginTop: 8 }} onClick={() => setShowAll(true)}>
+                  Show {findings.length - visible.length} more
+                </button>
+              )}
             </>
           )}
         </div>

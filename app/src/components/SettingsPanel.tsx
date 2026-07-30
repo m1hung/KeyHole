@@ -16,7 +16,7 @@ import {
   type Settings,
   type VaultFile,
 } from '@keyhole/core';
-import { ConfirmDialog, StrengthMeter } from './common.tsx';
+import { ConfirmDialog, FINDINGS_PAGE, StrengthMeter } from './common.tsx';
 import { Icon } from './Icon.tsx';
 import {
   downloadVaultFile,
@@ -527,9 +527,6 @@ function MigrateSection({ vault }: { vault: VaultController }) {
     </div>
   );
 }
-
-/** How many findings are listed before the tail is folded away. */
-const FINDINGS_PAGE = 40;
 
 function VaultHealthSection({
   vault,
