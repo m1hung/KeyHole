@@ -300,7 +300,15 @@ export function EntryEditor({
             )}
             {draft.password !== entry.password && (
               <p className="hint" style={{ color: 'var(--warn)' }}>
-                Unsaved password change — remember to update the site too.
+                {entry.password.length === 0
+                  ? /* Nothing is stored on this entry yet — the field above holds a
+                       password this editor generated for you, not one the vault has.
+                       The rotation wording below would say the opposite ("update the
+                       site too" implies it is saved and the site is what is behind),
+                       which is how an entry ends up looking complete while the health
+                       scan correctly reports it as empty. */
+                    'Suggested password — nothing is saved on this entry until you press Save.'
+                  : 'Unsaved password change — remember to update the site too.'}
               </p>
             )}
           </div>

@@ -11,6 +11,7 @@ public enum HealthIssueKind: String, Sendable, Equatable {
     case weak
     case stale
     case empty
+    case noUsername = "no username"
 }
 
 public struct HealthIssue: Sendable, Equatable, Identifiable {
@@ -71,10 +72,29 @@ public func analyzeVaultHealth(_ data: VaultData, now: Date = Date()) -> VaultHe
 
     for entry in logins {
         if entry.password.isEmpty {
+            // Name every field that is actually empty: reporting only the password
+            // on an entry missing both reads as a wrong diagnosis.
             issues.append(
-                HealthIssue(kind: .empty, entryId: entry.id, title: entry.title, detail: "No password stored.")
+                HealthIssue(
+                    kind: .empty,
+                    entryId: entry.id,
+                    title: entry.title,
+                    detail: entry.username.isEmpty
+                        ? "No username or password stored."
+                        : "No password stored."
+                )
             )
             continue
+        }
+
+        // Only reached when a password IS stored — an entry missing both is already
+        // described by the `empty` finding above.
+        if entry.username.isEmpty {
+            issues.append(
+                HealthIssue(
+                    kind: .noUsername, entryId: entry.id, title: entry.title, detail: "No username stored."
+                )
+            )
         }
 
         byPassword[entry.password, default: []].append(entry)
@@ -123,7 +143,8 @@ public func analyzeVaultHealth(_ data: VaultData, now: Date = Date()) -> VaultHe
         }
     }
 
-    let order: [HealthIssueKind: Int] = [.empty: 0, .reused: 1, .weak: 2, .stale: 3]
+    // Mildest last: a login with no username still works, it is just incomplete.
+    let order: [HealthIssueKind: Int] = [.empty: 0, .reused: 1, .weak: 2, .stale: 3, .noUsername: 4]
     issues.sort { a, b in
         let rankA = order[a.kind] ?? 0
         let rankB = order[b.kind] ?? 0

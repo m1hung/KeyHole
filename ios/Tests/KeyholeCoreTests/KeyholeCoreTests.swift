@@ -363,10 +363,18 @@ final class PayloadInteropTests: XCTestCase {
 /// about what counts as a weak or reused password would be worse than either rule
 /// on its own, so these mirror the TypeScript tests.
 final class HealthTests: XCTestCase {
-    private func login(_ title: String, password: String, passwordUpdatedAt: String = "2026-07-01T00:00:00.000Z") -> Entry {
+    /// Username defaults to a real one so the password-finding tests below stay
+    /// about passwords — a blank username is its own finding now.
+    private func login(
+        _ title: String,
+        password: String,
+        username: String = "me@example.test",
+        passwordUpdatedAt: String = "2026-07-01T00:00:00.000Z"
+    ) -> Entry {
         Entry(
             id: UUID().uuidString.lowercased(),
             title: title,
+            username: username,
             password: password,
             createdAt: "2026-01-01T00:00:00.000Z",
             updatedAt: "2026-01-01T00:00:00.000Z",
@@ -403,6 +411,22 @@ final class HealthTests: XCTestCase {
         XCTAssertTrue(report.issues.contains { $0.kind == .weak && $0.title == "Weak" })
         // An entry with no password is not also counted as weak or reused.
         XCTAssertFalse(report.issues.contains { $0.kind == .weak && $0.title == "Empty" })
+    }
+
+    func testEmptyFindingNamesTheUsernameToo() {
+        let report = analyzeVaultHealth(vault([login("Stub", password: "", username: "")]))
+        // Saying only "No password stored." over a blank username reads as a wrong
+        // diagnosis, and it must not be reported twice either.
+        XCTAssertEqual(report.issues.map(\.kind), [.empty])
+        XCTAssertEqual(report.issues.first?.detail, "No username or password stored.")
+    }
+
+    func testFlagsAMissingUsernameOnItsOwn() {
+        let report = analyzeVaultHealth(vault([
+            login("Token", password: "9x!Kq2vTn4Lm8Zr6Wb3Y", username: "")
+        ]))
+        XCTAssertEqual(report.issues.map(\.kind), [.noUsername])
+        XCTAssertEqual(report.issues.first?.detail, "No username stored.")
     }
 
     func testFlagsStalePasswords() {

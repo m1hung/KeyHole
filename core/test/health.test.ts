@@ -28,11 +28,55 @@ describe('analyzeVaultHealth', () => {
   });
 });
 
+describe('analyzeVaultHealth — what "empty" actually says', () => {
+  const detailFor = (username: string, password: string): string | undefined => {
+    const data = createEntry(emptyVaultData(), { title: 'T', username, password }).data;
+    return analyzeVaultHealth(data).issues.find((i) => i.kind === 'empty')?.detail;
+  };
+
+  it('names the username too when both fields are empty', () => {
+    // Saying only "No password stored." over a blank username reads as a wrong
+    // diagnosis, which is how a scan loses the user's trust.
+    expect(detailFor('', '')).toBe('No username or password stored.');
+    expect(detailFor('me@example.test', '')).toBe('No password stored.');
+  });
+
+  it('reports a missing username on its own, as its own kind', () => {
+    const data = createEntry(emptyVaultData(), {
+      title: 'Token',
+      username: '',
+      password: 'C9!wq2-Ledger_Trout_49xz',
+    }).data;
+    const { issues } = analyzeVaultHealth(data);
+    expect(issues.map((i) => [i.kind, i.detail])).toEqual([['no username', 'No username stored.']]);
+  });
+
+  it('never reports a missing username twice for an entry that is empty anyway', () => {
+    // The `empty` finding already names both fields. A second row would inflate
+    // the finding count against one broken entry — and the entry count that the
+    // batch actions are sized by must stay honest.
+    const data = createEntry(emptyVaultData(), { title: 'Stub', username: '', password: '' }).data;
+    const { issues } = analyzeVaultHealth(data);
+    expect(issues.map((i) => i.kind)).toEqual(['empty']);
+    expect(issues[0]?.detail).toBe('No username or password stored.');
+  });
+
+  it('leaves a complete login alone', () => {
+    const data = createEntry(emptyVaultData(), {
+      title: 'Fine',
+      username: 'me@example.test',
+      password: 'C9!wq2-Ledger_Trout_49xz',
+    }).data;
+    expect(analyzeVaultHealth(data).issues).toEqual([]);
+  });
+});
+
 describe('groupIssuesByEntry', () => {
   it('gives one row per entry however many findings it has', () => {
     let data = emptyVaultData();
-    data = createEntry(data, { title: 'A', password: '1' }).data;
-    data = createEntry(data, { title: 'B', password: '1' }).data;
+    // Usernames present so this stays a test about password findings only.
+    data = createEntry(data, { title: 'A', username: 'a@example.test', password: '1' }).data;
+    data = createEntry(data, { title: 'B', username: 'b@example.test', password: '1' }).data;
 
     const old = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
     data = { ...data, entries: data.entries.map((e) => (e.title === 'A' ? { ...e, passwordUpdatedAt: old } : e)) };

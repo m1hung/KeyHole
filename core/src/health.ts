@@ -6,7 +6,7 @@
 import { estimateStrength } from './password-gen.ts';
 import type { Entry, VaultData } from './types.ts';
 
-export type HealthIssueKind = 'reused' | 'weak' | 'stale' | 'empty';
+export type HealthIssueKind = 'reused' | 'weak' | 'stale' | 'empty' | 'no username';
 
 export interface HealthIssue {
   kind: HealthIssueKind;
@@ -46,10 +46,29 @@ export function analyzeVaultHealth(data: VaultData, nowMs = Date.now()): VaultHe
         kind: 'empty',
         entryId: entry.id,
         title: entry.title,
-        detail: 'No password stored.',
+        /* Name every field that is actually empty. Reporting only the password on
+           an entry that is missing both reads as a wrong diagnosis — you look at
+           a blank username, are told about a password, and stop trusting the
+           scan. A missing username is not a finding on its own (plenty of real
+           logins have none: API tokens, PINs, wifi keys), but when the entry is
+           empty anyway it is part of an honest description of what is there. */
+        detail:
+          entry.username.length === 0 ? 'No username or password stored.' : 'No password stored.',
       });
       continue;
     }
+    /* Only reached when a password IS stored — an entry missing both is already
+       described by the `empty` finding above, and reporting it twice would inflate
+       the finding count against a single broken entry. */
+    if (entry.username.length === 0) {
+      issues.push({
+        kind: 'no username',
+        entryId: entry.id,
+        title: entry.title,
+        detail: 'No username stored.',
+      });
+    }
+
     const group = byPassword.get(entry.password) ?? [];
     group.push(entry);
     byPassword.set(entry.password, group);
@@ -88,7 +107,15 @@ export function analyzeVaultHealth(data: VaultData, nowMs = Date.now()): VaultHe
     }
   }
 
-  const order: Record<HealthIssueKind, number> = { empty: 0, reused: 1, weak: 2, stale: 3 };
+  /* Mildest last: a login with no username still works, it is just incomplete —
+     unlike a reused or weak password, which is a live exposure. */
+  const order: Record<HealthIssueKind, number> = {
+    empty: 0,
+    reused: 1,
+    weak: 2,
+    stale: 3,
+    'no username': 4,
+  };
   issues.sort((a, b) => order[a.kind] - order[b.kind] || a.title.localeCompare(b.title));
 
   return {

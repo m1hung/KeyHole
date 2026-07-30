@@ -220,7 +220,12 @@ export type Response =
        * with its password — never the password itself, so this stays inside the
        * "metadata only" rule the other list responses follow.
        */
-      issues: { kind: 'reused' | 'weak' | 'stale' | 'empty'; entryId: string; title: string; detail: string }[];
+      issues: {
+        kind: 'reused' | 'weak' | 'stale' | 'empty' | 'no username';
+        entryId: string;
+        title: string;
+        detail: string;
+      }[];
       loginCount: number;
       checkedAt: string;
     }
