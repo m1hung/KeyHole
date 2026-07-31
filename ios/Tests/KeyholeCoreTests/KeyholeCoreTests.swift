@@ -597,6 +597,36 @@ final class UrlMatchTests: XCTestCase {
         XCTAssertEqual(matchUrl(entryUrl: "https://github.com", pageUrl: "https://gist.github.com", mode: .subdomain), .subdomain)
     }
 
+    func testWWWAndApexAreEquivalent() {
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://reddit.com", pageUrl: "https://www.reddit.com/login", mode: .host),
+            .host
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://www.reddit.com", pageUrl: "https://reddit.com", mode: .host),
+            .host
+        )
+    }
+
+    func testSubdomainBelowSavedHost() {
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://reddit.com", pageUrl: "https://old.reddit.com", mode: .subdomain),
+            .subdomain
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://old.reddit.com", pageUrl: "https://reddit.com", mode: .subdomain),
+            .none
+        )
+    }
+
+    func testAppBundleIdDoesNotParseAsWebHost() {
+        XCTAssertNil(parseTarget("com.reddit.Reddit"))
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://reddit.com", pageUrl: "com.reddit.Reddit", mode: .subdomain),
+            .none
+        )
+    }
+
     func testTrashedNotOffered() throws {
         var data = try createEntry(
             data: emptyVaultData(),

@@ -21,11 +21,14 @@ public struct ParsedTarget: Sendable, Equatable {
 private let allowedProtocols: Set<String> = ["https:", "http:"]
 
 public func parseTarget(_ rawUrl: String) -> ParsedTarget? {
+    let trimmed = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
     let url: URL?
-    if let direct = URL(string: rawUrl), direct.scheme != nil {
+    if let direct = URL(string: trimmed), direct.scheme != nil {
         url = direct
     } else {
-        url = URL(string: "https://\(rawUrl)")
+        url = URL(string: "https://\(trimmed)")
     }
     guard let url,
           let scheme = url.scheme?.lowercased(),
@@ -33,6 +36,8 @@ public func parseTarget(_ rawUrl: String) -> ParsedTarget? {
           var host = url.host?.lowercased(),
           !host.isEmpty
     else { return nil }
+    // Bundle-id style identifiers (e.g. com.reddit.Reddit) are not web hosts.
+    if looksLikeAppBundleId(host) { return nil }
     if host.hasSuffix(".") { host.removeLast() }
     let port = url.port.map { ":\($0)" } ?? ""
     let origin = "\(scheme)://\(host)\(port)"
@@ -42,6 +47,20 @@ public func parseTarget(_ rawUrl: String) -> ParsedTarget? {
         pathname: url.path.isEmpty ? "/" : url.path,
         protocolScheme: scheme + ":"
     )
+}
+
+/// Reverse-DNS app ids often arrive as AutoFill "domain" identifiers
+/// (`com.reddit.Reddit`). Those are not web hosts and must not match vault URLs.
+private func looksLikeAppBundleId(_ host: String) -> Bool {
+    let labels = host.split(separator: ".")
+    guard labels.count >= 3 else { return false }
+    let head = labels[0]
+    return head == "com" || head == "net" || head == "org" || head == "io"
+}
+
+/// `www.example.com` ↔ `example.com` for host equality only.
+private func stripLeadingWWW(_ host: String) -> String {
+    host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
 }
 
 private func isSubdomainOf(candidate: String, base: String) -> Bool {
@@ -55,8 +74,15 @@ public func matchUrl(entryUrl: String, pageUrl: String, mode: MatchMode = .host)
     if entry.origin == page.origin { return .exact }
     if mode == .exact { return .none }
     if entry.hostname == page.hostname { return .host }
+    // Conventional: www and apex are the same site for autofill purposes.
+    if stripLeadingWWW(entry.hostname) == stripLeadingWWW(page.hostname) {
+        return .host
+    }
     if mode == .host { return .none }
-    if isSubdomainOf(candidate: page.hostname, base: entry.hostname) {
+    // Page below the stored entry (entry reddit.com → old.reddit.com).
+    if isSubdomainOf(candidate: page.hostname, base: entry.hostname)
+        || isSubdomainOf(candidate: page.hostname, base: stripLeadingWWW(entry.hostname))
+    {
         return .subdomain
     }
     return .none
@@ -90,6 +116,14 @@ public func matchEntriesForAutofill(
         }
         return $0.entry.title.localizedCaseInsensitiveCompare($1.entry.title) == .orderedAscending
     }
+}
+
+/// Every live login, for AutoFill browse-all when the site identifier did not match.
+public func allLoginEntriesForAutofill(data: VaultData) -> [AutofillMatch] {
+    liveEntries(data)
+        .filter { $0.kind == .login }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        .map { AutofillMatch(entry: $0, strength: .none) }
 }
 
 private func strengthRank(_ s: MatchStrength) -> Int {

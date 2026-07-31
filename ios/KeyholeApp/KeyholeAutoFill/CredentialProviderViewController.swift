@@ -89,10 +89,26 @@ private struct AutoFillRootView: View {
     @State private var busy = false
     @State private var session: VaultSession?
     @State private var matches: [AutofillMatch] = []
+    @State private var showingAllLogins = false
+    @State private var query = ""
     @State private var didAutoPromptBiometrics = false
 
     private var showBiometrics: Bool {
         BiometricUnlockStore.isReady && BiometricUnlockStore.canUseBiometrics
+    }
+
+    private var siteLabel: String {
+        pageURLs.first.flatMap { parseTarget($0)?.hostname } ?? pageURLs.first ?? "this app"
+    }
+
+    private var displayed: [AutofillMatch] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return matches }
+        return matches.filter {
+            $0.entry.title.lowercased().contains(q)
+                || $0.entry.username.lowercased().contains(q)
+                || $0.entry.urls.contains(where: { $0.lowercased().contains(q) })
+        }
     }
 
     var body: some View {
@@ -102,28 +118,12 @@ private struct AutoFillRootView: View {
                     unlockForm
                 } else if matches.isEmpty {
                     ContentUnavailableView(
-                        "No logins for this site",
+                        "No logins in vault",
                         systemImage: "key",
-                        description: Text("No unlocked login URLs match \(pageURLs.first ?? "this page").")
+                        description: Text("Unlock succeeded, but this vault has no login entries to offer.")
                     )
                 } else {
-                    List(matches, id: \.entry.id) { match in
-                        Button {
-                            onPick(match.entry.username, match.entry.password)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(match.entry.title)
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                                Text(match.entry.username.isEmpty ? "(no username)" : match.entry.username)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                Text(match.strength.rawValue)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
+                    credentialsList
                 }
             }
             .navigationTitle("Keyhole")
@@ -135,6 +135,42 @@ private struct AutoFillRootView: View {
             }
             .onAppear { maybeAutoPromptBiometrics() }
         }
+    }
+
+    private var credentialsList: some View {
+        List {
+            if showingAllLogins {
+                Section {
+                    Text("No saved URL matched \(siteLabel). Pick a login below, or add \(siteLabel) to that entry’s URLs in Keyhole.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(displayed, id: \.entry.id) { match in
+                Button {
+                    onPick(match.entry.username, match.entry.password)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(match.entry.title)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text(match.entry.username.isEmpty ? "(no username)" : match.entry.username)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        if match.strength != .none {
+                            Text(match.strength.rawValue)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else if let host = match.entry.urls.first.flatMap({ parseTarget($0)?.hostname }) {
+                            Text(host)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+        .searchable(text: $query, prompt: "Search logins")
     }
 
     private var unlockForm: some View {
@@ -228,12 +264,20 @@ private struct AutoFillRootView: View {
     private func reloadMatches(from data: VaultData) {
         var found: [AutofillMatch] = []
         var seen = Set<String>()
+        // Subdomain mode covers www / apex and hosts below a saved domain (e.g. old.reddit.com).
         for page in pageURLs {
-            for match in matchEntriesForAutofill(data: data, pageUrl: page, mode: .host) {
+            for match in matchEntriesForAutofill(data: data, pageUrl: page, mode: .subdomain) {
                 if seen.insert(match.entry.id).inserted {
                     found.append(match)
                 }
             }
+        }
+        if found.isEmpty {
+            // Native apps often send a bundle id or an unmatched host — still let the user pick.
+            found = allLoginEntriesForAutofill(data: data)
+            showingAllLogins = !found.isEmpty
+        } else {
+            showingAllLogins = false
         }
         if let preferredUser, !preferredUser.isEmpty {
             found.sort {
