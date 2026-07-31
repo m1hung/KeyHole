@@ -108,6 +108,22 @@ export const attachmentSchema = z
   })
   .loose();
 
+export const passkeyRecordSchema = z
+  .object({
+    id: z.uuid(),
+    credentialIdB64: b64,
+    relyingPartyId: z.string().min(1).max(253),
+    relyingPartyName: z.string().max(512),
+    userName: z.string().max(512),
+    userDisplayName: z.string().max(512),
+    userHandleB64: b64,
+    privateKeyB64: b64,
+    signCount: z.int().min(0).max(4_294_967_295),
+    createdAt: isoDate,
+    lastUsedAt: isoDate.nullable().default(null),
+  })
+  .loose();
+
 export const entrySchema = z
   .object({
     id: z.uuid(),
@@ -136,6 +152,10 @@ export const entrySchema = z
     totpConfig: totpConfigSchema.nullable().default(null),
     customFields: z.array(customFieldSchema).max(64).default([]),
     attachments: z.array(attachmentSchema).max(32).default([]),
+    /*
+     * Schema-5 passkeys. Defaulted so a schema-4 vault opens without a rewrite.
+     */
+    passkeys: z.array(passkeyRecordSchema).max(32).default([]),
     createdAt: isoDate,
     updatedAt: isoDate,
     passwordUpdatedAt: isoDate,

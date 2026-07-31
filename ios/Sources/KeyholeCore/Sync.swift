@@ -41,6 +41,30 @@ private func mergeHistory(
     return Array(merged.prefix(PASSWORD_HISTORY_LIMIT))
 }
 
+/// Union passkeys by credential id. Prefer the higher sign count (more uses);
+/// when equal, keep the side with the later `lastUsedAt` / `createdAt`.
+private func mergePasskeys(_ a: [PasskeyRecord], _ b: [PasskeyRecord]) -> [PasskeyRecord] {
+    var byCred: [String: PasskeyRecord] = [:]
+    for row in a + b {
+        if let existing = byCred[row.credentialIdB64] {
+            if row.signCount > existing.signCount {
+                byCred[row.credentialIdB64] = row
+            } else if row.signCount == existing.signCount {
+                let rowUsed = time(row.lastUsedAt ?? row.createdAt)
+                let existingUsed = time(existing.lastUsedAt ?? existing.createdAt)
+                if rowUsed > existingUsed {
+                    byCred[row.credentialIdB64] = row
+                } else if rowUsed == existingUsed {
+                    byCred[row.credentialIdB64] = breakTie(existing, row)
+                }
+            }
+        } else {
+            byCred[row.credentialIdB64] = row
+        }
+    }
+    return byCred.values.sorted { $0.credentialIdB64 < $1.credentialIdB64 }
+}
+
 private func breakTie<T: Encodable>(_ a: T, _ b: T) -> T {
     let sa = (try? VaultJSON.canonicalString(a)) ?? ""
     let sb = (try? VaultJSON.canonicalString(b)) ?? ""
@@ -122,6 +146,9 @@ public func mergeVaultData(_ a: VaultData, _ b: VaultData, nowMs: Double = Date(
             // History is a log, not a state: last-write-wins would drop whichever
             // device's rotation lost the comparison. Mirrors core/src/sync.ts.
             winner.history = mergeHistory(existing.history, entry.history)
+            // Passkeys are also a set of credentials — union by credential id so a
+            // registration on one device is not dropped when the other side wins LWW.
+            winner.passkeys = mergePasskeys(existing.passkeys, entry.passkeys)
             entryById[entry.id] = winner
         } else {
             entryById[entry.id] = entry

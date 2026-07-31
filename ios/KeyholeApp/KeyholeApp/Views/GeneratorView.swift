@@ -125,7 +125,7 @@ struct GeneratorView: View {
                 guard loaded else { return }
                 persistTask?.cancel()
                 persistTask = Task {
-                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { return }
                     await session.mutate { data in
                         updateSettings(data: data) { $0.generator = newValue }

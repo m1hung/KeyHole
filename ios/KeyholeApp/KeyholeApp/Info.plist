@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>ASCredentialProviderExtensionCapabilities</key>
+	<dict>
+		<key>ProvidesPasskeys</key>
+		<true/>
+		<key>ProvidesPasswords</key>
+		<true/>
+	</dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -29,7 +36,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Keyhole uses Face ID to unlock your vault without typing your master password. Your master password stays in the device Keychain and is only released after a successful Face ID check.</string>
+	<string>Keyhole uses Face ID to unlock your vault.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIStatusBarStyle</key>

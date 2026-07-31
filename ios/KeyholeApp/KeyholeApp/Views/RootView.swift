@@ -14,7 +14,7 @@ struct RootView: View {
                         .tint(KeyholeColors.accent)
                         .foregroundStyle(KeyholeColors.textDim)
                 }
-            case .noVault, .locked:
+            case .noVault, .locked, .damaged:
                 UnlockView()
             case .unlocked:
                 MainTabView()

@@ -193,8 +193,54 @@ describe('mergeVaultData — password history', () => {
     // 'original' is recorded by both sides; each side's own supersession is
     // recorded by only one. All of it must survive.
     expect(passwords).toContain('original');
-    expect(new Set(passwords).size).toBe(passwords.length);
+    // Deduped on (changedAt, password). Same password at different instants is
+    // two real rows — uniqueness is on the pair, not the password string alone.
+    expect(new Set(history.map((h) => `${h.changedAt}|${h.password}`)).size).toBe(history.length);
     expect(merged.entries[0]?.password).toMatch(/^from-the-(phone|desktop)$/);
+  });
+
+  it('unions passkeys from both devices by credential id', () => {
+    const { data: base, entry } = createEntry(emptyVaultData(), { title: 'Site', password: 'x' });
+    const pk = (id: string, cred: string, signCount: number) => ({
+      id,
+      credentialIdB64: Buffer.from(cred).toString('base64'),
+      relyingPartyId: 'example.com',
+      relyingPartyName: 'example.com',
+      userName: 'user',
+      userDisplayName: 'user',
+      userHandleB64: Buffer.from('handle').toString('base64'),
+      privateKeyB64: Buffer.from('key-material-32-bytes-long!!!!!!').toString('base64'),
+      signCount,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null as string | null,
+    });
+
+    const onPhone = {
+      ...base,
+      entries: base.entries.map((e) =>
+        e.id === entry.id ? { ...e, passkeys: [pk('11111111-1111-1111-1111-111111111111', 'cred-a', 1)] } : e,
+      ),
+    };
+    const onDesktop = {
+      ...base,
+      entries: base.entries.map((e) =>
+        e.id === entry.id
+          ? {
+              ...e,
+              passkeys: [
+                pk('11111111-1111-1111-1111-111111111111', 'cred-a', 3),
+                pk('22222222-2222-2222-2222-222222222222', 'cred-b', 0),
+              ],
+            }
+          : e,
+      ),
+    };
+
+    const merged = mergeVaultData(onPhone, onDesktop).data;
+    const passkeys = merged.entries[0]?.passkeys ?? [];
+    expect(passkeys).toHaveLength(2);
+    expect(passkeys.find((p) => p.credentialIdB64 === Buffer.from('cred-a').toString('base64'))?.signCount).toBe(3);
+    expect(passkeys.some((p) => p.credentialIdB64 === Buffer.from('cred-b').toString('base64'))).toBe(true);
   });
 
   it('is symmetric, like every other merge rule', () => {

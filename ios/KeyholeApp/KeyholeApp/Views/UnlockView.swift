@@ -6,14 +6,17 @@ struct UnlockView: View {
     @State private var password = ""
     @State private var confirm = ""
     @State private var isCreateMode = false
-    @State private var confirmOverwrite = false
     @State private var overwriteAck = ""
     @State private var shake = 0
     @State private var didAutoPromptBiometrics = false
     @FocusState private var focused: Bool
 
     private var creating: Bool {
-        session.status == .noVault || isCreateMode
+        session.status == .noVault || session.status == .damaged || isCreateMode
+    }
+
+    private var needsOverwriteConfirm: Bool {
+        (isCreateMode && session.status == .locked) || session.status == .damaged
     }
 
     private var showBiometrics: Bool {
@@ -35,11 +38,7 @@ struct UnlockView: View {
                         KeyholeLocalBadge()
                     }
 
-                    Text(creating
-                         ? "Create a local vault. Your master password is never stored."
-                         : showBiometrics
-                            ? "Unlock with \(BiometricUnlockStore.biometryTypeName) or your master password."
-                            : "Enter your master password to unlock.")
+                    Text(subtitle)
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
                         .fixedSize(horizontal: false, vertical: true)
@@ -58,7 +57,7 @@ struct UnlockView: View {
                         .buttonStyle(KeyholePrimaryButtonStyle(disabled: session.busy))
                         .disabled(session.busy)
 
-                        Text("or use master password")
+                        Text("or enter password")
                             .font(KeyholeFonts.caption)
                             .foregroundStyle(KeyholeColors.textDim)
                             .frame(maxWidth: .infinity)
@@ -87,11 +86,15 @@ struct UnlockView: View {
                         }
                     }
 
-                    if isCreateMode, session.status == .locked {
+                    if needsOverwriteConfirm {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Creating a new vault replaces the sealed file on this device. Type OVERWRITE to confirm.")
-                                .font(KeyholeFonts.meta)
-                                .foregroundStyle(KeyholeColors.warn)
+                            Text(
+                                session.status == .damaged
+                                ? "Type OVERWRITE to replace this vault, or import a backup later."
+                                : "This replaces your existing vault. Type OVERWRITE to confirm."
+                            )
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.warn)
                             TextField("OVERWRITE", text: $overwriteAck)
                                 .textInputAutocapitalization(.characters)
                                 .autocorrectionDisabled()
@@ -119,7 +122,7 @@ struct UnlockView: View {
                     .disabled(!canSubmit || session.busy)
 
                     if session.status == .locked {
-                        Button(isCreateMode ? "Unlock existing vault" : "Create a new vault instead") {
+                        Button(isCreateMode ? "Unlock existing vault" : "Create a new vault") {
                             isCreateMode.toggle()
                             overwriteAck = ""
                             confirm = ""
@@ -145,11 +148,24 @@ struct UnlockView: View {
         }
     }
 
+    private var subtitle: String {
+        if session.status == .damaged {
+            return "Vault file is damaged."
+        }
+        if creating {
+            return "Choose a master password to create your vault."
+        }
+        if showBiometrics {
+            return "Unlock with \(BiometricUnlockStore.biometryTypeName) or your password."
+        }
+        return "Enter your master password."
+    }
+
     private var canSubmit: Bool {
         if password.count < MIN_MASTER_PASSWORD_LENGTH { return false }
         if creating {
             if password != confirm { return false }
-            if isCreateMode, session.status == .locked, overwriteAck != "OVERWRITE" {
+            if needsOverwriteConfirm, overwriteAck != "OVERWRITE" {
                 return false
             }
         }
@@ -168,9 +184,12 @@ struct UnlockView: View {
                 session.errorMessage = "Passwords do not match."
                 return
             }
-            if isCreateMode, session.status == .locked, overwriteAck != "OVERWRITE" {
+            if needsOverwriteConfirm, overwriteAck != "OVERWRITE" {
                 session.errorMessage = "Type OVERWRITE to replace the existing vault."
                 return
+            }
+            if session.status == .damaged {
+                await session.deleteVault()
             }
             await session.createVault(masterPassword: password)
             password = ""

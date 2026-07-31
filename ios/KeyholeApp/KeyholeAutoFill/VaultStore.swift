@@ -1,4 +1,4 @@
-/// Shared sealed-vault loader for the AutoFill extension.
+/// Shared sealed-vault loader/saver for the AutoFill extension.
 import Foundation
 import KeyholeCore
 
@@ -14,33 +14,55 @@ enum VaultStoreLoadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .appGroupUnavailable:
-            return """
-            AutoFill cannot reach the shared vault (App Group missing). \
-            In Xcode, enable App Groups on both KeyholeApp and KeyholeAutoFill \
-            for group.app.keyhole.vault, rebuild, then open Keyhole once.
-            """
+            return "AutoFill isn’t set up on this install. Open Keyhole and try again."
         case .noVault:
-            return """
-            No vault found for AutoFill. Open the Keyhole app once so it can \
-            publish the sealed vault into the shared App Group, then try again.
-            """
+            return "No vault found. Open Keyhole once, then try again."
         }
     }
 }
 
 @MainActor
 enum VaultStore {
+    private static var directoryURL: URL? {
+        AppGroup.containerURL?.appendingPathComponent("Keyhole", isDirectory: true)
+    }
+
+    private static var vaultURL: URL? {
+        directoryURL?.appendingPathComponent(VaultFileNames.vault)
+    }
+
+    private static var backupURL: URL? {
+        directoryURL?.appendingPathComponent(VaultFileNames.backup)
+    }
+
     static func load() throws -> VaultFile {
-        guard let group = AppGroup.containerURL else {
+        guard let vaultURL, let backupURL else {
             throw VaultStoreLoadError.appGroupUnavailable
         }
-        let dir = group.appendingPathComponent("Keyhole", isDirectory: true)
-        let vaultURL = dir.appendingPathComponent(VaultFileNames.vault)
-        let backupURL = dir.appendingPathComponent(VaultFileNames.backup)
-
         if let file = read(vaultURL) { return file }
         if let file = read(backupURL) { return file }
         throw VaultStoreLoadError.noVault
+    }
+
+    static func save(_ file: VaultFile) throws {
+        guard let directoryURL, let vaultURL, let backupURL else {
+            throw VaultStoreLoadError.appGroupUnavailable
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(file)
+        let fm = FileManager.default
+        try fm.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        if fm.fileExists(atPath: vaultURL.path) {
+            try? fm.removeItem(at: backupURL)
+            try? fm.copyItem(at: vaultURL, to: backupURL)
+        }
+        let temp = directoryURL.appendingPathComponent(".\(VaultFileNames.vault).tmp-\(UUID().uuidString)")
+        try data.write(to: temp, options: .atomic)
+        if fm.fileExists(atPath: vaultURL.path) {
+            try fm.removeItem(at: vaultURL)
+        }
+        try fm.moveItem(at: temp, to: vaultURL)
     }
 
     private static func read(_ url: URL) -> VaultFile? {

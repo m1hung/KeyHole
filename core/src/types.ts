@@ -8,7 +8,7 @@
  */
 
 /** Current version of the decrypted vault model. Bump when `VaultData` changes shape. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Superseded passwords kept per entry, newest first.
@@ -83,6 +83,27 @@ export interface Attachment {
   dataB64: string;
 }
 
+/**
+ * WebAuthn passkey sealed with the entry (P-256 private key + RP metadata).
+ * Created on iOS AutoFill registration; synced so other devices keep the record.
+ */
+export interface PasskeyRecord {
+  id: string;
+  /** Credential ID as standard Base64. */
+  credentialIdB64: string;
+  relyingPartyId: string;
+  relyingPartyName: string;
+  userName: string;
+  userDisplayName: string;
+  /** User handle as standard Base64. */
+  userHandleB64: string;
+  /** P-256 private key raw bytes as standard Base64. */
+  privateKeyB64: string;
+  signCount: number;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface Entry {
   id: string;
   /** Defaults to `login` for vaults created before this field existed. */
@@ -106,6 +127,8 @@ export interface Entry {
   customFields: CustomField[];
   /** Files sealed with the entry. Empty until the attachments UI is used. */
   attachments: Attachment[];
+  /** Passkeys for this login (schema 5). Empty on older entries. */
+  passkeys: PasskeyRecord[];
   createdAt: string;
   updatedAt: string;
   /** Tracked separately from `updatedAt` so the UI can flag stale passwords. */

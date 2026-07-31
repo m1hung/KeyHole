@@ -216,15 +216,10 @@ struct EntryListView: View {
             .scrollContentBackground(.hidden)
         } else {
             List {
-                if let version = session.foreignSchemaVersion {
+                if session.foreignSchemaVersion != nil {
                     Section {
                         Label {
-                            Text(
-                                """
-                                Written by a newer version of Keyhole (vault format \(version)). \
-                                Everything still works and nothing is lost, but newer fields are not shown here.
-                                """
-                            )
+                            Text("This vault was saved with a newer Keyhole. Everything still works.")
                         } icon: {
                             KeyholeIcon(name: .refresh, size: 16)
                         }
@@ -542,6 +537,36 @@ struct EntryDetailView: View {
                             }
                         } header: {
                             KeyholeFieldLabel(text: "URLs")
+                        }
+                        .listRowBackground(KeyholeColors.surface)
+                    }
+
+                    if !entry.passkeys.isEmpty {
+                        Section {
+                            ForEach(entry.passkeys) { pk in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(pk.userName.isEmpty ? pk.relyingPartyId : pk.userName)
+                                        .font(KeyholeFonts.body)
+                                    Text(pk.relyingPartyId)
+                                        .font(KeyholeFonts.meta)
+                                        .foregroundStyle(KeyholeColors.textDim)
+                                    if let last = pk.lastUsedAt {
+                                        Text(KeyholeDateFormat.updatedLabel(last))
+                                            .font(KeyholeFonts.meta)
+                                            .foregroundStyle(KeyholeColors.textDim)
+                                    }
+                                    Button("Remove passkey", role: .destructive) {
+                                        Task {
+                                            await session.mutate { data in
+                                                try removePasskey(data: data, entryId: entry.id, passkeyId: pk.id)
+                                            }
+                                        }
+                                    }
+                                    .font(KeyholeFonts.meta)
+                                }
+                            }
+                        } header: {
+                            KeyholeFieldLabel(text: "Passkeys")
                         }
                         .listRowBackground(KeyholeColors.surface)
                     }

@@ -7,6 +7,13 @@ public enum VaultFileNames {
     public static let fileExtension = ".keyhole.json"
 }
 
+public enum VaultLoadResult: Sendable {
+    case missing
+    case loaded(VaultFile)
+    /// Present on disk but unreadable (and backup also failed).
+    case damaged
+}
+
 /// Atomic sealed-envelope persistence.
 ///
 /// Writes prefer the App Group container so the AutoFill extension can read the
@@ -44,13 +51,17 @@ public final class VaultStore {
 
     public var vaultFileURL: URL { vaultURL }
 
+    public var vaultFileExists: Bool {
+        FileManager.default.fileExists(atPath: vaultURL.path)
+            || FileManager.default.fileExists(atPath: backupURL.path)
+    }
+
     /// Whether AutoFill can see this store (App Group is live).
     public var isSharedWithAutoFill: Bool {
         AppGroup.isAvailable && directory.path.hasPrefix(AppGroup.containerURL?.path ?? "\0")
     }
 
     /// Ensure the sealed vault lives in the App Group when possible.
-    /// Call on launch so AutoFill picks up vaults created before the group was enabled.
     public func syncSharedVaultIfNeeded() {
         let fm = FileManager.default
         let legacyVault = legacyDirectory.appendingPathComponent(VaultFileNames.vault)
@@ -62,7 +73,6 @@ public final class VaultStore {
         let sharedBackup = sharedDir.appendingPathComponent(VaultFileNames.backup)
         try? fm.createDirectory(at: sharedDir, withIntermediateDirectories: true)
 
-        // Prefer copying legacy → shared when shared is empty.
         if !fm.fileExists(atPath: sharedVault.path), fm.fileExists(atPath: legacyVault.path) {
             try? fm.copyItem(at: legacyVault, to: sharedVault)
             if fm.fileExists(atPath: legacyBackup.path), !fm.fileExists(atPath: sharedBackup.path) {
@@ -70,8 +80,6 @@ public final class VaultStore {
             }
         }
 
-        // If we are still pointed at legacy but the group exists, keep shared in sync on next save
-        // via `save` mirroring below. Also copy now if primary is legacy and shared missing.
         if directory.path == legacyDirectory.path,
            fm.fileExists(atPath: vaultURL.path),
            !fm.fileExists(atPath: sharedVault.path) {
@@ -80,43 +88,70 @@ public final class VaultStore {
     }
 
     public func load() -> VaultFile? {
-        syncSharedVaultIfNeeded()
-        if let file = readVault(at: vaultURL) { return file }
-        if let file = readVault(at: backupURL) { return file }
-
-        // Last resort: legacy Application Support (pre-App-Group installs).
-        let legacyVault = legacyDirectory.appendingPathComponent(VaultFileNames.vault)
-        if vaultURL.path != legacyVault.path, let file = readVault(at: legacyVault) {
-            // Opportunistically publish into the active directory / App Group.
-            try? save(file)
-            return file
-        }
+        if case .loaded(let file) = loadResult() { return file }
         return nil
     }
 
-    private func readVault(at url: URL) -> VaultFile? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            return try parseVaultFile(text)
-        } catch {
-            return nil
+    public func loadResult() -> VaultLoadResult {
+        syncSharedVaultIfNeeded()
+
+        let primaryExists = FileManager.default.fileExists(atPath: vaultURL.path)
+        let backupExists = FileManager.default.fileExists(atPath: backupURL.path)
+
+        if let file = try? readVaultThrowing(at: vaultURL) {
+            return .loaded(file)
         }
+        if let file = try? readVaultThrowing(at: backupURL) {
+            // Repair primary from backup when possible.
+            try? save(file)
+            return .loaded(file)
+        }
+
+        let legacyVault = legacyDirectory.appendingPathComponent(VaultFileNames.vault)
+        let legacyBackup = legacyDirectory.appendingPathComponent(VaultFileNames.backup)
+        if vaultURL.path != legacyVault.path {
+            if let file = try? readVaultThrowing(at: legacyVault) {
+                try? save(file)
+                return .loaded(file)
+            }
+            if let file = try? readVaultThrowing(at: legacyBackup) {
+                try? save(file)
+                return .loaded(file)
+            }
+            if FileManager.default.fileExists(atPath: legacyVault.path)
+                || FileManager.default.fileExists(atPath: legacyBackup.path)
+            {
+                return .damaged
+            }
+        }
+
+        if primaryExists || backupExists {
+            return .damaged
+        }
+        return .missing
+    }
+
+    private func readVaultThrowing(at url: URL) throws -> VaultFile {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw KeyholeError.vaultFormat("Missing vault file.")
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        return try parseVaultFile(text)
     }
 
     public func save(_ file: VaultFile) throws {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Compact on-disk form for production I/O; export still pretty-prints.
+        encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(file)
         try writeAtomically(data, to: vaultURL, backup: backupURL, directory: directory)
 
-        // Keep App Group and legacy mirrors aligned so AutoFill and upgrades both work.
         if let group = AppGroup.containerURL {
             let sharedDir = group.appendingPathComponent("Keyhole", isDirectory: true)
             let sharedVault = sharedDir.appendingPathComponent(VaultFileNames.vault)
             let sharedBackup = sharedDir.appendingPathComponent(VaultFileNames.backup)
             if sharedVault.path != vaultURL.path {
-                try? writeAtomically(data, to: sharedVault, backup: sharedBackup, directory: sharedDir)
+                try writeAtomically(data, to: sharedVault, backup: sharedBackup, directory: sharedDir)
             }
         }
         let legacyVault = legacyDirectory.appendingPathComponent(VaultFileNames.vault)
@@ -165,5 +200,36 @@ public final class VaultStore {
             throw KeyholeError.vaultFormat("Not a valid Keyhole vault file: invalid UTF-8")
         }
         return try parseVaultFile(text)
+    }
+
+    public struct AutoFillShareStatus: Equatable {
+        public var appGroupAvailable: Bool
+        public var sharedVaultExists: Bool
+        public var sharedVaultBytes: Int?
+    }
+
+    public func autoFillShareStatus() -> AutoFillShareStatus {
+        guard let group = AppGroup.containerURL else {
+            return AutoFillShareStatus(
+                appGroupAvailable: false,
+                sharedVaultExists: false,
+                sharedVaultBytes: nil
+            )
+        }
+        let sharedVault = group
+            .appendingPathComponent("Keyhole", isDirectory: true)
+            .appendingPathComponent(VaultFileNames.vault)
+        var bytes: Int?
+        if FileManager.default.fileExists(atPath: sharedVault.path),
+           let attrs = try? FileManager.default.attributesOfItem(atPath: sharedVault.path),
+           let size = attrs[.size] as? NSNumber
+        {
+            bytes = size.intValue
+        }
+        return AutoFillShareStatus(
+            appGroupAvailable: true,
+            sharedVaultExists: FileManager.default.fileExists(atPath: sharedVault.path),
+            sharedVaultBytes: bytes
+        )
     }
 }

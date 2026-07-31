@@ -145,7 +145,7 @@ enum BiometricUnlockStore {
         applyAccessGroup(&query)
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
-            throw BiometricUnlockError.keychain("Keychain save failed (\(status)).")
+            throw BiometricUnlockError.keychain("save")
         }
     }
 
@@ -169,7 +169,7 @@ enum BiometricUnlockStore {
                 isEnabled = false
                 throw BiometricUnlockError.notEnabled
             }
-            throw BiometricUnlockError.keychain("Keychain read failed (\(status)).")
+            throw BiometricUnlockError.keychain("read")
         }
         return password
     }
@@ -220,15 +220,15 @@ enum BiometricUnlockError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notEnabled:
-            return "Biometric unlock is not set up. Unlock with your master password first."
+            return "Turn on Face ID or Touch ID in Keyhole Settings first."
         case .unavailable(let detail):
             return detail
         case .cancelled:
-            return "Biometric unlock cancelled."
+            return nil
         case .encoding:
-            return "Could not encode master password for Keychain."
-        case .keychain(let detail):
-            return detail
+            return "Couldn’t save for Face ID / Touch ID."
+        case .keychain:
+            return "Couldn’t save for Face ID / Touch ID."
         }
     }
 }

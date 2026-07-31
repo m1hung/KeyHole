@@ -97,9 +97,12 @@ the toggle off clears it.
 ## AutoFill
 
 The `KeyholeAutoFill` credential provider extension shares the sealed vault via the
-`group.app.keyhole.vault` App Group. Enable it in **Settings → Passwords →
-Password Options → AutoFill Passwords → Keyhole**. Unlock with Face ID / Touch ID
-(if enabled in the app) or the master password — secrets are never cached unlocked.
+`group.app.keyhole.vault` App Group. Every local vault write — including after a
+server sync pull — is mirrored into that group automatically. Enable Keyhole in
+**Settings → Passwords → Password Options → AutoFill Passwords**. Unlock once so
+usernames register for QuickType suggestions above the keyboard. Tapping a
+suggestion still requires Face ID / Touch ID or the master password — secrets are
+never cached unlocked.
 
 Requires an Apple Developer team for App Groups + AutoFill entitlements when
 running on a device.

@@ -34,6 +34,8 @@ struct SettingsView: View {
     @State private var biometricSetupPassword = ""
     @State private var biometricSetupError: String?
     @State private var editingEntry: Entry?
+    @State private var autofillPublishMessage: String?
+    @State private var autofillPublishBusy = false
 
     var body: some View {
         NavigationStack {
@@ -60,38 +62,19 @@ struct SettingsView: View {
                         .onChange(of: biometricUnlockEnabled) { _, enabled in
                             if enabled {
                                 showBiometricSetup = true
-                                // Revert until the password sheet succeeds.
                                 biometricUnlockEnabled = BiometricUnlockStore.isReady
                             } else {
                                 BiometricUnlockStore.disable()
                             }
                         }
-                        Text(
-                            """
-                            Stores your master password in the device Keychain, released only after \
-                            \(BiometricUnlockStore.biometryTypeName). Changing enrolled faces/fingerprints \
-                            invalidates it. Turn off anytime to remove the Keychain item.
-                            """
-                        )
-                        .font(KeyholeFonts.meta)
-                        .foregroundStyle(KeyholeColors.textDim)
                     }
-                    Toggle("Enable breach checking", isOn: $breachCheckEnabled)
+                    Toggle("Check for leaked passwords", isOn: $breachCheckEnabled)
                     if breachCheckEnabled {
-                        Text(
-                            """
-                            Opt-in Have I Been Pwned lookup. Nothing is sent automatically — \
-                            each check requires an explicit tap, and only a 5-character hash prefix \
-                            leaves the device.
-                            """
-                        )
-                        .font(KeyholeFonts.meta)
-                        .foregroundStyle(KeyholeColors.textDim)
                         Button {
                             Task { await runBreachCheck() }
                         } label: {
                             HStack {
-                                Text(breachHits == nil ? "Check passwords" : "Check again")
+                                Text(breachHits == nil ? "Check now" : "Check again")
                                 if breachBusy { ProgressView() }
                             }
                         }
@@ -104,32 +87,41 @@ struct SettingsView: View {
                         if let breachHits {
                             Text(
                                 breachHits.isEmpty
-                                    ? "No breached passwords found among checked logins."
-                                    : "\(breachHits.count) password(s) found in known breaches. Tap to update."
+                                    ? "No leaked passwords found."
+                                    : "\(breachHits.count) leaked — tap to update."
                             )
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.textDim)
                             ForEach(breachHits.prefix(40)) { hit in
-                                Button {
-                                    openEntry(id: hit.entryId)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(hit.title)
-                                                .font(KeyholeFonts.bodySemibold)
-                                                .foregroundStyle(KeyholeColors.text)
-                                            Text("Seen \(hit.count) time(s) in breaches.")
-                                                .font(KeyholeFonts.meta)
-                                                .foregroundStyle(KeyholeColors.danger)
-                                        }
-                                        Spacer(minLength: 0)
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(KeyholeColors.textDim)
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.title)
+                                            .font(KeyholeFonts.bodySemibold)
+                                            .foregroundStyle(KeyholeColors.text)
+                                        Text("Seen in \(hit.count) breach\(hit.count == 1 ? "" : "es")")
+                                            .font(KeyholeFonts.meta)
+                                            .foregroundStyle(KeyholeColors.danger)
                                     }
-                                    .contentShape(Rectangle())
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(KeyholeColors.textDim)
                                 }
-                                .buttonStyle(.plain)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    openEntry(id: hit.entryId)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        Task { await trashHealthEntry(id: hit.entryId) }
+                                    } label: {
+                                        Label {
+                                            Text("Move to Trash")
+                                        } icon: {
+                                            KeyholeIcon(name: .trash, size: 18)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -138,7 +130,7 @@ struct SettingsView: View {
                         Text("Light").tag(ThemePreference.light)
                         Text("Dark").tag(ThemePreference.dark)
                     }
-                    Button("Save preferences") {
+                    Button("Save") {
                         Task { await savePrefs() }
                     }
                     .foregroundStyle(KeyholeColors.accent)
@@ -149,9 +141,9 @@ struct SettingsView: View {
 
                 Section {
                     SecureField("Current", text: $currentPassword)
-                    SecureField("New (≥12 chars)", text: $newPassword)
-                    SecureField("Confirm new", text: $confirmPassword)
-                    Button("Change master password") {
+                    SecureField("New (12+ characters)", text: $newPassword)
+                    SecureField("Confirm", text: $confirmPassword)
+                    Button("Change password") {
                         Task { await changePassword() }
                     }
                     .disabled(newPassword.count < MIN_MASTER_PASSWORD_LENGTH || newPassword != confirmPassword)
@@ -165,119 +157,109 @@ struct SettingsView: View {
                     if let report = healthReport {
                         Text(
                             report.issues.isEmpty
-                                ? "Checked \(report.loginCount) logins — no issues found."
-                                : "Checked \(report.loginCount) logins — \(report.issues.count) finding(s)."
+                                ? "Looking good — no issues."
+                                : "\(report.issues.count) issue\(report.issues.count == 1 ? "" : "s") found."
                         )
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
 
                         ForEach(report.issues.prefix(40)) { issue in
-                            Button {
-                                openEntry(id: issue.entryId)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(issue.kind.rawValue.uppercased()) · \(issue.title)")
-                                            .font(KeyholeFonts.bodySemibold)
-                                            .foregroundStyle(KeyholeColors.text)
-                                        Text(issue.detail)
-                                            .font(KeyholeFonts.meta)
-                                            .foregroundStyle(KeyholeColors.textDim)
-                                    }
-                                    Spacer(minLength: 0)
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption.weight(.semibold))
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(issue.kind.displayLabel) · \(issue.title)")
+                                        .font(KeyholeFonts.bodySemibold)
+                                        .foregroundStyle(KeyholeColors.text)
+                                    Text(issue.detail)
+                                        .font(KeyholeFonts.meta)
                                         .foregroundStyle(KeyholeColors.textDim)
                                 }
-                                .contentShape(Rectangle())
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(KeyholeColors.textDim)
                             }
-                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                openEntry(id: issue.entryId)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    Task { await trashHealthEntry(id: issue.entryId) }
+                                } label: {
+                                    Label {
+                                        Text("Move to Trash")
+                                    } icon: {
+                                        KeyholeIcon(name: .trash, size: 18)
+                                    }
+                                }
+                            }
                         }
                     }
-                    Button(healthReport == nil ? "Check vault" : "Check again") {
+                    Button(healthReport == nil ? "Scan passwords" : "Scan again") {
                         healthReport = session.data.map { analyzeVaultHealth($0) }
                         session.registerActivity()
                     }
                     .foregroundStyle(KeyholeColors.accent)
                 } header: {
-                    KeyholeFieldLabel(text: "Vault health")
+                    KeyholeFieldLabel(text: "Password check")
                 }
                 .listRowBackground(KeyholeColors.surface)
 
                 Section {
-                    if let url = session.exportVault().map({ _ in VaultStore.shared.vaultFileURL }) {
-                        Text(url.path)
-                            .font(KeyholeFonts.meta)
-                            .foregroundStyle(KeyholeColors.textDim)
-                    }
-                    Button("Export vault…") {
+                    Button("Export backup…") {
                         Task { await prepareExport() }
                     }
-                    Button("Import vault…") { showImporter = true }
+                    Button("Import backup…") { showImporter = true }
                     Button("Lock now") { session.lock() }
-                    Button("Delete vault from this device", role: .destructive) {
+                    Button("Delete vault", role: .destructive) {
                         confirmReset = true
                     }
                 } header: {
-                    KeyholeFieldLabel(text: "Vault file")
+                    KeyholeFieldLabel(text: "Backup")
                 }
                 .listRowBackground(KeyholeColors.surface)
 
                 Section {
-                    Text(
-                        """
-                        Keyhole can fill usernames and passwords in Safari and apps. \
-                        After installing, enable it in iOS Settings:
-                        """
-                    )
-                    .font(KeyholeFonts.meta)
-                    .foregroundStyle(KeyholeColors.textDim)
-                    Text("Settings → General → AutoFill & Passwords → Keyhole")
+                    Text("Fill passwords and passkeys in apps and Safari. Turn on Keyhole in iPhone Settings:")
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                    Text("Settings → AutoFill & Passwords → Keyhole")
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.accent)
                     if VaultStore.shared.isSharedWithAutoFill {
-                        Label("Vault is shared with AutoFill", systemImage: "checkmark.circle.fill")
+                        Label("Ready", systemImage: "checkmark.circle.fill")
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.ok)
                     } else {
-                        Text(
-                            """
-                            App Group is not available for this build — AutoFill cannot see your vault. \
-                            In Xcode: Signing & Capabilities → App Groups → enable \
-                            group.app.keyhole.vault on both KeyholeApp and KeyholeAutoFill, then rebuild \
-                            and open Keyhole once.
-                            """
-                        )
-                        .font(KeyholeFonts.meta)
-                        .foregroundStyle(KeyholeColors.warn)
+                        Text("AutoFill isn’t available. Reinstall Keyhole and try again.")
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.warn)
                     }
-                    Text(
-                        """
-                        When a login form appears, choose Keyhole from the QuickType bar, \
-                        unlock with your master password, and pick a matching entry. \
-                        The vault stays sealed; AutoFill never keeps your master password.
-                        """
-                    )
-                    .font(KeyholeFonts.meta)
-                    .foregroundStyle(KeyholeColors.textDim)
-                    Button("Open AutoFill & Passwords") {
+                    Button("Open iPhone Settings") {
                         openAutoFillPasswordsSettings()
                     }
                     .foregroundStyle(KeyholeColors.accent)
-                    Button("Publish vault for AutoFill") {
-                        VaultStore.shared.syncSharedVaultIfNeeded()
-                        if let file = session.exportVault() {
-                            Task {
-                                do {
-                                    try VaultStore.shared.save(file)
-                                    session.errorMessage = nil
-                                } catch {
-                                    session.errorMessage = error.localizedDescription
-                                }
-                            }
+                    Button {
+                        Task { await refreshAutoFillStatus() }
+                    } label: {
+                        HStack {
+                            Text("Check status")
+                            if autofillPublishBusy { ProgressView() }
                         }
                     }
+                    .disabled(autofillPublishBusy)
                     .foregroundStyle(KeyholeColors.accent)
+                    if let autofillPublishMessage {
+                        Text(autofillPublishMessage)
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(
+                                autofillPublishMessage.localizedCaseInsensitiveContains("can’t")
+                                    || autofillPublishMessage.localizedCaseInsensitiveContains("couldn’t")
+                                    || autofillPublishMessage.localizedCaseInsensitiveContains("unavailable")
+                                ? KeyholeColors.warn
+                                : KeyholeColors.ok
+                            )
+                    }
                 } header: {
                     KeyholeFieldLabel(text: "AutoFill")
                 }
@@ -331,7 +313,7 @@ struct SettingsView: View {
                     Task { await session.deleteVault() }
                 }
             } message: {
-                Text("This removes the sealed vault file from this device. Export a backup first if you need it.")
+                Text("This deletes your vault from this iPhone. Export a backup first if you need it.")
             }
             .sheet(isPresented: $showBiometricSetup) {
                 NavigationStack {
@@ -345,7 +327,7 @@ struct SettingsView: View {
                                     .foregroundStyle(KeyholeColors.danger)
                             }
                         } footer: {
-                            Text("Confirm your master password to store it in the Keychain for \(BiometricUnlockStore.biometryTypeName).")
+                            Text("Confirm your password to turn on \(BiometricUnlockStore.biometryTypeName).")
                         }
                     }
                     .navigationTitle(BiometricUnlockStore.biometryTypeName)
@@ -391,6 +373,18 @@ struct SettingsView: View {
         else { return }
         editingEntry = entry
         session.registerActivity()
+    }
+
+    private func trashHealthEntry(id: String) async {
+        await session.mutate { try deleteEntry(data: $0, id: id) }
+        session.registerActivity()
+        guard let data = session.data else {
+            healthReport = nil
+            return
+        }
+        healthReport = analyzeVaultHealth(data)
+        let liveIds = Set(liveEntries(data).map(\.id))
+        breachHits = breachHits?.filter { liveIds.contains($0.entryId) }
     }
 
     private func enableBiometrics() async {
@@ -460,6 +454,13 @@ struct SettingsView: View {
             }
         }
         attempt(0)
+    }
+
+    private func refreshAutoFillStatus() async {
+        autofillPublishBusy = true
+        defer { autofillPublishBusy = false }
+        autofillPublishMessage = await session.autoFillSyncStatus()
+        session.registerActivity()
     }
 
     private func savePrefs() async {
@@ -562,9 +563,9 @@ struct SyncSettingsSection: View {
             TextField("Server URL", text: $syncBaseUrl)
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)
-            TextField("Account id", text: $syncAccountId)
+            TextField("Account", text: $syncAccountId)
                 .textInputAutocapitalization(.never)
-            SecureField("Master password (for sync auth)", text: $syncPassword)
+            SecureField("Master password", text: $syncPassword)
             if syncBusy {
                 HStack {
                     ProgressView()
@@ -578,11 +579,11 @@ struct SyncSettingsSection: View {
                     .font(KeyholeFonts.meta)
                     .foregroundStyle(KeyholeColors.textDim)
             }
-            Button("Save sync settings") {
+            Button("Save") {
                 let cfg = SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: syncAccountId)
                 cfg.save()
                 session.syncConfig = cfg
-                syncMessage = "Sync settings saved (auth secret is never persisted)."
+                syncMessage = "Saved."
                 session.registerActivity()
             }
             Button("Test connection") {
@@ -590,12 +591,12 @@ struct SyncSettingsSection: View {
                     syncBusy = true
                     defer { syncBusy = false }
                     let ok = await SyncClient.healthCheck(baseUrl: syncBaseUrl)
-                    syncMessage = ok ? "Server healthy." : "Server unreachable."
+                    syncMessage = ok ? "Connected." : "Couldn’t reach the server."
                     session.registerActivity()
                 }
             }
             .disabled(syncBusy || syncBaseUrl.isEmpty)
-            Button("Register & upload") {
+            Button("Set up on this server") {
                 Task { await registerUpload() }
             }
             .disabled(syncBusy)
@@ -604,29 +605,29 @@ struct SyncSettingsSection: View {
             }
             .disabled(syncBusy)
             if vaultMismatch {
-                Text("This account already has a different vault on the server. Pick one:")
+                Text("This account already has a different vault. Choose one:")
                     .font(KeyholeFonts.meta)
                     .foregroundStyle(KeyholeColors.warn)
                     .padding(.vertical, 4)
-                Button("Use server vault here") {
+                Button("Use server vault") {
                     Task { await adoptRemote() }
                 }
                 .disabled(syncBusy || syncPassword.isEmpty)
-                Button("Overwrite server with this device", role: .destructive) {
+                Button("Replace server vault", role: .destructive) {
                     Task { await overwriteRemote() }
                 }
                 .disabled(syncBusy || syncPassword.isEmpty)
             }
-            Button("Clear sync settings", role: .destructive) {
+            Button("Turn off sync", role: .destructive) {
                 SyncConfigPrefs.clear()
                 session.syncConfig = nil
                 syncBaseUrl = ""
                 syncAccountId = ""
-                syncMessage = "Cleared."
+                syncMessage = "Sync turned off."
                 vaultMismatch = false
             }
         } header: {
-            KeyholeFieldLabel(text: "Sync (optional)")
+            KeyholeFieldLabel(text: "Sync")
         }
         .listRowBackground(KeyholeColors.surface)
     }
@@ -635,7 +636,7 @@ struct SyncSettingsSection: View {
         syncBusy = true
         defer { syncBusy = false }
         guard let file = session.exportVault() else {
-            syncMessage = "No vault file."
+            syncMessage = "No vault on this device."
             return
         }
         do {
@@ -649,7 +650,7 @@ struct SyncSettingsSection: View {
             let cfg = SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: result.accountId)
             cfg.save()
             session.syncConfig = cfg
-            syncMessage = "Registered. Server version \(result.version)."
+            syncMessage = "Set up. You’re ready to sync."
             syncPassword = ""
             session.registerActivity()
         } catch {
@@ -663,13 +664,13 @@ struct SyncSettingsSection: View {
         guard session.exportVault() != nil,
               session.syncConfig != nil || (!syncBaseUrl.isEmpty && !syncAccountId.isEmpty)
         else {
-            syncMessage = "Configure sync first."
+            syncMessage = "Add your sync settings first."
             return
         }
         let cfg = session.syncConfig ?? SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: syncAccountId)
         do {
             if syncPassword.isEmpty, session.getSyncAuthSecret() == nil {
-                syncMessage = "Enter your master password once this session to enable sync."
+                syncMessage = "Enter your master password to sync."
                 return
             }
             let message = try await session.syncNow(
@@ -694,11 +695,11 @@ struct SyncSettingsSection: View {
         defer { syncBusy = false }
         let cfg = session.syncConfig ?? SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: syncAccountId)
         guard !cfg.baseUrl.isEmpty, !cfg.accountId.isEmpty else {
-            syncMessage = "Configure sync first."
+            syncMessage = "Add your sync settings first."
             return
         }
         guard !syncPassword.isEmpty else {
-            syncMessage = "Enter your master password to adopt the server vault."
+            syncMessage = "Enter your master password to use the server vault."
             return
         }
         do {
@@ -721,11 +722,11 @@ struct SyncSettingsSection: View {
         defer { syncBusy = false }
         let cfg = session.syncConfig ?? SyncConfigPrefs(baseUrl: syncBaseUrl, accountId: syncAccountId)
         guard !cfg.baseUrl.isEmpty, !cfg.accountId.isEmpty else {
-            syncMessage = "Configure sync first."
+            syncMessage = "Add your sync settings first."
             return
         }
         guard !syncPassword.isEmpty else {
-            syncMessage = "Enter your master password to overwrite the server vault."
+            syncMessage = "Enter your master password to replace the server vault."
             return
         }
         do {

@@ -108,7 +108,7 @@ final class SyncMergeTests: XCTestCase {
 
     func testPropagatesDeletion() throws {
         let created = try createEntry(data: emptyVaultData(), input: EntryInput(title: "Retired"))
-        let deleted = try deleteEntry(data: created.data, id: created.entry.id)
+        let deleted = try purgeEntry(data: created.data, id: created.entry.id)
         XCTAssertEqual(mergeVaultData(deleted, created.data).data.entries.count, 0)
         XCTAssertEqual(mergeVaultData(created.data, deleted).data.entries.count, 0)
     }
@@ -141,7 +141,7 @@ final class SyncMergeTests: XCTestCase {
 
     func testTombstoneExpiry() throws {
         let created = try createEntry(data: emptyVaultData(), input: EntryInput(title: "Ancient"))
-        let deleted = try deleteEntry(data: created.data, id: created.entry.id)
+        let deleted = try purgeEntry(data: created.data, id: created.entry.id)
         let dayMs = 24.0 * 60 * 60 * 1000
         let wayLater = Date().timeIntervalSince1970 * 1000 + Double(TOMBSTONE_TTL_DAYS + 1) * dayMs
         let merged = mergeVaultData(deleted, deleted, nowMs: wayLater).data
@@ -155,7 +155,7 @@ final class SyncMergeTests: XCTestCase {
             data: withTimes(seeded.data, id: seed.entry.id, updatedAt: "2026-03-01T00:00:00.000Z"),
             input: EntryInput(title: "A only")
         ).data
-        let deviceB = try deleteEntry(
+        let deviceB = try purgeEntry(
             data: try createEntry(data: seeded.data, input: EntryInput(title: "B only")).data,
             id: seeded.entry.id
         )
@@ -321,10 +321,7 @@ final class PayloadInteropTests: XCTestCase {
     /// or syncing through this device destroys what another surface wrote.
     func testUnknownEntryFieldsSurviveARoundTrip() throws {
         let extras: [String: JSONValue] = [
-            "history": .array([
-                .object(["password": .string("previous-one"), "changedAt": .string("2025-06-01T00:00:00.000Z")])
-            ]),
-            "deletedAt": .null,
+            "futureField": .string("keep-me"),
             "someCount": .int(7),
         ]
         let encoded = try JSONEncoder().encode(sampleEntry(extras: extras))
@@ -336,7 +333,7 @@ final class PayloadInteropTests: XCTestCase {
         // And again, to prove re-encoding does not drop them.
         let reEncoded = try JSONEncoder().encode(decoded)
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: reEncoded) as? [String: Any])
-        XCTAssertNotNil(json["history"])
+        XCTAssertEqual(json["futureField"] as? String, "keep-me")
         XCTAssertEqual(json["someCount"] as? Int, 7, "an integer must not come back as 7.0")
     }
 

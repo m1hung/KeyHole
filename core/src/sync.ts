@@ -22,6 +22,7 @@ import {
   SCHEMA_VERSION,
   type Entry,
   type Folder,
+  type PasskeyRecord,
   type PasswordHistoryEntry,
   type Tombstone,
   type VaultData,
@@ -82,6 +83,32 @@ function mergeHistory(
   }
   merged.sort((x, y) => time(y.changedAt) - time(x.changedAt));
   return merged.slice(0, PASSWORD_HISTORY_LIMIT);
+}
+
+/** Union passkeys by credential id; prefer higher sign count. */
+function mergePasskeys(a: readonly PasskeyRecord[], b: readonly PasskeyRecord[]): PasskeyRecord[] {
+  const byCred = new Map<string, PasskeyRecord>();
+  for (const row of [...a, ...b]) {
+    const existing = byCred.get(row.credentialIdB64);
+    if (!existing) {
+      byCred.set(row.credentialIdB64, row);
+      continue;
+    }
+    if (row.signCount > existing.signCount) {
+      byCred.set(row.credentialIdB64, row);
+    } else if (row.signCount === existing.signCount) {
+      const rowUsed = time(row.lastUsedAt ?? row.createdAt);
+      const existingUsed = time(existing.lastUsedAt ?? existing.createdAt);
+      if (rowUsed > existingUsed) {
+        byCred.set(row.credentialIdB64, row);
+      } else if (rowUsed === existingUsed) {
+        byCred.set(row.credentialIdB64, breakTie(existing, row));
+      }
+    }
+  }
+  return [...byCred.values()].sort((x, y) =>
+    x.credentialIdB64 < y.credentialIdB64 ? -1 : x.credentialIdB64 > y.credentialIdB64 ? 1 : 0,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +180,11 @@ export function mergeVaultData(a: VaultData, b: VaultData, nowMs: number = Date.
     // log, and the two sides hold different parts of it. Rotate a password on the
     // phone and again on the desktop, and whole-entry LWW keeps one row and drops
     // the other, destroying exactly the old password this feature exists to keep.
-    entryById.set(entry.id, { ...winner, history: mergeHistory(existing.history, entry.history) });
+    entryById.set(entry.id, {
+      ...winner,
+      history: mergeHistory(existing.history, entry.history),
+      passkeys: mergePasskeys(existing.passkeys ?? [], entry.passkeys ?? []),
+    });
   }
 
   let entriesDeleted = 0;

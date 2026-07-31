@@ -12,6 +12,16 @@ public enum HealthIssueKind: String, Sendable, Equatable {
     case stale
     case empty
     case noUsername = "no username"
+
+    public var displayLabel: String {
+        switch self {
+        case .reused: return "Reused"
+        case .weak: return "Weak"
+        case .stale: return "Old"
+        case .empty: return "Empty"
+        case .noUsername: return "No username"
+        }
+    }
 }
 
 public struct HealthIssue: Sendable, Equatable, Identifiable {
@@ -106,7 +116,7 @@ public func analyzeVaultHealth(_ data: VaultData, now: Date = Date()) -> VaultHe
                     kind: .weak,
                     entryId: entry.id,
                     title: entry.title,
-                    detail: "Password looks \(strength.label) (~\(strength.bits) bits)."
+                    detail: "Password looks \(strength.label)."
                 )
             )
         }

@@ -7,6 +7,7 @@ public enum VaultStatus: String, Sendable {
     case noVault = "no-vault"
     case locked
     case unlocked
+    case damaged
 }
 
 @MainActor
@@ -44,8 +45,18 @@ public final class AppVaultSession {
 
     public func bootstrap() {
         store.syncSharedVaultIfNeeded()
-        file = store.load()
-        status = file == nil ? .noVault : .locked
+        switch store.loadResult() {
+        case .missing:
+            file = nil
+            status = .noVault
+        case .loaded(let vault):
+            file = vault
+            status = .locked
+        case .damaged:
+            file = nil
+            status = .damaged
+            errorMessage = "Your vault file can’t be read. Import a backup, or delete it and create a new vault."
+        }
     }
 
     public var isUnlocked: Bool { status == .unlocked }
@@ -74,10 +85,15 @@ public final class AppVaultSession {
             data = result.session.data
             status = .unlocked
             if BiometricUnlockStore.isEnabled {
-                try? BiometricUnlockStore.enable(storing: masterPassword)
+                do {
+                    try BiometricUnlockStore.enable(storing: masterPassword)
+                } catch {
+                    BiometricUnlockStore.disable()
+                }
             }
             registerActivity()
             startAutoLockTimer()
+            await publishQuickTypeIdentities()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -88,7 +104,7 @@ public final class AppVaultSession {
         errorMessage = nil
         defer { busy = false }
         guard let file else {
-            status = .noVault
+            status = store.vaultFileExists ? .damaged : .noVault
             return
         }
         do {
@@ -100,15 +116,17 @@ public final class AppVaultSession {
             let swept = purgeExpiredTrash(data: unlocked.data)
             if swept != unlocked.data {
                 unlocked.data = swept
-                let saved = try saveVault(session: &unlocked, previous: file)
+                let previous = file
+                let saved = try await Task.detached(priority: .userInitiated) {
+                    var session = unlocked
+                    return try saveVault(session: &session, previous: previous)
+                }.value
                 try store.save(saved)
                 self.file = saved
             }
             session = unlocked
             data = unlocked.data
             status = .unlocked
-            // Derive sync auth if sync configured (single Argon2 run already done for unlock —
-            // derive separately only when needed for sync).
             if let cfg = syncConfig {
                 syncAuthSecretB64 = try? await Task.detached(priority: .userInitiated) {
                     try KeyholeCrypto.deriveSyncAuthSecret(masterPassword: masterPassword, params: file.kdf)
@@ -116,10 +134,15 @@ public final class AppVaultSession {
                 _ = cfg
             }
             if BiometricUnlockStore.isEnabled {
-                try? BiometricUnlockStore.enable(storing: masterPassword)
+                do {
+                    try BiometricUnlockStore.enable(storing: masterPassword)
+                } catch {
+                    BiometricUnlockStore.disable()
+                }
             }
             registerActivity()
             startAutoLockTimer()
+            await publishQuickTypeIdentities()
         } catch {
             session = nil
             data = nil
@@ -151,11 +174,31 @@ public final class AppVaultSession {
         secondsUntilLock = nil
         autoLockTimer?.invalidate()
         autoLockTimer = nil
-        status = file != nil || store.load() != nil ? .locked : .noVault
-        if file == nil {
-            file = store.load()
-            status = file == nil ? .noVault : .locked
+        if file != nil {
+            status = .locked
+            return
         }
+        switch store.loadResult() {
+        case .missing:
+            status = .noVault
+        case .loaded(let vault):
+            file = vault
+            status = .locked
+        case .damaged:
+            status = .damaged
+        }
+    }
+
+    /// Fingerprint of login usernames/URLs/passkeys for QuickType republish decisions.
+    private func loginIdentityFingerprint(_ data: VaultData) -> String {
+        liveEntries(data)
+            .filter { $0.kind == .login || !$0.passkeys.isEmpty }
+            .map {
+                let pks = $0.passkeys.map(\.credentialIdB64).sorted().joined(separator: ",")
+                return "\($0.id)|\($0.username)|\($0.urls.joined(separator: ","))|\(pks)"
+            }
+            .sorted()
+            .joined(separator: "\n")
     }
 
     public func mutate(_ recipe: (VaultData) throws -> VaultData) async {
@@ -167,13 +210,21 @@ public final class AppVaultSession {
         errorMessage = nil
         defer { busy = false }
         do {
+            let beforeIds = loginIdentityFingerprint(sess.data)
             sess.data = try recipe(sess.data)
-            let saved = try saveVault(session: &sess, previous: previous)
+            let afterIds = loginIdentityFingerprint(sess.data)
+            let saved = try await Task.detached(priority: .userInitiated) {
+                var session = sess
+                return try saveVault(session: &session, previous: previous)
+            }.value
             try store.save(saved)
             session = sess
             file = saved
             data = sess.data
             registerActivity()
+            if beforeIds != afterIds {
+                await publishQuickTypeIdentities()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -198,9 +249,15 @@ public final class AppVaultSession {
             data = result.session.data
             syncAuthSecretB64 = nil
             if BiometricUnlockStore.isEnabled {
-                try? BiometricUnlockStore.updateStoredPassword(next)
+                do {
+                    try BiometricUnlockStore.updateStoredPassword(next)
+                } catch {
+                    BiometricUnlockStore.disable()
+                    errorMessage = "Password changed, but Face ID needs to be turned on again in Settings."
+                }
             }
             registerActivity()
+            await publishQuickTypeIdentities()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -214,6 +271,7 @@ public final class AppVaultSession {
             try store.save(imported)
             file = imported
             BiometricUnlockStore.disable()
+            await QuickTypeCredentialStore.clear()
             lock()
             status = .locked
         } catch {
@@ -233,6 +291,7 @@ public final class AppVaultSession {
             data = nil
             syncAuthSecretB64 = nil
             BiometricUnlockStore.disable()
+            await QuickTypeCredentialStore.clear()
             status = .noVault
         } catch {
             errorMessage = error.localizedDescription
@@ -261,6 +320,7 @@ public final class AppVaultSession {
         self.session = session
         self.data = session.data
         registerActivity()
+        await publishQuickTypeIdentities()
     }
 
     public func syncNow(
@@ -300,6 +360,7 @@ public final class AppVaultSession {
         session = result.session
         data = result.session.data
         registerActivity()
+        await publishQuickTypeIdentities()
         return result.message
     }
 
@@ -323,6 +384,7 @@ public final class AppVaultSession {
         cfg.save()
         syncConfig = cfg
         registerActivity()
+        await publishQuickTypeIdentities()
         return result.message
     }
 
@@ -381,6 +443,54 @@ public final class AppVaultSession {
 
     private func refreshAutoLockCountdown() {
         tickAutoLock()
+    }
+
+    /// Push username/site identities into the system QuickType store (no passwords).
+    @discardableResult
+    func publishQuickTypeIdentities() async -> QuickTypeCredentialStore.PublishResult {
+        guard let data else {
+            return QuickTypeCredentialStore.PublishResult(
+                enabled: false,
+                count: 0,
+                errorMessage: "Unlock to refresh keyboard suggestions."
+            )
+        }
+        return await QuickTypeCredentialStore.publish(from: data)
+    }
+
+    /// Status of AutoFill readiness (local only — not the sync server).
+    public func autoFillSyncStatus() async -> String {
+        store.syncSharedVaultIfNeeded()
+        let shared = store.autoFillShareStatus()
+        var lines: [String] = []
+        if shared.appGroupAvailable {
+            if shared.sharedVaultExists {
+                lines.append("AutoFill is up to date.")
+            } else if let file {
+                do {
+                    try store.save(file)
+                    lines.append("AutoFill is up to date.")
+                } catch {
+                    lines.append("Couldn’t update AutoFill.")
+                }
+            } else {
+                lines.append("No vault yet.")
+            }
+        } else {
+            lines.append("AutoFill isn’t available on this install.")
+        }
+
+        if data != nil {
+            let quick = await publishQuickTypeIdentities()
+            if let err = quick.errorMessage {
+                lines.append(err)
+            } else {
+                lines.append("\(quick.count) keyboard suggestion\(quick.count == 1 ? "" : "s").")
+            }
+        } else {
+            lines.append("Unlock to refresh keyboard suggestions.")
+        }
+        return lines.joined(separator: " ")
     }
 }
 

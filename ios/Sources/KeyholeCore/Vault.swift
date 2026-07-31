@@ -85,7 +85,7 @@ enum VaultJSON {
     }
 }
 
-private func nowISO() -> String {
+public func nowISO() -> String {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return f.string(from: Date())
@@ -374,6 +374,7 @@ public func createEntry(data: VaultData, input: EntryInput) throws -> (data: Vau
         totpConfig: input.totpConfig,
         customFields: input.customFields ?? [],
         attachments: input.attachments ?? [],
+        passkeys: [],
         createdAt: timestamp,
         updatedAt: timestamp,
         passwordUpdatedAt: timestamp,
@@ -484,6 +485,138 @@ private func rememberPassword(
     }
     let next = [PasswordHistoryEntry(password: previousPassword, changedAt: changedAt)] + withoutDuplicate
     return Array(next.prefix(PASSWORD_HISTORY_LIMIT))
+}
+
+// MARK: - Passkeys
+
+/// Live passkeys whose relying party matches `rpId` (exact, case-insensitive).
+public func findPasskeys(forRelyingParty rpId: String, in data: VaultData) -> [(entry: Entry, passkey: PasskeyRecord)] {
+    let needle = rpId.lowercased()
+    var out: [(Entry, PasskeyRecord)] = []
+    for entry in liveEntries(data) {
+        for pk in entry.passkeys where pk.relyingPartyId.lowercased() == needle {
+            out.append((entry, pk))
+        }
+    }
+    return out
+}
+
+/// Locate a passkey by credential ID bytes (Base64 comparison).
+public func findPasskey(
+    credentialId: Data,
+    in data: VaultData
+) -> (entry: Entry, passkey: PasskeyRecord)? {
+    let b64 = credentialId.base64EncodedString()
+    for entry in liveEntries(data) {
+        if let pk = entry.passkeys.first(where: { $0.credentialIdB64 == b64 }) {
+            return (entry, pk)
+        }
+    }
+    return nil
+}
+
+/// Append a passkey to an existing login, or create a new login for the RP.
+public func storePasskey(
+    data: VaultData,
+    record: PasskeyRecord,
+    preferredEntryId: String? = nil
+) throws -> (data: VaultData, entry: Entry) {
+    let rp = record.relyingPartyId.lowercased()
+    let timestamp = nowISO()
+
+    if let preferredEntryId,
+       let index = data.entries.firstIndex(where: { $0.id == preferredEntryId && $0.deletedAt == nil })
+    {
+        var next = data
+        var entry = next.entries[index]
+        entry.passkeys.append(record)
+        entry.updatedAt = timestamp
+        next.entries[index] = entry
+        return (next, entry)
+    }
+
+    if let index = data.entries.firstIndex(where: { entry in
+        entry.deletedAt == nil
+            && entry.kind == .login
+            && (
+                entry.passkeys.contains { $0.relyingPartyId.lowercased() == rp }
+                    || entry.urls.contains { url in
+                        let withScheme = url.contains("://") ? url : "https://\(url)"
+                        guard let host = URL(string: withScheme)?.host?.lowercased() else { return false }
+                        return host == rp || host.hasSuffix(".\(rp)") || host == "www.\(rp)"
+                    }
+            )
+    }) {
+        var next = data
+        var entry = next.entries[index]
+        entry.passkeys.append(record)
+        if entry.username.isEmpty, !record.userName.isEmpty {
+            entry.username = record.userName
+        }
+        entry.updatedAt = timestamp
+        next.entries[index] = entry
+        return (next, entry)
+    }
+
+    let title = record.userDisplayName.isEmpty
+        ? (record.userName.isEmpty ? record.relyingPartyId : record.userName)
+        : record.userDisplayName
+    let created = try createEntry(
+        data: data,
+        input: EntryInput(
+            title: title,
+            kind: .login,
+            username: record.userName,
+            urls: ["https://\(record.relyingPartyId)"]
+        )
+    )
+    var next = created.data
+    guard let index = next.entries.firstIndex(where: { $0.id == created.entry.id }) else {
+        return created
+    }
+    var entry = next.entries[index]
+    entry.passkeys = [record]
+    entry.updatedAt = timestamp
+    next.entries[index] = entry
+    return (next, entry)
+}
+
+public func updatePasskeySignCount(
+    data: VaultData,
+    entryId: String,
+    passkeyId: String,
+    signCount: UInt32,
+    lastUsedAt: String
+) throws -> VaultData {
+    guard let index = data.entries.firstIndex(where: { $0.id == entryId }) else {
+        throw KeyholeError.validation("No entry with id \(entryId).")
+    }
+    var next = data
+    var entry = next.entries[index]
+    guard let pkIndex = entry.passkeys.firstIndex(where: { $0.id == passkeyId }) else {
+        throw KeyholeError.validation("No passkey with id \(passkeyId).")
+    }
+    entry.passkeys[pkIndex].signCount = signCount
+    entry.passkeys[pkIndex].lastUsedAt = lastUsedAt
+    entry.updatedAt = lastUsedAt
+    next.entries[index] = entry
+    return next
+}
+
+public func removePasskey(data: VaultData, entryId: String, passkeyId: String) throws -> VaultData {
+    guard let index = data.entries.firstIndex(where: { $0.id == entryId }) else {
+        throw KeyholeError.validation("No entry with id \(entryId).")
+    }
+    var next = data
+    var entry = next.entries[index]
+    let before = entry.passkeys.count
+    entry.passkeys.removeAll { $0.id == passkeyId }
+    guard entry.passkeys.count < before else {
+        throw KeyholeError.validation("No passkey with id \(passkeyId).")
+    }
+    entry.updatedAt = nowISO()
+    next.entries[index] = entry
+    return next
 }
 
 /// Move an entry to the trash. Reversible with `restoreEntry`; mirrors

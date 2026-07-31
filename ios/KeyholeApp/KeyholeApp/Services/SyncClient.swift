@@ -41,8 +41,22 @@ public enum SyncClient {
         baseUrl.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
     }
 
+    private static func makeURL(_ string: String) throws -> URL {
+        guard let url = URL(string: string), url.scheme != nil, url.host != nil else {
+            throw SyncClientError("Enter a valid server address.", status: 400)
+        }
+        return url
+    }
+
+    private static func httpResponse(from response: URLResponse) throws -> HTTPURLResponse {
+        guard let http = response as? HTTPURLResponse else {
+            throw SyncClientError("Unexpected server response.", status: 0)
+        }
+        return http
+    }
+
     public static func healthCheck(baseUrl: String) async -> Bool {
-        guard let url = URL(string: "\(root(baseUrl))/api/v1/health") else { return false }
+        guard let url = try? makeURL("\(root(baseUrl))/api/v1/health") else { return false }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
@@ -54,13 +68,18 @@ public enum SyncClient {
     }
 
     public static func fetchPrelogin(baseUrl: String, accountId: String) async throws -> KdfParams {
-        var components = URLComponents(string: "\(root(baseUrl))/api/v1/prelogin")!
+        guard var components = URLComponents(string: "\(root(baseUrl))/api/v1/prelogin") else {
+            throw SyncClientError("Enter a valid server address.", status: 400)
+        }
         components.queryItems = [URLQueryItem(name: "account", value: accountId)]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
-        let http = response as! HTTPURLResponse
+        guard let url = components.url else {
+            throw SyncClientError("Enter a valid server address.", status: 400)
+        }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let http = try httpResponse(from: response)
         let body = try? JSONDecoder().decode(PreloginBody.self, from: data)
         guard http.statusCode == 200, let kdf = body?.kdf else {
-            throw SyncClientError(body?.error ?? "Prelogin failed.", status: http.statusCode)
+            throw SyncClientError(body?.error ?? "Couldn’t reach the sync server.", status: http.statusCode)
         }
         try KeyholeCrypto.assertKdfParamsAcceptable(kdf)
         return kdf
@@ -78,14 +97,14 @@ public enum SyncClient {
         authSecretB64: String,
         envelope: VaultFile
     ) async throws -> RegisterResult {
-        let url = URL(string: "\(root(baseUrl))/api/v1/account")!
+        let url = try makeURL("\(root(baseUrl))/api/v1/account")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let payload = RegisterBody(accountId: accountId, authSecret: authSecretB64, envelope: envelope)
         req.httpBody = try JSONEncoder().encode(payload)
         let (data, response) = try await URLSession.shared.data(for: req)
-        let http = response as! HTTPURLResponse
+        let http = try httpResponse(from: response)
         if http.statusCode == 409 {
             let err = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
             throw SyncClientError(err ?? "That account already exists.", status: 409)
@@ -108,17 +127,17 @@ public enum SyncClient {
         accountId: String,
         syncAuthSecretB64: String
     ) async throws -> VaultRemote {
-        let url = URL(string: "\(root(baseUrl))/api/v1/vault")!
+        let url = try makeURL("\(root(baseUrl))/api/v1/vault")
         var req = URLRequest(url: url)
         req.setValue(authHeader(accountId: accountId, syncAuthSecretB64: syncAuthSecretB64), forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: req)
-        let http = response as! HTTPURLResponse
+        let http = try httpResponse(from: response)
         if http.statusCode == 429 {
             throw SyncClientError("Too many attempts. Try again shortly.", status: 429)
         }
         if http.statusCode == 401 {
             throw SyncClientError(
-                "Unauthorized — wrong master password for this account, or the account was registered from a different vault. Use Register & upload on first enroll, or import that vault into this device.",
+                "Wrong password for this sync account, or it was set up with a different vault.",
                 status: 401
             )
         }
@@ -143,7 +162,7 @@ public enum SyncClient {
         expectedVersion: Int,
         nextAuthSecretB64: String? = nil
     ) async throws -> PutVaultResponse {
-        let url = URL(string: "\(root(baseUrl))/api/v1/vault")!
+        let url = try makeURL("\(root(baseUrl))/api/v1/vault")
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue(authHeader(accountId: accountId, syncAuthSecretB64: syncAuthSecretB64), forHTTPHeaderField: "Authorization")
@@ -151,7 +170,7 @@ public enum SyncClient {
         let body = PutBody(envelope: envelope, expectedVersion: expectedVersion, authSecret: nextAuthSecretB64)
         req.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await URLSession.shared.data(for: req)
-        let http = response as! HTTPURLResponse
+        let http = try httpResponse(from: response)
 
         if http.statusCode == 409,
            let conflict = try? JSONDecoder().decode(VaultRemoteBody.self, from: data)
@@ -163,7 +182,7 @@ public enum SyncClient {
         }
         if http.statusCode == 401 {
             throw SyncClientError(
-                "Unauthorized — wrong master password for this account, or the account was registered from a different vault.",
+                "Wrong password for this sync account, or it was set up with a different vault.",
                 status: 401
             )
         }
@@ -232,7 +251,7 @@ public enum RunSync {
             }
         }
         guard let masterPassword, !masterPassword.isEmpty else {
-            throw SyncClientError("Master password required to open the remote vault.", status: 401)
+            throw SyncClientError("Enter your master password to open the server vault.", status: 401)
         }
         return try unlockVault(file: envelope, masterPassword: masterPassword).data
     }
@@ -253,7 +272,7 @@ public enum RunSync {
 
         if remote.envelope.vaultId != localFile.vaultId {
             throw SyncClientError(
-                "Remote vault id differs from this device. Refusing to merge two distinct vaults.",
+                "This account has a different vault. Choose which one to keep in Settings.",
                 status: 409,
                 code: "vault_mismatch"
             )
@@ -281,18 +300,18 @@ public enum RunSync {
                 expectedVersion: expectedVersion
             )
             switch response {
-            case .ok(let version, _):
-                var parts = ["\(merged.stats.entriesKept) entries kept"]
+            case .ok(_, _):
+                var parts = ["\(merged.stats.entriesKept) logins"]
                 if merged.stats.entriesDeleted > 0 {
-                    parts.append("\(merged.stats.entriesDeleted) deleted remotely")
+                    parts.append("\(merged.stats.entriesDeleted) removed")
                 }
                 if merged.stats.entriesReconciled > 0 {
-                    parts.append("\(merged.stats.entriesReconciled) reconciled")
+                    parts.append("\(merged.stats.entriesReconciled) updated")
                 }
                 return PerformSyncResult(
                     file: file,
                     session: workingSession,
-                    message: "Synced with server (v\(version)). \(parts.joined(separator: "; "))."
+                    message: "Synced. \(parts.joined(separator: ", "))."
                 )
             case .conflict(let version, let envelope, let updatedAt):
                 remote = SyncClient.VaultRemote(envelope: envelope, version: version, updatedAt: updatedAt)
@@ -332,7 +351,7 @@ public enum RunSync {
             remote.envelope,
             remoteSession,
             derived,
-            "Replaced this device's vault with the server copy (v\(remote.version))."
+            "Replaced this device with the server vault."
         )
     }
 
@@ -370,7 +389,7 @@ public enum RunSync {
         )
         switch uploaded {
         case .ok(let version, _):
-            return (nextSecret, "Replaced the server vault with this device's copy (v\(version)).")
+            return (nextSecret, "Replaced the server vault with this device.")
         case .conflict:
             throw SyncClientError("Server changed during overwrite. Try again.", status: 409)
         }

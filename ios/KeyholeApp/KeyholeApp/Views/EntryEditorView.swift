@@ -103,7 +103,7 @@ struct EntryEditorView: View {
 
                 if kind == .login {
                     Section {
-                        TextField("TOTP secret or otpauth:// URI", text: $totpSecret, axis: .vertical)
+                        TextField("Authenticator key or QR link", text: $totpSecret, axis: .vertical)
                             .lineLimit(1...3)
                             .textInputAutocapitalization(.never)
                             .onChange(of: totpSecret) { _, newValue in
@@ -136,15 +136,10 @@ struct EntryEditorView: View {
                 }
 
                 Section {
-                    TextField(kind == .note ? "Write your note…" : "Notes about this login…", text: $notes, axis: .vertical)
+                    TextField(kind == .note ? "Write your note…" : "Add a note…", text: $notes, axis: .vertical)
                         .lineLimit(4...12)
                 } header: {
                     KeyholeFieldLabel(text: kind == .note ? "Note" : "Notes")
-                } footer: {
-                    if kind == .login {
-                        Text("Optional private reminder for this login.")
-                            .font(KeyholeFonts.meta)
-                    }
                 }
 
                 Section {
@@ -197,13 +192,13 @@ struct EntryEditorView: View {
                 } header: {
                     KeyholeFieldLabel(text: "Attachments")
                 } footer: {
-                    Text("Max \(MAX_ATTACHMENT_BYTES / 1024) KB per file, \(MAX_ATTACHMENTS_VAULT_BYTES / 1024 / 1024) MB vault total.")
+                    Text("Up to \(MAX_ATTACHMENT_BYTES / 1024) KB each.")
                         .font(KeyholeFonts.meta)
                 }
 
                 if entry.map({ !$0.history.isEmpty }) == true {
                     Section {
-                        Text("Previous passwords are kept automatically when you change the password. Open the entry to view history.")
+                        Text("Older passwords are saved when you change this one.")
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.textDim)
                     } header: {

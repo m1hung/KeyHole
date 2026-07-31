@@ -1,7 +1,7 @@
 import Foundation
 
 /// Current version of the decrypted vault model. Bump when `VaultData` changes shape.
-public let SCHEMA_VERSION = 4
+public let SCHEMA_VERSION = 5
 
 /// Per-file ceiling for attachments inside the encrypted payload.
 public let MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024
@@ -87,6 +87,51 @@ public struct Attachment: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// WebAuthn passkey sealed with the entry (P-256 private key + RP metadata).
+/// Created via AutoFill registration; used for assertion on matching sites.
+public struct PasskeyRecord: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    /// Credential ID as standard Base64 (not Base64URL).
+    public var credentialIdB64: String
+    public var relyingPartyId: String
+    public var relyingPartyName: String
+    public var userName: String
+    public var userDisplayName: String
+    /// User handle as standard Base64.
+    public var userHandleB64: String
+    /// CryptoKit `P256.Signing.PrivateKey.rawRepresentation` as standard Base64.
+    public var privateKeyB64: String
+    public var signCount: UInt32
+    public var createdAt: String
+    public var lastUsedAt: String?
+
+    public init(
+        id: String,
+        credentialIdB64: String,
+        relyingPartyId: String,
+        relyingPartyName: String,
+        userName: String,
+        userDisplayName: String,
+        userHandleB64: String,
+        privateKeyB64: String,
+        signCount: UInt32 = 0,
+        createdAt: String,
+        lastUsedAt: String? = nil
+    ) {
+        self.id = id
+        self.credentialIdB64 = credentialIdB64
+        self.relyingPartyId = relyingPartyId
+        self.relyingPartyName = relyingPartyName
+        self.userName = userName
+        self.userDisplayName = userDisplayName
+        self.userHandleB64 = userHandleB64
+        self.privateKeyB64 = privateKeyB64
+        self.signCount = signCount
+        self.createdAt = createdAt
+        self.lastUsedAt = lastUsedAt
+    }
+}
+
 public struct Entry: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var kind: EntryKind
@@ -105,6 +150,8 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
     public var customFields: [CustomField]
     /// Files sealed with the entry.
     public var attachments: [Attachment]
+    /// Passkeys for this login (schema 5). Empty on older entries.
+    public var passkeys: [PasskeyRecord]
     public var createdAt: String
     public var updatedAt: String
     public var passwordUpdatedAt: String
@@ -121,7 +168,7 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
     /// list must stay in step with the stored properties above.
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, kind, title, username, password, urls, notes, tags
-        case folderId, totpSecret, totpConfig, customFields, attachments
+        case folderId, totpSecret, totpConfig, customFields, attachments, passkeys
         case createdAt, updatedAt, passwordUpdatedAt
         case history, deletedAt
     }
@@ -140,6 +187,7 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         totpConfig: TotpConfig? = nil,
         customFields: [CustomField] = [],
         attachments: [Attachment] = [],
+        passkeys: [PasskeyRecord] = [],
         createdAt: String,
         updatedAt: String,
         passwordUpdatedAt: String,
@@ -160,6 +208,7 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         self.totpConfig = totpConfig
         self.customFields = customFields
         self.attachments = attachments
+        self.passkeys = passkeys
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.passwordUpdatedAt = passwordUpdatedAt
@@ -185,6 +234,7 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         totpConfig = try c.decodeIfPresent(TotpConfig.self, forKey: .totpConfig)
         customFields = try c.decodeIfPresent([CustomField].self, forKey: .customFields) ?? []
         attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        passkeys = try c.decodeIfPresent([PasskeyRecord].self, forKey: .passkeys) ?? []
         createdAt = try c.decode(String.self, forKey: .createdAt)
         updatedAt = try c.decode(String.self, forKey: .updatedAt)
         passwordUpdatedAt = try c.decode(String.self, forKey: .passwordUpdatedAt)
@@ -211,6 +261,7 @@ public struct Entry: Codable, Sendable, Equatable, Identifiable {
         try c.encode(totpConfig, forKey: AnyCodingKey(stringValue: CodingKeys.totpConfig.stringValue))
         try c.encode(customFields, forKey: AnyCodingKey(stringValue: CodingKeys.customFields.stringValue))
         try c.encode(attachments, forKey: AnyCodingKey(stringValue: CodingKeys.attachments.stringValue))
+        try c.encode(passkeys, forKey: AnyCodingKey(stringValue: CodingKeys.passkeys.stringValue))
         try c.encode(createdAt, forKey: AnyCodingKey(stringValue: CodingKeys.createdAt.stringValue))
         try c.encode(updatedAt, forKey: AnyCodingKey(stringValue: CodingKeys.updatedAt.stringValue))
         try c.encode(

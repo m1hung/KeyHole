@@ -381,6 +381,7 @@ export function createEntry(data: VaultData, input: EntryInput): { data: VaultDa
     totpConfig: input.totpConfig ?? null,
     customFields: input.customFields ?? [],
     attachments: input.attachments ?? [],
+    passkeys: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     passwordUpdatedAt: timestamp,

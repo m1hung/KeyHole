@@ -8,6 +8,17 @@ options:
 settings:
   BASE_SDK: iphoneos
   SWIFT_VERSION: "5.9"
+  MARKETING_VERSION: "1.0.0"
+  CURRENT_PROJECT_VERSION: "1"
+  configs:
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: -O
+      SWIFT_COMPILATION_MODE: wholemodule
+      DEAD_CODE_STRIPPING: YES
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: []
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["DEBUG"]
 packages:
   Keyhole:
     path: ..
@@ -26,6 +37,9 @@ targets:
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
       CODE_SIGN_ENTITLEMENTS: KeyholeApp/KeyholeApp.entitlements
+      MARKETING_VERSION: "1.0.0"
+      CURRENT_PROJECT_VERSION: "1"
+      VERSIONING_SYSTEM: apple-generic
     entitlements:
       path: KeyholeApp/KeyholeApp.entitlements
       properties:
@@ -60,7 +74,10 @@ targets:
           - settings-navigation
           - App-prefs
           - prefs
-        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault without typing your master password. Your master password stays in the device Keychain and is only released after a successful Face ID check.
+        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault.
+        ASCredentialProviderExtensionCapabilities:
+          ProvidesPasswords: true
+          ProvidesPasskeys: true
 
   KeyholeAutoFill:
     type: app-extension
@@ -91,10 +108,14 @@ targets:
       path: KeyholeAutoFill/Info.plist
       properties:
         CFBundleDisplayName: Keyhole AutoFill
-        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault for AutoFill without typing your master password.
+        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault for AutoFill.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.authentication-services-credential-provider-ui
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).CredentialProviderViewController
+          NSExtensionAttributes:
+            ASCredentialProviderExtensionCapabilities:
+              ProvidesPasswords: true
+              ProvidesPasskeys: true
 schemes:
   KeyholeApp:
     build:

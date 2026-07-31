@@ -8,16 +8,16 @@ enum BreachClient {
     static func checkPasswordBreachCount(_ password: String) async throws -> Int {
         let query = hashForRangeQuery(password)
         guard let url = URL(string: "\(rangeURL)/\(query.prefix)") else {
-            throw BreachClientError("Invalid Have I Been Pwned URL.")
+            throw BreachClientError("Couldn’t check passwords right now.")
         }
         var request = URLRequest(url: url)
         request.setValue("true", forHTTPHeaderField: "Add-Padding")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw BreachClientError("Have I Been Pwned returned an unexpected response.")
+            throw BreachClientError("Couldn’t check passwords right now.")
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw BreachClientError("Have I Been Pwned returned HTTP \(http.statusCode).")
+            throw BreachClientError("Couldn’t check passwords right now.")
         }
         let body = String(decoding: data, as: UTF8.self)
         return countFromRangeResponse(body, suffix: query.suffix)
