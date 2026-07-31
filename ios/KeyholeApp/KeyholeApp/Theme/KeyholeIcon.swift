@@ -94,10 +94,9 @@ private enum StrokeIcons {
             path.addPath(apply("M4.5 16A8 8 0 0 0 19 18m0 3v-3h-3"))
             path.addPath(apply("M12 8v8m-4-4h8m-6.8-2.8l5.6 5.6m0-5.6l-5.6 5.6"))
         case .settings:
-            path.addPath(apply("M15 12A3 3 0 1 1 9 12A3 3 0 0 1 15 12Z"))
-            path.addPath(apply(
-                "M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1.4 1.5v.1h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.5-1H3v-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.5V3h4v.1A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"
-            ))
+            // Outline gear (hub + 8-tooth ring). Avoids the dense Lucide closed path,
+            // which reads as filled at tab-bar sizes when stroked.
+            path.addPath(settingsGearPath().applying(t))
         case .secureNote:
             path.addPath(apply("M6 3h8l4 4v4M14 3v4h4M13 21H6V3"))
             path.addPath(roundRect(12, 14, 9, 7, 2))
@@ -144,6 +143,44 @@ private enum StrokeIcons {
             path.addPath(apply("M3 7v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-8l-2-2H5a2 2 0 0 0-2 2z"))
             path.addPath(apply("M12 12v6M9 15h6"))
         }
+        return path
+    }
+
+    /// 24×24 outline gear: open hub + ring with eight rectangular teeth.
+    private static func settingsGearPath() -> Path {
+        var path = Path()
+        let center = CGPoint(x: 12, y: 12)
+        path.addEllipse(in: CGRect(x: 9, y: 9, width: 6, height: 6))
+
+        let teeth = 8
+        let outer: CGFloat = 10.25
+        let notch: CGFloat = 8.1
+        let toothHalfAngle = CGFloat.pi / CGFloat(teeth) * 0.32
+        let step = 2 * CGFloat.pi / CGFloat(teeth)
+
+        func point(radius: CGFloat, angle: CGFloat) -> CGPoint {
+            CGPoint(
+                x: center.x + radius * cos(angle),
+                y: center.y + radius * sin(angle)
+            )
+        }
+
+        var gear = Path()
+        for i in 0..<teeth {
+            let mid = -CGFloat.pi / 2 + CGFloat(i) * step
+            let a0 = mid - toothHalfAngle
+            let a1 = mid + toothHalfAngle
+            let gapEnd = mid + step - toothHalfAngle
+            if i == 0 {
+                gear.move(to: point(radius: outer, angle: a0))
+            }
+            gear.addLine(to: point(radius: outer, angle: a1))
+            gear.addLine(to: point(radius: notch, angle: a1))
+            gear.addLine(to: point(radius: notch, angle: gapEnd))
+            gear.addLine(to: point(radius: outer, angle: gapEnd))
+        }
+        gear.closeSubpath()
+        path.addPath(gear)
         return path
     }
 }

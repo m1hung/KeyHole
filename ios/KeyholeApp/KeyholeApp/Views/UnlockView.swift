@@ -9,10 +9,15 @@ struct UnlockView: View {
     @State private var confirmOverwrite = false
     @State private var overwriteAck = ""
     @State private var shake = 0
+    @State private var didAutoPromptBiometrics = false
     @FocusState private var focused: Bool
 
     private var creating: Bool {
         session.status == .noVault || isCreateMode
+    }
+
+    private var showBiometrics: Bool {
+        session.status == .locked && !isCreateMode && BiometricUnlockStore.isReady && BiometricUnlockStore.canUseBiometrics
     }
 
     var body: some View {
@@ -32,10 +37,32 @@ struct UnlockView: View {
 
                     Text(creating
                          ? "Create a local vault. Your master password is never stored."
-                         : "Enter your master password to unlock.")
+                         : showBiometrics
+                            ? "Unlock with \(BiometricUnlockStore.biometryTypeName) or your master password."
+                            : "Enter your master password to unlock.")
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if showBiometrics {
+                        Button {
+                            Task { await session.unlockWithBiometrics() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: BiometricUnlockStore.biometryTypeName == "Touch ID"
+                                      ? "touchid" : "faceid")
+                                Text("Unlock with \(BiometricUnlockStore.biometryTypeName)")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(KeyholePrimaryButtonStyle(disabled: session.busy))
+                        .disabled(session.busy)
+
+                        Text("or use master password")
+                            .font(KeyholeFonts.caption)
+                            .foregroundStyle(KeyholeColors.textDim)
+                            .frame(maxWidth: .infinity)
+                    }
 
                     VStack(alignment: .leading, spacing: 8) {
                         KeyholeFieldLabel(text: "Master password")
@@ -107,7 +134,10 @@ struct UnlockView: View {
                 Spacer()
             }
         }
-        .onAppear { focused = true }
+        .onAppear {
+            focused = !showBiometrics
+            maybeAutoPromptBiometrics()
+        }
         .onChange(of: session.errorMessage) { _, msg in
             if msg != nil, !creating {
                 withAnimation(.default) { shake += 1 }
@@ -124,6 +154,12 @@ struct UnlockView: View {
             }
         }
         return true
+    }
+
+    private func maybeAutoPromptBiometrics() {
+        guard showBiometrics, !didAutoPromptBiometrics, !session.busy else { return }
+        didAutoPromptBiometrics = true
+        Task { await session.unlockWithBiometrics() }
     }
 
     private func submit() async {

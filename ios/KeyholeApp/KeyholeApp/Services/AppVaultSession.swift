@@ -43,6 +43,7 @@ public final class AppVaultSession {
     }
 
     public func bootstrap() {
+        store.syncSharedVaultIfNeeded()
         file = store.load()
         status = file == nil ? .noVault : .locked
     }
@@ -72,6 +73,9 @@ public final class AppVaultSession {
             try store.save(result.file)
             data = result.session.data
             status = .unlocked
+            if BiometricUnlockStore.isEnabled {
+                try? BiometricUnlockStore.enable(storing: masterPassword)
+            }
             registerActivity()
             startAutoLockTimer()
         } catch {
@@ -111,6 +115,9 @@ public final class AppVaultSession {
                 }.value
                 _ = cfg
             }
+            if BiometricUnlockStore.isEnabled {
+                try? BiometricUnlockStore.enable(storing: masterPassword)
+            }
             registerActivity()
             startAutoLockTimer()
         } catch {
@@ -119,6 +126,21 @@ public final class AppVaultSession {
             syncAuthSecretB64 = nil
             status = .locked
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Unlock via Face ID / Touch ID when biometric unlock is enabled.
+    public func unlockWithBiometrics() async {
+        errorMessage = nil
+        do {
+            let password = try await BiometricUnlockStore.unlockMasterPassword()
+            await unlock(masterPassword: password)
+        } catch {
+            if case BiometricUnlockError.cancelled = error {
+                errorMessage = nil
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -175,6 +197,9 @@ public final class AppVaultSession {
             try store.save(result.file)
             data = result.session.data
             syncAuthSecretB64 = nil
+            if BiometricUnlockStore.isEnabled {
+                try? BiometricUnlockStore.updateStoredPassword(next)
+            }
             registerActivity()
         } catch {
             errorMessage = error.localizedDescription
@@ -188,6 +213,7 @@ public final class AppVaultSession {
         do {
             try store.save(imported)
             file = imported
+            BiometricUnlockStore.disable()
             lock()
             status = .locked
         } catch {
@@ -206,6 +232,7 @@ public final class AppVaultSession {
             file = nil
             data = nil
             syncAuthSecretB64 = nil
+            BiometricUnlockStore.disable()
             status = .noVault
         } catch {
             errorMessage = error.localizedDescription

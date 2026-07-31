@@ -89,6 +89,11 @@ private struct AutoFillRootView: View {
     @State private var busy = false
     @State private var session: VaultSession?
     @State private var matches: [AutofillMatch] = []
+    @State private var didAutoPromptBiometrics = false
+
+    private var showBiometrics: Bool {
+        BiometricUnlockStore.isReady && BiometricUnlockStore.canUseBiometrics
+    }
 
     var body: some View {
         NavigationStack {
@@ -128,11 +133,26 @@ private struct AutoFillRootView: View {
                     Button("Cancel", action: onCancel)
                 }
             }
+            .onAppear { maybeAutoPromptBiometrics() }
         }
     }
 
     private var unlockForm: some View {
         Form {
+            if showBiometrics {
+                Section {
+                    Button {
+                        Task { await unlockWithBiometrics() }
+                    } label: {
+                        HStack {
+                            Image(systemName: BiometricUnlockStore.biometryTypeName == "Touch ID"
+                                  ? "touchid" : "faceid")
+                            Text("Unlock with \(BiometricUnlockStore.biometryTypeName)")
+                        }
+                    }
+                    .disabled(busy)
+                }
+            }
             Section {
                 SecureField("Master password", text: $password)
                     .textContentType(.password)
@@ -140,7 +160,7 @@ private struct AutoFillRootView: View {
                     Text(error).foregroundStyle(.red).font(.footnote)
                 }
                 Button {
-                    Task { await unlock() }
+                    Task { await unlock(masterPassword: password) }
                 } label: {
                     if busy {
                         ProgressView()
@@ -150,22 +170,51 @@ private struct AutoFillRootView: View {
                 }
                 .disabled(busy || password.count < MIN_MASTER_PASSWORD_LENGTH)
             } footer: {
-                Text("AutoFill unlocks your sealed vault on this device only. The master password is never stored.")
+                Text(
+                    showBiometrics
+                    ? "Uses the same Face ID / Touch ID setup as the Keyhole app. Secrets stay sealed until you unlock."
+                    : "AutoFill unlocks your sealed vault on this device only. Enable Face ID in Keyhole Settings to skip typing."
+                )
             }
         }
     }
 
-    private func unlock() async {
+    private func maybeAutoPromptBiometrics() {
+        guard showBiometrics, !didAutoPromptBiometrics, !busy, session == nil else { return }
+        didAutoPromptBiometrics = true
+        Task { await unlockWithBiometrics() }
+    }
+
+    private func unlockWithBiometrics() async {
+        error = nil
+        do {
+            let master = try await BiometricUnlockStore.unlockMasterPassword(
+                reason: "Unlock Keyhole for AutoFill"
+            )
+            await unlock(masterPassword: master)
+        } catch {
+            if case BiometricUnlockError.cancelled = error {
+                self.error = nil
+            } else {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func unlock(masterPassword: String) async {
         busy = true
         error = nil
         defer { busy = false }
-        guard let file = VaultStore.shared.load() else {
-            error = "No vault found. Open Keyhole and create or import a vault first."
+        let file: VaultFile
+        do {
+            file = try VaultStore.load()
+        } catch {
+            self.error = error.localizedDescription
             return
         }
         do {
             let unlocked = try await Task.detached(priority: .userInitiated) {
-                try unlockVault(file: file, masterPassword: password)
+                try unlockVault(file: file, masterPassword: masterPassword)
             }.value
             session = unlocked
             password = ""

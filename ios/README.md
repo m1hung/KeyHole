@@ -79,9 +79,17 @@ Argon2id cost (~64 MiB) and can take a few seconds.
 - Optional sync talks to your self-hosted server (`/api/v1/health`, `prelogin`,
   `account`, `vault`) with the same HKDF sync-auth derivation as desktop.
 
+## Face ID / Touch ID
+
+Opt-in in **Settings → Unlock with Face ID / Touch ID**. Enabling stores the master
+password in the device Keychain (`WhenUnlockedThisDeviceOnly` +
+`.biometryCurrentSet`), shared with AutoFill via the App Group keychain access
+group. The sealed vault itself is unchanged. Changing enrolled biometrics
+invalidates the Keychain item; deleting the vault, importing a vault, or turning
+the toggle off clears it.
+
 ## Out of scope (this MVP)
 
-- Face ID / Keychain-wrapped unlock of the vault key
 - App Store signing / CI
 - **Trash management UI on older builds.** Deleting is a soft delete; restore/purge live under the Trash filter now.
 - Public-suffix “domain” autofill mode (host / subdomain / exact only for now)
@@ -90,8 +98,8 @@ Argon2id cost (~64 MiB) and can take a few seconds.
 
 The `KeyholeAutoFill` credential provider extension shares the sealed vault via the
 `group.app.keyhole.vault` App Group. Enable it in **Settings → Passwords →
-Password Options → AutoFill Passwords → Keyhole**. Unlock with the master
-password when the QuickType bar offers Keyhole — secrets are never cached unlocked.
+Password Options → AutoFill Passwords → Keyhole**. Unlock with Face ID / Touch ID
+(if enabled in the app) or the master password — secrets are never cached unlocked.
 
 Requires an Apple Developer team for App Groups + AutoFill entitlements when
 running on a device.

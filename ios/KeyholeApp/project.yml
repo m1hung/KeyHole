@@ -17,6 +17,7 @@ targets:
     platform: iOS
     sources:
       - path: KeyholeApp
+      - path: Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: app.keyhole.vault
       INFOPLIST_FILE: KeyholeApp/Info.plist
@@ -30,6 +31,8 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.app.keyhole.vault
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.app.keyhole.vault
         com.apple.developer.authentication-services.autofill-credential-provider: true
     dependencies:
       - package: Keyhole
@@ -53,12 +56,18 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIStatusBarStyle: UIStatusBarStyleDefault
         UIViewControllerBasedStatusBarAppearance: true
+        LSApplicationQueriesSchemes:
+          - settings-navigation
+          - App-prefs
+          - prefs
+        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault without typing your master password. Your master password stays in the device Keychain and is only released after a successful Face ID check.
 
   KeyholeAutoFill:
     type: app-extension
     platform: iOS
     sources:
       - path: KeyholeAutoFill
+      - path: Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: app.keyhole.vault.AutoFill
       INFOPLIST_FILE: KeyholeAutoFill/Info.plist
@@ -72,6 +81,8 @@ targets:
       properties:
         com.apple.security.application-groups:
           - group.app.keyhole.vault
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.app.keyhole.vault
         com.apple.developer.authentication-services.autofill-credential-provider: true
     dependencies:
       - package: Keyhole
@@ -80,6 +91,7 @@ targets:
       path: KeyholeAutoFill/Info.plist
       properties:
         CFBundleDisplayName: Keyhole AutoFill
+        NSFaceIDUsageDescription: Keyhole uses Face ID to unlock your vault for AutoFill without typing your master password.
         NSExtension:
           NSExtensionPointIdentifier: com.apple.authentication-services-credential-provider-ui
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).CredentialProviderViewController

@@ -20,8 +20,16 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>settings-navigation</string>
+		<string>App-prefs</string>
+		<string>prefs</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Keyhole uses Face ID to unlock your vault without typing your master password. Your master password stays in the device Keychain and is only released after a successful Face ID check.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIStatusBarStyle</key>

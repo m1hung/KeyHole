@@ -29,6 +29,11 @@ struct SettingsView: View {
     @State private var syncPassword = ""
     @State private var syncMessage: String?
     @State private var syncBusy = false
+    @State private var biometricUnlockEnabled = BiometricUnlockStore.isReady
+    @State private var showBiometricSetup = false
+    @State private var biometricSetupPassword = ""
+    @State private var biometricSetupError: String?
+    @State private var editingEntry: Entry?
 
     var body: some View {
         NavigationStack {
@@ -47,6 +52,30 @@ struct SettingsView: View {
                         step: 5
                     )
                     Toggle("Lock when app backgrounds", isOn: $lockOnHide)
+                    if BiometricUnlockStore.canUseBiometrics || BiometricUnlockStore.isEnabled {
+                        Toggle(
+                            "Unlock with \(BiometricUnlockStore.biometryTypeName)",
+                            isOn: $biometricUnlockEnabled
+                        )
+                        .onChange(of: biometricUnlockEnabled) { _, enabled in
+                            if enabled {
+                                showBiometricSetup = true
+                                // Revert until the password sheet succeeds.
+                                biometricUnlockEnabled = BiometricUnlockStore.isReady
+                            } else {
+                                BiometricUnlockStore.disable()
+                            }
+                        }
+                        Text(
+                            """
+                            Stores your master password in the device Keychain, released only after \
+                            \(BiometricUnlockStore.biometryTypeName). Changing enrolled faces/fingerprints \
+                            invalidates it. Turn off anytime to remove the Keychain item.
+                            """
+                        )
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                    }
                     Toggle("Enable breach checking", isOn: $breachCheckEnabled)
                     if breachCheckEnabled {
                         Text(
@@ -76,18 +105,31 @@ struct SettingsView: View {
                             Text(
                                 breachHits.isEmpty
                                     ? "No breached passwords found among checked logins."
-                                    : "\(breachHits.count) password(s) found in known breaches."
+                                    : "\(breachHits.count) password(s) found in known breaches. Tap to update."
                             )
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.textDim)
                             ForEach(breachHits.prefix(40)) { hit in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(hit.title)
-                                        .font(KeyholeFonts.bodySemibold)
-                                    Text("Seen \(hit.count) time(s) in breaches.")
-                                        .font(KeyholeFonts.meta)
-                                        .foregroundStyle(KeyholeColors.danger)
+                                Button {
+                                    openEntry(id: hit.entryId)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(hit.title)
+                                                .font(KeyholeFonts.bodySemibold)
+                                                .foregroundStyle(KeyholeColors.text)
+                                            Text("Seen \(hit.count) time(s) in breaches.")
+                                                .font(KeyholeFonts.meta)
+                                                .foregroundStyle(KeyholeColors.danger)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(KeyholeColors.textDim)
+                                    }
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -129,14 +171,27 @@ struct SettingsView: View {
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
 
-                        ForEach(report.issues.prefix(40), id: \.entryId) { issue in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(issue.kind.rawValue.uppercased()) · \(issue.title)")
-                                    .font(KeyholeFonts.bodySemibold)
-                                Text(issue.detail)
-                                    .font(KeyholeFonts.meta)
-                                    .foregroundStyle(KeyholeColors.textDim)
+                        ForEach(report.issues.prefix(40)) { issue in
+                            Button {
+                                openEntry(id: issue.entryId)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(issue.kind.rawValue.uppercased()) · \(issue.title)")
+                                            .font(KeyholeFonts.bodySemibold)
+                                            .foregroundStyle(KeyholeColors.text)
+                                        Text(issue.detail)
+                                            .font(KeyholeFonts.meta)
+                                            .foregroundStyle(KeyholeColors.textDim)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(KeyholeColors.textDim)
+                                }
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                     Button(healthReport == nil ? "Check vault" : "Check again") {
@@ -177,9 +232,25 @@ struct SettingsView: View {
                     )
                     .font(KeyholeFonts.meta)
                     .foregroundStyle(KeyholeColors.textDim)
-                    Text("Settings → Passwords → Password Options → AutoFill Passwords → Keyhole")
+                    Text("Settings → General → AutoFill & Passwords → Keyhole")
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.accent)
+                    if VaultStore.shared.isSharedWithAutoFill {
+                        Label("Vault is shared with AutoFill", systemImage: "checkmark.circle.fill")
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.ok)
+                    } else {
+                        Text(
+                            """
+                            App Group is not available for this build — AutoFill cannot see your vault. \
+                            In Xcode: Signing & Capabilities → App Groups → enable \
+                            group.app.keyhole.vault on both KeyholeApp and KeyholeAutoFill, then rebuild \
+                            and open Keyhole once.
+                            """
+                        )
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.warn)
+                    }
                     Text(
                         """
                         When a login form appears, choose Keyhole from the QuickType bar, \
@@ -189,9 +260,21 @@ struct SettingsView: View {
                     )
                     .font(KeyholeFonts.meta)
                     .foregroundStyle(KeyholeColors.textDim)
-                    Button("Open Password Settings") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
+                    Button("Open AutoFill & Passwords") {
+                        openAutoFillPasswordsSettings()
+                    }
+                    .foregroundStyle(KeyholeColors.accent)
+                    Button("Publish vault for AutoFill") {
+                        VaultStore.shared.syncSharedVaultIfNeeded()
+                        if let file = session.exportVault() {
+                            Task {
+                                do {
+                                    try VaultStore.shared.save(file)
+                                    session.errorMessage = nil
+                                } catch {
+                                    session.errorMessage = error.localizedDescription
+                                }
+                            }
                         }
                     }
                     .foregroundStyle(KeyholeColors.accent)
@@ -226,7 +309,10 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(KeyholeColors.bg)
             .navigationTitle("Settings")
-            .onAppear { load() }
+            .onAppear {
+                load()
+                biometricUnlockEnabled = BiometricUnlockStore.isReady
+            }
             .fileImporter(
                 isPresented: $showImporter,
                 allowedContentTypes: [.json, .data],
@@ -247,6 +333,85 @@ struct SettingsView: View {
             } message: {
                 Text("This removes the sealed vault file from this device. Export a backup first if you need it.")
             }
+            .sheet(isPresented: $showBiometricSetup) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            SecureField("Master password", text: $biometricSetupPassword)
+                                .textContentType(.password)
+                            if let biometricSetupError {
+                                Text(biometricSetupError)
+                                    .font(KeyholeFonts.meta)
+                                    .foregroundStyle(KeyholeColors.danger)
+                            }
+                        } footer: {
+                            Text("Confirm your master password to store it in the Keychain for \(BiometricUnlockStore.biometryTypeName).")
+                        }
+                    }
+                    .navigationTitle(BiometricUnlockStore.biometryTypeName)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                biometricSetupPassword = ""
+                                biometricSetupError = nil
+                                biometricUnlockEnabled = BiometricUnlockStore.isReady
+                                showBiometricSetup = false
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Enable") {
+                                Task { await enableBiometrics() }
+                            }
+                            .disabled(biometricSetupPassword.count < MIN_MASTER_PASSWORD_LENGTH)
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
+            }
+            .sheet(item: $editingEntry) { entry in
+                EntryEditorView(entry: entry, kind: entry.kind) {
+                    editingEntry = nil
+                    session.registerActivity()
+                    if let data = session.data {
+                        let liveIds = Set(liveEntries(data).map(\.id))
+                        breachHits = breachHits?.filter { liveIds.contains($0.entryId) }
+                        if healthReport != nil {
+                            healthReport = analyzeVaultHealth(data)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func openEntry(id: String) {
+        guard let data = session.data,
+              let entry = liveEntries(data).first(where: { $0.id == id })
+        else { return }
+        editingEntry = entry
+        session.registerActivity()
+    }
+
+    private func enableBiometrics() async {
+        biometricSetupError = nil
+        guard let file = session.exportVault() else {
+            biometricSetupError = "No vault loaded."
+            return
+        }
+        let password = biometricSetupPassword
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                try unlockVault(file: file, masterPassword: password)
+            }.value
+            try BiometricUnlockStore.enable(storing: password)
+            biometricUnlockEnabled = true
+            biometricSetupPassword = ""
+            showBiometricSetup = false
+            session.registerActivity()
+        } catch {
+            biometricSetupError = error.localizedDescription
+            biometricUnlockEnabled = false
         }
     }
 
@@ -261,6 +426,40 @@ struct SettingsView: View {
             syncBaseUrl = cfg.baseUrl
             syncAccountId = cfg.accountId
         }
+    }
+
+    /// Opens Settings → General → AutoFill & Passwords when the OS allows it.
+    private func openAutoFillPasswordsSettings() {
+        // Prefer iOS 18+ Settings navigation, then legacy prefs deep links.
+        let candidates = [
+            "settings-navigation://com.apple.Settings.General/AUTOFILL",
+            "App-prefs:root=General&path=AUTOFILL",
+            "prefs:root=General&path=AUTOFILL",
+            "App-prefs:General&path=AUTOFILL",
+        ]
+
+        func tryOpen(_ raw: String, completion: ((Bool) -> Void)? = nil) {
+            guard let url = URL(string: raw) else {
+                completion?(false)
+                return
+            }
+            UIApplication.shared.open(url, options: [:], completionHandler: completion)
+        }
+
+        // Walk candidates until one succeeds; fall back to the app Settings page.
+        func attempt(_ index: Int) {
+            if index >= candidates.count {
+                if let fallback = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(fallback)
+                }
+                return
+            }
+            tryOpen(candidates[index]) { success in
+                if success { return }
+                attempt(index + 1)
+            }
+        }
+        attempt(0)
     }
 
     private func savePrefs() async {
