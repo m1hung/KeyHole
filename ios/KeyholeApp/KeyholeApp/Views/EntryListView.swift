@@ -435,22 +435,39 @@ struct EntryDetailView: View {
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.textDim)
                         }
-                        Text("Updated \(entry.updatedAt)")
+                        Text(KeyholeDateFormat.updatedLabel(entry.updatedAt))
                             .font(KeyholeFonts.meta)
                             .foregroundStyle(KeyholeColors.textDim)
+                        if entry.kind == .login,
+                           entry.passwordUpdatedAt != entry.updatedAt,
+                           KeyholeDateFormat.parseISO(entry.passwordUpdatedAt) != nil
+                        {
+                            Text(KeyholeDateFormat.passwordChangedLabel(entry.passwordUpdatedAt))
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.textDim)
+                        }
                     }
                     .listRowBackground(KeyholeColors.surface)
 
                     if entry.kind == .login {
                         Section {
                             if !entry.username.isEmpty {
-                                LabeledContent("Username") {
+                                HStack {
+                                    Text("Username")
+                                    Spacer()
                                     Text(entry.username)
                                         .font(KeyholeFonts.body)
-                                }
-                                Button("Copy username") {
-                                    clipboard.copy(entry.username, label: "Username")
-                                    session.registerActivity()
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.7)
+                                    Button {
+                                        clipboard.copy(entry.username, label: "Username")
+                                        session.registerActivity()
+                                    } label: {
+                                        KeyholeIcon(name: .copy, size: 16)
+                                            .foregroundStyle(KeyholeColors.accent)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Copy username")
                                 }
                             }
                             HStack {
@@ -459,21 +476,25 @@ struct EntryDetailView: View {
                                 Text(revealPassword ? entry.password : String(repeating: "•", count: max(8, entry.password.count)))
                                     .font(KeyholeFonts.secret)
                                     .tracking(revealPassword ? 0 : 1.2)
-                            }
-                            Button {
-                                revealPassword.toggle()
-                            } label: {
-                                KeyholeIcon(name: revealPassword ? .eyeOff : .eye, size: 18)
-                            }
-                            Button {
-                                clipboard.copy(entry.password, label: "Password")
-                                session.registerActivity()
-                            } label: {
-                                Label {
-                                    Text("Copy password")
-                                } icon: {
-                                    KeyholeIcon(name: .copy, size: 16)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                Button {
+                                    revealPassword.toggle()
+                                } label: {
+                                    KeyholeIcon(name: revealPassword ? .eyeOff : .eye, size: 18)
+                                        .foregroundStyle(KeyholeColors.accent)
                                 }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(revealPassword ? "Hide password" : "Show password")
+                                Button {
+                                    clipboard.copy(entry.password, label: "Password")
+                                    session.registerActivity()
+                                } label: {
+                                    KeyholeIcon(name: .copy, size: 16)
+                                        .foregroundStyle(KeyholeColors.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Copy password")
                             }
                         } header: {
                             KeyholeFieldLabel(text: "Login")
@@ -574,9 +595,24 @@ struct EntryDetailView: View {
                         .listRowBackground(KeyholeColors.surface)
                     }
 
-                    if !entry.notes.isEmpty {
+                    if entry.kind == .login || entry.kind == .note {
                         Section {
-                            Text(entry.notes)
+                            if entry.notes.isEmpty {
+                                Button("Add a note…") {
+                                    showEditor = true
+                                }
+                                .foregroundStyle(KeyholeColors.accent)
+                            } else {
+                                Text(entry.notes)
+                                    .font(KeyholeFonts.body)
+                                    .foregroundStyle(KeyholeColors.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("Edit note") {
+                                    showEditor = true
+                                }
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.accent)
+                            }
                         } header: {
                             KeyholeFieldLabel(text: "Notes")
                         }
@@ -596,7 +632,7 @@ struct EntryDetailView: View {
                         Section {
                             ForEach(Array(entry.history.enumerated()), id: \.offset) { _, hist in
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(hist.changedAt)
+                                    Text(KeyholeDateFormat.relativeOrAbsolute(hist.changedAt))
                                         .font(KeyholeFonts.meta)
                                         .foregroundStyle(KeyholeColors.textDim)
                                     Text(revealedHistory.contains(hist.changedAt + hist.password)

@@ -130,11 +130,21 @@ struct EntryEditorView: View {
                             }
                         }
                     }
-                    TextField(kind == .note ? "Note body" : "Notes", text: $notes, axis: .vertical)
-                        .lineLimit(3...10)
                     TextField("Tags (comma-separated)", text: $tagsText)
                 } header: {
                     KeyholeFieldLabel(text: "Organization")
+                }
+
+                Section {
+                    TextField(kind == .note ? "Write your note…" : "Notes about this login…", text: $notes, axis: .vertical)
+                        .lineLimit(4...12)
+                } header: {
+                    KeyholeFieldLabel(text: kind == .note ? "Note" : "Notes")
+                } footer: {
+                    if kind == .login {
+                        Text("Optional private reminder for this login.")
+                            .font(KeyholeFonts.meta)
+                    }
                 }
 
                 Section {
