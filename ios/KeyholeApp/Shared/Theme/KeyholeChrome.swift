@@ -60,14 +60,70 @@ struct KeyholeGhostButtonStyle: ButtonStyle {
 }
 
 struct KeyholeLocalBadge: View {
+    var compact: Bool = false
+
     var body: some View {
-        Text("Local vault")
-            .font(KeyholeFonts.caption)
-            .foregroundStyle(KeyholeColors.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(KeyholeColors.accentSoft)
-            .clipShape(Capsule())
+        HStack(spacing: 6) {
+            KeyholeIcon(name: .localServer, size: compact ? 12 : 14)
+            Text(compact ? "Local vault" : "Encrypted vault stays on this device")
+        }
+        .font(.system(.caption, design: .default).weight(.medium))
+        .foregroundStyle(KeyholeColors.accent)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(KeyholeColors.accentSoft)
+        .clipShape(Capsule())
+    }
+}
+
+/// Bordered field matching web `input` (surface + 1px border, radius 10).
+struct KeyholeFieldBackground: ViewModifier {
+    var emphasized: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(12)
+            .background(emphasized ? KeyholeColors.dangerBg : KeyholeColors.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(emphasized ? KeyholeColors.danger.opacity(0.35) : KeyholeColors.border, lineWidth: 1)
+            )
+    }
+}
+
+extension View {
+    func keyholeFieldBackground(emphasized: Bool = false) -> some View {
+        modifier(KeyholeFieldBackground(emphasized: emphasized))
+    }
+}
+
+struct KeyholeSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(KeyholeFonts.bodySemibold)
+            .foregroundStyle(KeyholeColors.text)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 14)
+            .background(configuration.isPressed ? KeyholeColors.surface2 : KeyholeColors.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(KeyholeColors.border, lineWidth: 1)
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+    }
+}
+
+struct KeyholeDangerGhostButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(KeyholeFonts.bodySemibold)
+            .foregroundStyle(KeyholeColors.danger)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 14)
+            .background(configuration.isPressed ? KeyholeColors.dangerBg : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

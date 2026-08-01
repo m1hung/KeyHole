@@ -29,6 +29,8 @@ struct MainTabView: View {
                     .tag(2)
             }
             .tint(KeyholeColors.accent)
+            .toolbarBackground(KeyholeColors.surface, for: .tabBar)
+            .toolbarBackground(.visible, for: .tabBar)
 
             if let toast = clipboard.toastMessage {
                 KeyholeToastBanner(message: toast)

@@ -111,8 +111,7 @@ struct GeneratorView: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(KeyholeColors.bg)
+            .keyholeFormChrome()
             .navigationTitle("Generator")
             .onAppear {
                 if let g = session.data?.settings.generator {

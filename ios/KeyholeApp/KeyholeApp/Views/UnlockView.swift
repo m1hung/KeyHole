@@ -30,18 +30,19 @@ struct UnlockView: View {
                 Spacer(minLength: 24)
                 KeyholeCard {
                     HStack(spacing: 10) {
-                        KeyholeBrandMark(size: 28)
+                        KeyholeBrandMark(size: 26)
                         Text("Keyhole")
                             .font(KeyholeFonts.brand)
                             .foregroundStyle(KeyholeColors.text)
                         Spacer(minLength: 0)
-                        KeyholeLocalBadge()
                     }
 
                     Text(subtitle)
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    KeyholeLocalBadge()
 
                     if showBiometrics {
                         Button {
@@ -68,9 +69,8 @@ struct UnlockView: View {
                         SecureField("Master password", text: $password)
                             .textContentType(creating ? .newPassword : .password)
                             .textInputAutocapitalization(.never)
-                            .padding(12)
-                            .background(KeyholeColors.surface2)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .foregroundStyle(KeyholeColors.text)
+                            .keyholeFieldBackground()
                             .focused($focused)
                     }
 
@@ -80,9 +80,8 @@ struct UnlockView: View {
                             SecureField("Confirm master password", text: $confirm)
                                 .textContentType(.newPassword)
                                 .textInputAutocapitalization(.never)
-                                .padding(12)
-                                .background(KeyholeColors.surface2)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .foregroundStyle(KeyholeColors.text)
+                                .keyholeFieldBackground()
                         }
                     }
 
@@ -98,9 +97,8 @@ struct UnlockView: View {
                             TextField("OVERWRITE", text: $overwriteAck)
                                 .textInputAutocapitalization(.characters)
                                 .autocorrectionDisabled()
-                                .padding(12)
-                                .background(KeyholeColors.dangerBg)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .foregroundStyle(KeyholeColors.text)
+                                .keyholeFieldBackground(emphasized: true)
                         }
                     }
 
@@ -150,15 +148,17 @@ struct UnlockView: View {
 
     private var subtitle: String {
         if session.status == .damaged {
-            return "Vault file is damaged."
+            return "This vault file can’t be read. Import a backup, or create a new vault."
         }
         if creating {
-            return "Choose a master password to create your vault."
+            return isCreateMode && session.status == .locked
+                ? "Creating a new vault replaces the one on this iPhone."
+                : "Choose a master password to create your vault."
         }
         if showBiometrics {
-            return "Unlock with \(BiometricUnlockStore.biometryTypeName) or your password."
+            return "Your vault is locked."
         }
-        return "Enter your master password."
+        return "Your vault is locked."
     }
 
     private var canSubmit: Bool {

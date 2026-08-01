@@ -288,8 +288,7 @@ struct SettingsView: View {
                     .listRowBackground(KeyholeColors.surface2)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(KeyholeColors.bg)
+            .keyholeFormChrome()
             .navigationTitle("Settings")
             .onAppear {
                 load()
@@ -321,6 +320,7 @@ struct SettingsView: View {
                         Section {
                             SecureField("Master password", text: $biometricSetupPassword)
                                 .textContentType(.password)
+                                .foregroundStyle(KeyholeColors.text)
                             if let biometricSetupError {
                                 Text(biometricSetupError)
                                     .font(KeyholeFonts.meta)
@@ -328,8 +328,12 @@ struct SettingsView: View {
                             }
                         } footer: {
                             Text("Confirm your password to turn on \(BiometricUnlockStore.biometryTypeName).")
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.textDim)
                         }
+                        .listRowBackground(KeyholeColors.surface)
                     }
+                    .keyholeFormChrome()
                     .navigationTitle(BiometricUnlockStore.biometryTypeName)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {

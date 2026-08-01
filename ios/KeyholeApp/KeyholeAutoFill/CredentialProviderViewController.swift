@@ -128,7 +128,7 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             child.removeFromParent()
         }
         let host = UIHostingController(rootView: AnyView(root))
-        host.view.backgroundColor = .systemBackground
+        host.view.backgroundColor = UIColor(KeyholeColors.bg)
         addChild(host)
         host.view.frame = view.bounds
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -244,9 +244,17 @@ private struct AutoFillRootView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
+                        .foregroundStyle(KeyholeColors.accent)
                 }
             }
-            .onAppear { maybeAutoPromptBiometrics() }
+            .toolbarBackground(KeyholeColors.surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .background(KeyholeColors.bg.ignoresSafeArea())
+            .tint(KeyholeColors.accent)
+            .onAppear {
+                KeyholeAppearance.apply()
+                maybeAutoPromptBiometrics()
+            }
         }
     }
 
@@ -257,21 +265,37 @@ private struct AutoFillRootView: View {
             passkeyRegisterConfirm(identity: identity)
         case .passkeyProvide, .passkeyList:
             if passkeyMatches.isEmpty {
-                ContentUnavailableView(
-                    "No passkeys",
-                    systemImage: "person.badge.key",
-                    description: Text("No passkey saved for \(siteLabel).")
-                )
+                ContentUnavailableView {
+                    Label {
+                        Text("No passkeys")
+                    } icon: {
+                        KeyholeIcon(name: .key, size: 36)
+                            .foregroundStyle(KeyholeColors.textDim)
+                    }
+                } description: {
+                    Text("No passkey saved for \(siteLabel).")
+                        .foregroundStyle(KeyholeColors.textDim)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(KeyholeColors.bg)
             } else {
                 passkeyList
             }
         default:
             if matches.isEmpty {
-                ContentUnavailableView(
-                    "No logins",
-                    systemImage: "key",
-                    description: Text("Add a login in Keyhole, then try again.")
-                )
+                ContentUnavailableView {
+                    Label {
+                        Text("No logins")
+                    } icon: {
+                        KeyholeIcon(name: .key, size: 36)
+                            .foregroundStyle(KeyholeColors.textDim)
+                    }
+                } description: {
+                    Text("Add a login in Keyhole, then try again.")
+                        .foregroundStyle(KeyholeColors.textDim)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(KeyholeColors.bg)
             } else {
                 credentialsList
             }
@@ -283,34 +307,42 @@ private struct AutoFillRootView: View {
             if showingAllLogins {
                 Section {
                     Text("No saved login matched \(siteLabel). Pick one below.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
                 }
+                .listRowBackground(KeyholeColors.accentSoft)
             }
             ForEach(displayed, id: \.entry.id) { match in
                 Button {
                     onPickPassword(match.entry.username, match.entry.password)
                 } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(match.entry.title)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        Text(match.entry.username.isEmpty ? "(no username)" : match.entry.username)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        if match.strength != .none {
-                            Text(match.strength.rawValue)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        } else if let host = match.entry.urls.first.flatMap({ parseTarget($0)?.hostname }) {
-                            Text(host)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                    HStack(spacing: 12) {
+                        KeyholeIcon(name: .key, size: 18)
+                            .foregroundStyle(KeyholeColors.textDim)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(match.entry.title)
+                                .font(KeyholeFonts.bodySemibold)
+                                .foregroundStyle(KeyholeColors.text)
+                            Text(match.entry.username.isEmpty ? "(no username)" : match.entry.username)
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.textDim)
+                            if match.strength != .none {
+                                Text(match.strength.rawValue)
+                                    .font(KeyholeFonts.caption)
+                                    .foregroundStyle(KeyholeColors.textDim)
+                            } else if let host = match.entry.urls.first.flatMap({ parseTarget($0)?.hostname }) {
+                                Text(host)
+                                    .font(KeyholeFonts.caption)
+                                    .foregroundStyle(KeyholeColors.textDim)
+                            }
                         }
                     }
                 }
+                .listRowBackground(KeyholeColors.surface)
             }
         }
+        .listStyle(.plain)
+        .keyholeFormChrome()
         .searchable(text: $query, prompt: "Search logins")
     }
 
@@ -320,18 +352,25 @@ private struct AutoFillRootView: View {
                 Button {
                     Task { await completePasskeyAssertion(entry: item.entry, passkey: item.passkey) }
                 } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.passkey.userName.isEmpty ? item.entry.title : item.passkey.userName)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        Text(item.passkey.relyingPartyId)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        KeyholeIcon(name: .key, size: 18)
+                            .foregroundStyle(KeyholeColors.textDim)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.passkey.userName.isEmpty ? item.entry.title : item.passkey.userName)
+                                .font(KeyholeFonts.bodySemibold)
+                                .foregroundStyle(KeyholeColors.text)
+                            Text(item.passkey.relyingPartyId)
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.textDim)
+                        }
                     }
                 }
                 .disabled(busy)
+                .listRowBackground(KeyholeColors.surface)
             }
         }
+        .listStyle(.plain)
+        .keyholeFormChrome()
     }
 
     private func passkeyRegisterConfirm(identity: ASPasskeyCredentialIdentity) -> some View {
@@ -341,11 +380,15 @@ private struct AutoFillRootView: View {
                 LabeledContent("Account", value: identity.userName.isEmpty ? "—" : identity.userName)
             } footer: {
                 Text("Keyhole will create a passkey and save it in your vault.")
+                    .font(KeyholeFonts.meta)
+                    .foregroundStyle(KeyholeColors.textDim)
             }
+            .listRowBackground(KeyholeColors.surface)
             if let error {
                 Section {
-                    Text(error).foregroundStyle(.red).font(.footnote)
+                    KeyholeErrorBanner(message: error)
                 }
+                .listRowBackground(KeyholeColors.surface)
             }
             Section {
                 Button {
@@ -353,13 +396,17 @@ private struct AutoFillRootView: View {
                 } label: {
                     if busy {
                         ProgressView()
+                            .tint(KeyholeColors.accent)
                     } else {
                         Text("Save passkey")
                     }
                 }
+                .foregroundStyle(KeyholeColors.accent)
                 .disabled(busy)
             }
+            .listRowBackground(KeyholeColors.surface)
         }
+        .keyholeFormChrome()
     }
 
     private var unlockForm: some View {
@@ -369,30 +416,37 @@ private struct AutoFillRootView: View {
                     Button {
                         Task { await unlockWithBiometrics() }
                     } label: {
-                        HStack {
+                        HStack(spacing: 8) {
                             Image(systemName: BiometricUnlockStore.biometryTypeName == "Touch ID"
                                   ? "touchid" : "faceid")
                             Text("Unlock with \(BiometricUnlockStore.biometryTypeName)")
                         }
+                        .font(KeyholeFonts.bodySemibold)
+                        .foregroundStyle(KeyholeColors.accent)
                     }
                     .disabled(busy)
                 }
+                .listRowBackground(KeyholeColors.surface)
             }
             Section {
                 SecureField("Master password", text: $password)
                     .textContentType(.password)
+                    .foregroundStyle(KeyholeColors.text)
                 if let error {
-                    Text(error).foregroundStyle(.red).font(.footnote)
+                    KeyholeErrorBanner(message: error)
                 }
                 Button {
                     Task { await unlock(masterPassword: password) }
                 } label: {
                     if busy {
                         ProgressView()
+                            .tint(KeyholeColors.accent)
                     } else {
                         Text("Unlock")
+                            .font(KeyholeFonts.bodySemibold)
                     }
                 }
+                .foregroundStyle(KeyholeColors.accent)
                 .disabled(busy || password.count < MIN_MASTER_PASSWORD_LENGTH)
             } footer: {
                 Text(
@@ -402,8 +456,12 @@ private struct AutoFillRootView: View {
                       ? "Enter your master password to continue with this passkey."
                       : "Enter your master password to fill this login."
                 )
+                .font(KeyholeFonts.meta)
+                .foregroundStyle(KeyholeColors.textDim)
             }
+            .listRowBackground(KeyholeColors.surface)
         }
+        .keyholeFormChrome()
     }
 
     private func maybeAutoPromptBiometrics() {

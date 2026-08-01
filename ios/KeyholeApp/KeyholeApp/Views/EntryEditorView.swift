@@ -78,6 +78,7 @@ struct EntryEditorView: View {
                         KeyholeStrengthMeter(strength: strength)
                         HStack {
                             Button("Generate") { generateInline() }
+                                .foregroundStyle(KeyholeColors.accent)
                             Button {
                                 generateInline()
                             } label: {
@@ -100,6 +101,7 @@ struct EntryEditorView: View {
                 } header: {
                     KeyholeFieldLabel(text: kind == .note ? "Note" : "Login")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
                 if kind == .login {
                     Section {
@@ -119,6 +121,7 @@ struct EntryEditorView: View {
                     } header: {
                         KeyholeFieldLabel(text: "Authenticator")
                     }
+                    .listRowBackground(KeyholeColors.surface)
                 }
 
                 Section {
@@ -134,6 +137,7 @@ struct EntryEditorView: View {
                 } header: {
                     KeyholeFieldLabel(text: "Organization")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
                 Section {
                     TextField(kind == .note ? "Write your note…" : "Add a note…", text: $notes, axis: .vertical)
@@ -141,6 +145,7 @@ struct EntryEditorView: View {
                 } header: {
                     KeyholeFieldLabel(text: kind == .note ? "Note" : "Notes")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
                 Section {
                     ForEach($customFields) { $field in
@@ -156,6 +161,7 @@ struct EntryEditorView: View {
                                 customFields.removeAll { $0.id == field.id }
                             }
                             .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.danger)
                         }
                     }
                     Button("Add custom field") {
@@ -168,9 +174,11 @@ struct EntryEditorView: View {
                             )
                         )
                     }
+                    .foregroundStyle(KeyholeColors.accent)
                 } header: {
                     KeyholeFieldLabel(text: "Custom fields")
                 }
+                .listRowBackground(KeyholeColors.surface)
 
                 Section {
                     ForEach(attachments) { att in
@@ -186,15 +194,18 @@ struct EntryEditorView: View {
                                 attachments.removeAll { $0.id == att.id }
                             }
                             .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.danger)
                         }
                     }
                     Button("Add attachment…") { showFileImporter = true }
+                        .foregroundStyle(KeyholeColors.accent)
                 } header: {
                     KeyholeFieldLabel(text: "Attachments")
                 } footer: {
                     Text("Up to \(MAX_ATTACHMENT_BYTES / 1024) KB each.")
                         .font(KeyholeFonts.meta)
                 }
+                .listRowBackground(KeyholeColors.surface)
 
                 if entry.map({ !$0.history.isEmpty }) == true {
                     Section {
@@ -204,15 +215,19 @@ struct EntryEditorView: View {
                     } header: {
                         KeyholeFieldLabel(text: "Password history")
                     }
+                    .listRowBackground(KeyholeColors.surface)
                 }
 
                 if let error {
                     Section {
                         KeyholeErrorBanner(message: error)
                     }
+                    .listRowBackground(KeyholeColors.surface)
                 }
             }
+            .keyholeFormChrome()
             .navigationTitle(entry == nil ? "New \(kind == .note ? "note" : "login")" : "Edit")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {

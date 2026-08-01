@@ -11,7 +11,10 @@ struct KeyholeApp: App {
             RootView()
                 .environment(session)
                 .preferredColorScheme(colorScheme(for: session.data?.settings.theme))
-                .onAppear { session.bootstrap() }
+                .onAppear {
+                    KeyholeAppearance.apply()
+                    session.bootstrap()
+                }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:

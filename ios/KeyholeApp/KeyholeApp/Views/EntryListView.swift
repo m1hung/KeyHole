@@ -65,6 +65,8 @@ struct EntryListView: View {
             }
             .background(KeyholeColors.bg)
             .navigationTitle("Vault")
+            .toolbarBackground(KeyholeColors.surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .searchable(text: $query, prompt: "Search titles, usernames, URLs, tags")
             .toolbar { toolbarContent }
             .sheet(isPresented: $showEditor) {
@@ -214,6 +216,7 @@ struct EntryListView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(KeyholeColors.bg)
         } else {
             List {
                 if session.foreignSchemaVersion != nil {
@@ -248,11 +251,13 @@ struct EntryListView: View {
                                 KeyholeIcon(name: .trash, size: 18)
                             }
                         }
+                        .tint(KeyholeColors.danger)
                     }
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(KeyholeColors.bg)
         }
     }
 
@@ -696,8 +701,7 @@ struct EntryDetailView: View {
                         .listRowBackground(KeyholeColors.surface2)
                     }
                 }
-                .scrollContentBackground(.hidden)
-                .background(KeyholeColors.bg)
+                .keyholeFormChrome()
                 .navigationTitle(entry.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
