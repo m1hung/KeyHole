@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { sendToBackground, type EntrySummary } from '../shared/messages.ts';
 import { openVaultWindow } from '../shared/openVaultWindow.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
+import { copy as uiCopy } from '../../../app/src/copy.ts';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 
@@ -274,7 +275,7 @@ export function Popup() {
                 <div className="popup-item-meta">
                   {entry.username || <em>no username</em>}
                   {entry.host ? ` · ${entry.host}` : ''}
-                  {entry.hasPasskey ? ' · passkey' : ''}
+                  {entry.hasPasskey ? ` · ${uiCopy.passkeyBadge}` : ''}
                 </div>
               </div>
               <div className="popup-item-actions">
@@ -305,7 +306,7 @@ export function Popup() {
                   </button>
                 )}
                 {entry.hasPasskey && (
-                  <span className="icon" title="Passkey — use Safari or iOS AutoFill to sign in" aria-label="Has passkey">
+                  <span className="icon" title={uiCopy.passkeyTitle} aria-label="Has passkey">
                     <Icon name="key" size={17} />
                   </span>
                 )}
@@ -362,6 +363,7 @@ function UnlockForm({
         }}
       >
         <label htmlFor="popup-master">Master password</label>
+        <p className="hint" style={{ margin: '0 0 8px' }}>{uiCopy.unlockSubtitle}</p>
         <input
           id="popup-master"
           type="password"

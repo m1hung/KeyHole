@@ -11,6 +11,7 @@ import { ConfirmDialog, StrengthMeter } from './common.tsx';
 import { readVaultFromBlob } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
 import { Icon } from './Icon.tsx';
+import { copy } from '../copy.ts';
 
 /** Below this we warn but still allow — the length floor is the hard gate. */
 const RECOMMENDED_BITS = 60;
@@ -49,7 +50,7 @@ function Unlock({ vault }: { vault: VaultController }) {
           <Icon name="vault" size={26} />
           Keyhole
         </h1>
-        <p className="subtitle">Your vault is locked.</p>
+        <p className="subtitle">{copy.unlockSubtitle}</p>
         <p className="local-badge">
           <Icon name="localServer" size={14} />
           Encrypted vault stays on this device

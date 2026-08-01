@@ -633,4 +633,80 @@ final class UrlMatchTests: XCTestCase {
         data = try deleteEntry(data: data, id: id)
         XCTAssertTrue(matchEntriesForAutofill(data: data, pageUrl: "https://bank.example").isEmpty)
     }
+
+    // MARK: - Domain mode (eTLD+1), port of core/test/url-match.test.ts
+
+    func testDomainModeMatchesSiblingHostsEitherDirection() {
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://accounts.example.com", pageUrl: "https://billing.example.com", mode: .domain),
+            .domain
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://accounts.example.com", pageUrl: "https://example.com", mode: .domain),
+            .domain
+        )
+        // www ↔ apex is treated as the same *host* in this port (see
+        // `testWWWAndApexAreEquivalent`), so it resolves before the domain check
+        // is ever reached — a stronger result than plain `core`'s `.domain`.
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://www.example.com", pageUrl: "https://example.com", mode: .domain),
+            .host
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://deep.a.example.co.uk", pageUrl: "https://other.example.co.uk", mode: .domain),
+            .domain
+        )
+    }
+
+    func testDomainModeReportedOnlyWhenStricterRuleDoesNotApply() {
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://example.com/login", pageUrl: "https://example.com/app", mode: .domain),
+            .exact
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://example.com", pageUrl: "http://example.com", mode: .domain),
+            .host
+        )
+        XCTAssertEqual(
+            matchUrl(entryUrl: "https://example.com", pageUrl: "https://gist.example.com", mode: .domain),
+            .subdomain
+        )
+    }
+
+    func testDomainModeStaysOffInStricterModes() {
+        for mode: MatchMode in [.exact, .host, .subdomain] {
+            XCTAssertEqual(
+                matchUrl(entryUrl: "https://accounts.example.com", pageUrl: "https://billing.example.com", mode: mode),
+                .none
+            )
+        }
+    }
+
+    func testDomainModeDoesNotPoolTenantsOfSharedHostingDomain() {
+        XCTAssertEqual(matchUrl(entryUrl: "https://alice.github.io", pageUrl: "https://bob.github.io", mode: .domain), .none)
+        XCTAssertEqual(matchUrl(entryUrl: "https://mine.vercel.app", pageUrl: "https://theirs.vercel.app", mode: .domain), .none)
+    }
+
+    func testDomainModeDoesNotPoolUnrelatedRegistrantsUnderCcTLDSuffix() {
+        XCTAssertEqual(matchUrl(entryUrl: "https://mybank.co.uk", pageUrl: "https://attacker.co.uk", mode: .domain), .none)
+        XCTAssertEqual(matchUrl(entryUrl: "https://shop.com.au", pageUrl: "https://evil.com.au", mode: .domain), .none)
+    }
+
+    func testDomainModeRefusesToWidenWhenNamespaceUnresolvable() {
+        XCTAssertEqual(matchUrl(entryUrl: "https://mybank.co.mz", pageUrl: "https://attacker.co.mz", mode: .domain), .none)
+        XCTAssertEqual(matchUrl(entryUrl: "http://10.0.0.5", pageUrl: "http://10.0.0.6", mode: .domain), .none)
+        XCTAssertEqual(matchUrl(entryUrl: "http://intranet.local", pageUrl: "http://payroll.local", mode: .domain), .none)
+    }
+
+    func testDomainModeRejectsLookalikeAttacks() {
+        let attacks = [
+            "https://github.com.evil.com/login",
+            "https://evil.com/github.com",
+            "https://notgithub.com",
+            "https://github.com-evil.com",
+        ]
+        for attacker in attacks {
+            XCTAssertEqual(matchUrl(entryUrl: "https://github.com", pageUrl: attacker, mode: .domain), .none)
+        }
+    }
 }

@@ -547,7 +547,7 @@ private struct AutoFillRootView: View {
             var found: [AutofillMatch] = []
             var seen = Set<String>()
             for page in pageURLs {
-                for match in matchEntriesForAutofill(data: data, pageUrl: page, mode: .subdomain) {
+                for match in matchEntriesForAutofill(data: data, pageUrl: page, mode: .domain) {
                     if seen.insert(match.entry.id).inserted {
                         found.append(match)
                     }

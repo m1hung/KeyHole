@@ -88,7 +88,7 @@ struct EntryListView: View {
                 }
             }
             .alert(
-                "Permanently delete?",
+                "Delete forever?",
                 isPresented: Binding(
                     get: { purgeTarget != nil },
                     set: { if !$0 { purgeTarget = nil; purgeConfirmTitle = "" } }
@@ -99,7 +99,7 @@ struct EntryListView: View {
                     purgeTarget = nil
                     purgeConfirmTitle = ""
                 }
-                Button("Purge forever", role: .destructive) {
+                Button("Delete forever", role: .destructive) {
                     guard let target = purgeTarget, purgeConfirmTitle == target.title else { return }
                     let id = target.id
                     purgeTarget = nil
@@ -246,7 +246,7 @@ struct EntryListView: View {
                             }
                         } label: {
                             Label {
-                                Text("Move to Trash")
+                                Text("Move to trash")
                             } icon: {
                                 KeyholeIcon(name: .trash, size: 18)
                             }
@@ -314,7 +314,7 @@ struct EntryListView: View {
                     }
                 }
                 .buttonStyle(KeyholeGhostButtonStyle())
-                Button("Purge", role: .destructive) {
+                Button("Delete forever", role: .destructive) {
                     purgeTarget = entry
                     purgeConfirmTitle = ""
                 }

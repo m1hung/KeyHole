@@ -974,3 +974,92 @@ describe('entry editor round-trip', () => {
     ]);
   }, 60_000);
 });
+
+/** Folder assign, password history, and passkey remove via the SW message paths. */
+describe('folders, history, and passkeys', () => {
+  it('creates a folder, assigns it, and surfaces history + passkey summaries', async () => {
+    const { createEntry, createVault, saveVault, updateEntry, bytesToB64 } = await import('@keyhole/core');
+    const password = 'parity-folders-history-pw';
+    const toB64 = (text: string) => bytesToB64(new TextEncoder().encode(text));
+
+    const backup = await send({ type: 'EXPORT_VAULT' });
+    if (!backup.ok || backup.type !== 'EXPORT') throw new Error('expected export');
+
+    const { file: created, session } = await createVault(password);
+    const passkey = {
+      id: '44444444-4444-4444-8444-444444444444',
+      credentialIdB64: toB64('cred'),
+      relyingPartyId: 'parity.example',
+      relyingPartyName: 'Parity',
+      userName: 'user',
+      userDisplayName: 'User',
+      userHandleB64: toB64('handle'),
+      privateKeyB64: toB64('key-material-32-bytes-long!!!!!!'),
+      signCount: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null as string | null,
+    };
+    const { data, entry } = createEntry(session.data, {
+      title: 'Parity entry',
+      username: 'ada',
+      password: 'first-password',
+      urls: ['https://parity.example/login'],
+    });
+    session.data = updateEntry(data, entry.id, { password: 'second-password' });
+    session.data = {
+      ...session.data,
+      entries: session.data.entries.map((e) =>
+        e.id === entry.id ? { ...e, passkeys: [passkey] } : e,
+      ),
+    };
+    const seeded = await saveVault(session, created);
+    expect((await send({ type: 'IMPORT_VAULT', file: seeded })).ok).toBe(true);
+    expect((await send({ type: 'UNLOCK', masterPassword: password })).ok).toBe(true);
+
+    const folderRes = await send({ type: 'CREATE_FOLDER', name: 'Work' });
+    expect(folderRes.ok).toBe(true);
+    if (!folderRes.ok || folderRes.type !== 'FOLDERS') throw new Error('expected folders');
+    const folderId = folderRes.folders[0]?.id;
+    expect(folderId).toBeTruthy();
+
+    const listed = await send({ type: 'LIST_FOLDERS' });
+    if (!listed.ok || listed.type !== 'FOLDERS') throw new Error('expected folders');
+    expect(listed.folders.map((f) => f.name)).toContain('Work');
+
+    expect(
+      (
+        await send({
+          type: 'SAVE_ENTRY',
+          entry: { id: entry.id, title: 'Parity entry', folderId },
+        })
+      ).ok,
+    ).toBe(true);
+
+    const loaded = await send({ type: 'GET_ENTRY', entryId: entry.id });
+    if (!loaded.ok || loaded.type !== 'ENTRY') throw new Error('expected entry');
+    expect(loaded.entry.folderId).toBe(folderId);
+    expect(loaded.entry.password).toBe('second-password');
+    expect(loaded.entry.history.some((h) => h.password === 'first-password')).toBe(true);
+    expect(loaded.entry.passkeys).toHaveLength(1);
+    expect(loaded.entry.passkeys[0]?.relyingPartyId).toBe('parity.example');
+    expect(loaded.entry.passkeys[0]).not.toHaveProperty('privateKeyB64');
+
+    expect(
+      (
+        await send({
+          type: 'REMOVE_PASSKEY',
+          entryId: entry.id,
+          passkeyId: passkey.id,
+        })
+      ).ok,
+    ).toBe(true);
+
+    const after = await send({ type: 'GET_ENTRY', entryId: entry.id });
+    if (!after.ok || after.type !== 'ENTRY') throw new Error('expected entry');
+    expect(after.entry.passkeys).toEqual([]);
+    expect(after.entry.password).toBe('second-password');
+
+    expect((await send({ type: 'IMPORT_VAULT', file: backup.file })).ok).toBe(true);
+    expect((await send({ type: 'UNLOCK', masterPassword: MASTER_PASSWORD })).ok).toBe(true);
+  }, 60_000);
+});

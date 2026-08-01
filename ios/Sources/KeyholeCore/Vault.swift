@@ -635,6 +635,23 @@ public func deleteEntry(data: VaultData, id: String) throws -> VaultData {
     return next
 }
 
+/// Move several entries to the trash in one edit. Mirrors `deleteEntries` in
+/// core/src/vault.ts — used for bulk actions (e.g. clearing every health
+/// finding at once) so the mutation is a single save, not one per entry.
+public func deleteEntries(data: VaultData, ids: [String]) -> VaultData {
+    let wanted = Set(ids)
+    guard !wanted.isEmpty else { return data }
+    guard data.entries.contains(where: { wanted.contains($0.id) && $0.deletedAt == nil }) else { return data }
+
+    let timestamp = nowISO()
+    var next = data
+    for index in next.entries.indices where wanted.contains(next.entries[index].id) && next.entries[index].deletedAt == nil {
+        next.entries[index].deletedAt = timestamp
+        next.entries[index].updatedAt = timestamp
+    }
+    return next
+}
+
 /// Take an entry back out of the trash.
 public func restoreEntry(data: VaultData, id: String) throws -> VaultData {
     guard let index = data.entries.firstIndex(where: { $0.id == id }) else {

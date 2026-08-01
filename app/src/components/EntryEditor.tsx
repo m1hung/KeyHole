@@ -22,11 +22,13 @@ import {
   type Entry,
   type Folder,
   type GeneratorOptions,
+  type PasskeyRecord,
   type TotpConfig,
 } from '@keyhole/core';
 import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
 import { GeneratorOptionsForm } from './GeneratorOptionsForm.tsx';
 import { Icon } from './Icon.tsx';
+import { copy } from '../copy.ts';
 
 interface EntryEditorProps {
   entry: Entry;
@@ -36,6 +38,7 @@ interface EntryEditorProps {
   vaultAttachmentTotalBytes: number;
   onSave: (patch: Partial<Entry>) => void;
   onDelete: () => void;
+  onRemovePasskey: (passkeyId: string) => void;
   onCopy: (value: string, label: string) => void;
   onClose: () => void;
 }
@@ -47,6 +50,7 @@ export function EntryEditor({
   vaultAttachmentTotalBytes,
   onSave,
   onDelete,
+  onRemovePasskey,
   onCopy,
   onClose,
 }: EntryEditorProps) {
@@ -381,6 +385,33 @@ export function EntryEditor({
         }}
       />
 
+      {!isNote && entry.passkeys.length > 0 && (
+        <div className="section">
+          <h3>{copy.passkeysSection}</h3>
+          <p className="hint" style={{ marginBottom: 8 }}>
+            {copy.passkeysHint}
+          </p>
+          <ul className="entry-list">
+            {entry.passkeys.map((pk: PasskeyRecord) => (
+              <li key={pk.id}>
+                <div className="history-row">
+                  <span className="entry-body">
+                    <div className="title">{pk.userName || pk.userDisplayName || pk.relyingPartyId}</div>
+                    <div className="meta">{pk.relyingPartyId}</div>
+                    {pk.lastUsedAt && (
+                      <div className="meta">Last used {new Date(pk.lastUsedAt).toLocaleString()}</div>
+                    )}
+                  </span>
+                  <button type="button" className="danger" onClick={() => onRemovePasskey(pk.id)}>
+                    {copy.removePasskey}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Previous passwords. The reason this exists: you rotate a password here,
           the site rejects the change, and without this the one that still works is
           gone for good — "no recovery, no backdoor" cuts both ways. */}
@@ -424,14 +455,14 @@ export function EntryEditor({
           )}
         </p>
         <button type="button" className="danger" style={{ marginTop: 12 }} onClick={() => setConfirmDelete(true)}>
-          Move to trash
+          {copy.moveToTrash}
         </button>
       </div>
 
       <ConfirmDialog
         open={confirmDelete}
         title="Move this entry to the trash?"
-        confirmLabel="Move to trash"
+        confirmLabel={copy.moveToTrash}
         onCancel={() => setConfirmDelete(false)}
         onConfirm={() => {
           setConfirmDelete(false);
@@ -509,9 +540,9 @@ function TotpSection({
 
   return (
     <div className="section">
-      <h3>Two-factor code</h3>
+      <h3>{copy.authenticatorSection}</h3>
       <div className="field">
-        <label htmlFor="entry-totp">TOTP secret or otpauth:// URI</label>
+        <label htmlFor="entry-totp">{copy.authenticatorField}</label>
         <input
           id="entry-totp"
           className="mono"

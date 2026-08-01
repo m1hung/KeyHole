@@ -225,6 +225,28 @@ describe('requestSchema', () => {
       { type: 'FILL', entryId: '11111111-1111-4111-8111-111111111111', tabId: 0 },
       { type: 'REVEAL_SECRET', entryId: '11111111-1111-4111-8111-111111111111', field: 'password' },
       { type: 'GET_ENTRY', entryId: '11111111-1111-4111-8111-111111111111' },
+      { type: 'LIST_FOLDERS' },
+      { type: 'CREATE_FOLDER', name: 'Work' },
+      { type: 'DELETE_FOLDER', folderId: '11111111-1111-4111-8111-111111111111' },
+      {
+        type: 'UPDATE_VAULT_SETTINGS',
+        autoLockMinutes: 10,
+        clipboardClearSeconds: 20,
+        lockOnHide: true,
+        generator: {
+          length: 20,
+          lowercase: true,
+          uppercase: true,
+          digits: true,
+          symbols: false,
+          excludeAmbiguous: true,
+        },
+      },
+      {
+        type: 'REMOVE_PASSKEY',
+        entryId: '11111111-1111-4111-8111-111111111111',
+        passkeyId: '22222222-2222-4222-8222-222222222222',
+      },
       { type: 'GET_SYNC_CONFIG' },
       {
         type: 'SYNC_REGISTER',

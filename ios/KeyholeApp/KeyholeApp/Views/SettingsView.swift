@@ -20,6 +20,8 @@ struct SettingsView: View {
     @State private var exportData: Data?
     @State private var confirmReset = false
     @State private var healthReport: VaultHealthReport?
+    @State private var healthSelection: Set<String> = []
+    @State private var confirmHealthTrash = false
     @State private var breachBusy = false
     @State private var breachError: String?
     @State private var breachHits: [BreachHit]?
@@ -116,7 +118,7 @@ struct SettingsView: View {
                                         Task { await trashHealthEntry(id: hit.entryId) }
                                     } label: {
                                         Label {
-                                            Text("Move to Trash")
+                                            Text("Move to trash")
                                         } icon: {
                                             KeyholeIcon(name: .trash, size: 18)
                                         }
@@ -155,21 +157,73 @@ struct SettingsView: View {
 
                 Section {
                     if let report = healthReport {
+                        let findings = groupedHealthFindings(report.issues)
                         Text(
-                            report.issues.isEmpty
+                            findings.isEmpty
                                 ? "Looking good — no issues."
-                                : "\(report.issues.count) issue\(report.issues.count == 1 ? "" : "s") found."
+                                : "\(report.issues.count) issue\(report.issues.count == 1 ? "" : "s") across \(findings.count) \(findings.count == 1 ? "entry" : "entries")."
                         )
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
 
-                        ForEach(report.issues.prefix(40)) { issue in
+                        if !findings.isEmpty {
                             HStack {
+                                Button {
+                                    let allIds = Set(findings.map(\.entryId))
+                                    healthSelection = healthSelection == allIds ? [] : allIds
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: healthSelection.count == findings.count ? "checkmark.circle.fill" : "circle")
+                                        Text(
+                                            healthSelection.isEmpty
+                                                ? "Select all \(findings.count)"
+                                                : "\(healthSelection.count) of \(findings.count) selected"
+                                        )
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.accent)
+                                Spacer(minLength: 8)
+                                Button(role: .destructive) {
+                                    confirmHealthTrash = true
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        KeyholeIcon(name: .trash, size: 14)
+                                        Text(session.busy ? "Moving…" : "Move \(healthSelection.count) to trash")
+                                    }
+                                }
+                                .disabled(healthSelection.isEmpty || session.busy)
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.danger)
+                            }
+
+                            Button("Move all findings to trash") {
+                                Task { await trashHealthEntries(ids: findings.map(\.entryId)) }
+                            }
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.danger)
+                            .disabled(session.busy)
+                        }
+
+                        ForEach(findings.prefix(40)) { finding in
+                            HStack(spacing: 12) {
+                                Button {
+                                    toggleHealthSelection(finding.entryId)
+                                } label: {
+                                    Image(systemName: healthSelection.contains(finding.entryId) ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(
+                                            healthSelection.contains(finding.entryId)
+                                                ? KeyholeColors.accent
+                                                : KeyholeColors.textDim
+                                        )
+                                }
+                                .buttonStyle(.plain)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("\(issue.kind.displayLabel) · \(issue.title)")
+                                    Text("\(finding.kinds.map(\.displayLabel).joined(separator: ", ")) · \(finding.title)")
                                         .font(KeyholeFonts.bodySemibold)
                                         .foregroundStyle(KeyholeColors.text)
-                                    Text(issue.detail)
+                                    Text(finding.issues.map(\.detail).joined(separator: " "))
                                         .font(KeyholeFonts.meta)
                                         .foregroundStyle(KeyholeColors.textDim)
                                 }
@@ -180,14 +234,14 @@ struct SettingsView: View {
                             }
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                openEntry(id: issue.entryId)
+                                openEntry(id: finding.entryId)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
-                                    Task { await trashHealthEntry(id: issue.entryId) }
+                                    Task { await trashHealthEntry(id: finding.entryId) }
                                 } label: {
                                     Label {
-                                        Text("Move to Trash")
+                                        Text("Move to trash")
                                     } icon: {
                                         KeyholeIcon(name: .trash, size: 18)
                                     }
@@ -197,6 +251,7 @@ struct SettingsView: View {
                     }
                     Button(healthReport == nil ? "Scan passwords" : "Scan again") {
                         healthReport = session.data.map { analyzeVaultHealth($0) }
+                        healthSelection = []
                         session.registerActivity()
                     }
                     .foregroundStyle(KeyholeColors.accent)
@@ -204,6 +259,19 @@ struct SettingsView: View {
                     KeyholeFieldLabel(text: "Password check")
                 }
                 .listRowBackground(KeyholeColors.surface)
+                .confirmationDialog(
+                    "Move \(healthSelection.count) \(healthSelection.count == 1 ? "entry" : "entries") to the trash?",
+                    isPresented: $confirmHealthTrash,
+                    titleVisibility: .visible
+                ) {
+                    Button("Move to trash", role: .destructive) {
+                        let ids = Array(healthSelection)
+                        confirmHealthTrash = false
+                        Task { await trashHealthEntries(ids: ids) }
+                    }
+                } message: {
+                    Text("They stop appearing in your list and in AutoFill right away. Restore any of them from the Trash filter within \(TRASH_RETENTION_DAYS) days.")
+                }
 
                 Section {
                     Button("Export backup…") {
@@ -391,6 +459,28 @@ struct SettingsView: View {
         breachHits = breachHits?.filter { liveIds.contains($0.entryId) }
     }
 
+    /// Bulk trash for the health panel — one edit for every selected finding,
+    /// mirroring the desktop `SettingsPanel` "Move … to trash" action.
+    private func trashHealthEntries(ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        await session.mutate { deleteEntries(data: $0, ids: ids) }
+        healthSelection.removeAll()
+        session.registerActivity()
+        guard let data = session.data else {
+            healthReport = nil
+            return
+        }
+        healthReport = analyzeVaultHealth(data)
+        let liveIds = Set(liveEntries(data).map(\.id))
+        breachHits = breachHits?.filter { liveIds.contains($0.entryId) }
+    }
+
+    private func toggleHealthSelection(_ entryId: String) {
+        if !healthSelection.insert(entryId).inserted {
+            healthSelection.remove(entryId)
+        }
+    }
+
     private func enableBiometrics() async {
         biometricSetupError = nil
         guard let file = session.exportVault() else {
@@ -536,6 +626,38 @@ struct SettingsView: View {
             session.errorMessage = error.localizedDescription
         }
     }
+}
+
+/// One row per flagged entry, folding together every reason it was flagged —
+/// mirrors `groupIssuesByEntry` in core/src/health.ts, so a selection checkbox
+/// maps to exactly one entry even when it has several findings.
+struct HealthFinding: Identifiable {
+    var entryId: String
+    var title: String
+    var kinds: [HealthIssueKind]
+    var issues: [HealthIssue]
+    var id: String { entryId }
+}
+
+func groupedHealthFindings(_ issues: [HealthIssue]) -> [HealthFinding] {
+    var order: [String] = []
+    var byEntry: [String: HealthFinding] = [:]
+    for issue in issues {
+        if var existing = byEntry[issue.entryId] {
+            existing.issues.append(issue)
+            if !existing.kinds.contains(issue.kind) { existing.kinds.append(issue.kind) }
+            byEntry[issue.entryId] = existing
+        } else {
+            byEntry[issue.entryId] = HealthFinding(
+                entryId: issue.entryId,
+                title: issue.title,
+                kinds: [issue.kind],
+                issues: [issue]
+            )
+            order.append(issue.entryId)
+        }
+    }
+    return order.compactMap { byEntry[$0] }
 }
 
 struct VaultDocument: FileDocument {

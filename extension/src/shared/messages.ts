@@ -14,7 +14,19 @@
  */
 
 import { z } from 'zod';
-import type { Attachment, CustomField, TotpConfig } from '@keyhole/core';
+import type { Attachment, CustomField, GeneratorOptions, PasswordHistoryEntry, TotpConfig } from '@keyhole/core';
+
+/** Mirrors `GeneratorOptions` from core — validated here since core has no zod dependency. */
+const generatorOptionsSchema = z
+  .object({
+    length: z.number().int().min(1).max(512),
+    lowercase: z.boolean(),
+    uppercase: z.boolean(),
+    digits: z.boolean(),
+    symbols: z.boolean(),
+    excludeAmbiguous: z.boolean(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Requests: extension pages (popup / options) → service worker
@@ -80,6 +92,19 @@ export const requestSchema = z.discriminatedUnion('type', [
    * `PURGE_ENTRY` stays deliberately one entry at a time.
    */
   z.object({ type: z.literal('DELETE_ENTRIES'), entryIds: z.array(z.uuid()).min(1).max(5000) }).strict(),
+  z.object({ type: z.literal('LIST_FOLDERS') }).strict(),
+  z.object({ type: z.literal('CREATE_FOLDER'), name: z.string().min(1).max(128) }).strict(),
+  z.object({ type: z.literal('DELETE_FOLDER'), folderId: z.uuid() }).strict(),
+  z
+    .object({
+      type: z.literal('UPDATE_VAULT_SETTINGS'),
+      autoLockMinutes: z.number().min(0.5).max(24 * 60).optional(),
+      clipboardClearSeconds: z.number().min(0).max(600).optional(),
+      lockOnHide: z.boolean().optional(),
+      /** Saved as the vault-wide defaults the entry editor's generator starts from. */
+      generator: generatorOptionsSchema.optional(),
+    })
+    .strict(),
   z.object({ type: z.literal('KEEPALIVE') }).strict(),
   z.object({ type: z.literal('GET_SYNC_CONFIG') }).strict(),
   z
@@ -206,9 +231,15 @@ export type Response =
       hasVault: boolean;
       entryCount: number;
       autoLockMinutes: number;
+      clipboardClearSeconds: number;
+      lockOnHide: boolean;
       theme: 'light' | 'dark' | 'system';
       /** Opt-in HIBP range checks. Only meaningful while unlocked. */
       breachCheckEnabled: boolean;
+      /** Vault-wide defaults the entry editor's password generator starts from. */
+      generator: GeneratorOptions;
+      /** Total attachment bytes across the vault (pre-base64), for the budget meter. Zero while locked. */
+      attachmentTotalBytes: number;
       /**
        * Set when the open vault was written by a newer Keyhole than this build.
        * It works and unknown fields survive a save, but they are not shown here.
@@ -216,6 +247,11 @@ export type Response =
       foreignSchemaVersion: number | null;
     }
   | { ok: true; type: 'ENTRIES'; entries: EntrySummary[] }
+  | {
+      ok: true;
+      type: 'FOLDERS';
+      folders: { id: string; name: string; createdAt: string }[];
+    }
   | {
       ok: true;
       type: 'ENTRY';
@@ -228,11 +264,13 @@ export type Response =
         urls: string[];
         notes: string;
         tags: string[];
+        folderId: string | null;
         totpSecret: string | null;
         totpConfig: TotpConfig | null;
         customFields: CustomField[];
         attachments: Attachment[];
         passkeys: PasskeySummary[];
+        history: PasswordHistoryEntry[];
       };
     }
   | {

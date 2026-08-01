@@ -53,10 +53,17 @@ export async function hasVault(): Promise<boolean> {
 export interface LocalPrefs {
   /** Mirrors the in-vault setting so the alarm can be scheduled while locked. */
   autoLockMinutes: number;
+  clipboardClearSeconds: number;
+  lockOnHide: boolean;
   theme: 'light' | 'dark' | 'system';
 }
 
-const DEFAULT_PREFS: LocalPrefs = { autoLockMinutes: 15, theme: 'system' };
+const DEFAULT_PREFS: LocalPrefs = {
+  autoLockMinutes: 15,
+  clipboardClearSeconds: 30,
+  lockOnHide: false,
+  theme: 'system',
+};
 
 export async function loadPrefs(): Promise<LocalPrefs> {
   const stored = await chrome.storage.local.get(SETTINGS_KEY);
@@ -67,6 +74,11 @@ export async function loadPrefs(): Promise<LocalPrefs> {
       typeof raw?.autoLockMinutes === 'number' && raw.autoLockMinutes > 0
         ? raw.autoLockMinutes
         : DEFAULT_PREFS.autoLockMinutes,
+    clipboardClearSeconds:
+      typeof raw?.clipboardClearSeconds === 'number' && raw.clipboardClearSeconds >= 0
+        ? raw.clipboardClearSeconds
+        : DEFAULT_PREFS.clipboardClearSeconds,
+    lockOnHide: typeof raw?.lockOnHide === 'boolean' ? raw.lockOnHide : DEFAULT_PREFS.lockOnHide,
     theme: theme === 'light' || theme === 'dark' || theme === 'system' ? theme : DEFAULT_PREFS.theme,
   };
 }

@@ -3,7 +3,7 @@
 :root {
   /* Kept in step with app/src/styles.css — same palette, standalone file
      because the popup ships its own minimal stylesheet. */
-  --bg: light-dark(#ffffff, #151b23);
+  --bg: light-dark(#f4f6f8, #0d1117);
   --surface: light-dark(#ffffff, #151b23);
   --surface-2: light-dark(#eef1f5, #1e262f);
   --border: light-dark(#d7dee6, #2a3341);

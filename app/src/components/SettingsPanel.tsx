@@ -18,6 +18,7 @@ import {
 } from '@keyhole/core';
 import { ConfirmDialog, FINDINGS_PAGE, StrengthMeter } from './common.tsx';
 import { Icon } from './Icon.tsx';
+import { copy } from '../copy.ts';
 import {
   downloadVaultFile,
   forgetStoredHandle,
@@ -455,10 +456,10 @@ function SyncSection({ vault }: { vault: VaultController }) {
 
       <div className="button-row">
         <button type="button" onClick={() => void register()} disabled={busy || vault.busy}>
-          {busy ? 'Working…' : 'Register & upload'}
+          {busy ? copy.syncWorking : copy.syncRegister}
         </button>
         <button type="button" onClick={() => void syncNow()} disabled={busy || vault.busy}>
-          {busy ? 'Syncing…' : 'Sync now'}
+          {busy ? copy.syncSyncing : copy.syncNow}
         </button>
       </div>
 
@@ -777,7 +778,7 @@ function VaultHealthSection({
       <ConfirmDialog
         open={confirmTrash}
         title={`Move ${selectedIds.length} ${selectedIds.length === 1 ? 'entry' : 'entries'} to the trash?`}
-        confirmLabel="Move to trash"
+        confirmLabel={copy.moveToTrash}
         danger
         onCancel={() => setConfirmTrash(false)}
         onConfirm={() => {

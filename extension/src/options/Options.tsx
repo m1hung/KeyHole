@@ -14,20 +14,35 @@ import {
   groupIssuesByEntry,
   generatePassword,
   DEFAULT_GENERATOR_OPTIONS,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_VAULT_BYTES,
   normalizeTotpConfig,
   parseOtpAuthUri,
+  randomUuid,
+  bytesToB64,
+  b64ToBytes,
   type Attachment,
   type CustomField,
+  type GeneratorOptions,
   type HealthIssueKind,
+  type PasswordHistoryEntry,
   type TotpConfig,
 } from '@keyhole/core';
 import { sendToBackground, type EntrySummary, type PasskeySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
 import { ConfirmDialog, FINDINGS_PAGE } from '../../../app/src/components/common.tsx';
+import { GeneratorPanel } from '../../../app/src/components/GeneratorPanel.tsx';
+import { copy } from '../../../app/src/copy.ts';
 import { SyncPanel } from './SyncPanel.tsx';
 
 type Screen = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 type View = 'entries' | 'sync';
+
+interface FolderSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+}
 
 interface EntryDraft {
   id?: string;
@@ -37,11 +52,13 @@ interface EntryDraft {
   urls: string[];
   notes: string;
   tags: string[];
+  folderId: string | null;
   totpSecret: string | null;
   totpConfig: TotpConfig | null;
   customFields: CustomField[];
   attachments: Attachment[];
   passkeys: PasskeySummary[];
+  history: PasswordHistoryEntry[];
 }
 
 const blankDraft = (): EntryDraft => ({
@@ -51,11 +68,13 @@ const blankDraft = (): EntryDraft => ({
   urls: [],
   notes: '',
   tags: [],
+  folderId: null,
   totpSecret: null,
   totpConfig: null,
   customFields: [],
   attachments: [],
   passkeys: [],
+  history: [],
 });
 
 export function Options() {
@@ -63,6 +82,7 @@ export function Options() {
   const [entries, setEntries] = useState<EntrySummary[]>([]);
   /** Total in the vault, unlike `entries` which is filtered by the search box. */
   const [entryCount, setEntryCount] = useState(0);
+  const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState<EntryDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,6 +97,10 @@ export function Options() {
    * was just deleted.
    */
   const [vaultVersion, setVaultVersion] = useState(0);
+  /** Vault-wide attachment usage, for the entry editor's budget meter. */
+  const [attachmentTotalBytes, setAttachmentTotalBytes] = useState(0);
+  /** Vault-wide password generator defaults (also edited on the Sync view). */
+  const [generatorDefaults, setGeneratorDefaults] = useState<GeneratorOptions>(DEFAULT_GENERATOR_OPTIONS);
 
   useEffect(() => {
     document.documentElement.dataset['theme'] = theme;
@@ -90,11 +114,15 @@ export function Options() {
     }
     setTheme(state.theme);
     setEntryCount(state.entryCount);
+    setAttachmentTotalBytes(state.attachmentTotalBytes);
+    setGeneratorDefaults(state.generator);
     const next: Screen = !state.hasVault ? 'no-vault' : state.locked ? 'locked' : 'unlocked';
     setScreen(next);
     if (next === 'unlocked') {
       const listed = await sendToBackground({ type: 'LIST_ENTRIES', query });
       if (listed.ok && listed.type === 'ENTRIES') setEntries(listed.entries);
+      const folderList = await sendToBackground({ type: 'LIST_FOLDERS' });
+      if (folderList.ok && folderList.type === 'FOLDERS') setFolders(folderList.folders);
     }
   }, [query]);
 
@@ -127,11 +155,13 @@ export function Options() {
       urls: entry.urls,
       notes: entry.notes,
       tags: entry.tags,
+      folderId: entry.folderId,
       totpSecret: entry.totpSecret,
       totpConfig: entry.totpConfig,
       customFields: entry.customFields,
       attachments: entry.attachments,
       passkeys: entry.passkeys,
+      history: entry.history,
     });
   };
 
@@ -321,7 +351,7 @@ export function Options() {
                         <div className="meta">
                           {entry.username || <em>no username</em>}
                           {entry.host ? ` · ${entry.host}` : ''}
-                          {entry.hasPasskey ? ' · passkey' : ''}
+                          {entry.hasPasskey ? ` · ${copy.passkeyBadge}` : ''}
                         </div>
                       </button>
                     </li>
@@ -336,12 +366,17 @@ export function Options() {
 
               {draft ? (
                 <EntryForm
+                  key={draft.id ?? 'new'}
                   draft={draft}
+                  folders={folders}
+                  attachmentTotalBytes={attachmentTotalBytes}
+                  generatorDefaults={generatorDefaults}
                   busy={busy}
                   onChange={setDraft}
                   onSave={() => void saveDraft()}
                   onCancel={() => setDraft(null)}
                   onRemovePasskey={(passkeyId) => void removePasskeyFromDraft(passkeyId)}
+                  onFoldersChange={setFolders}
                   {...(draft.id ? { onDelete: () => void removeEntry(draft.id!) } : {})}
                 />
               ) : (
@@ -363,6 +398,8 @@ export function Options() {
                 void sendToBackground({ type: 'SET_THEME', theme: next });
               }}
             />
+            <VaultPrefs />
+            <ExtensionGenerator onDefaultsChange={setGeneratorDefaults} />
             <VaultHealth onChanged={vaultChanged} />
             <Trash version={vaultVersion} onChanged={vaultChanged} />
             <ChangeMasterPassword />
@@ -419,8 +456,7 @@ function Trash({ version, onChanged }: { version: number; onChanged: () => void 
     <div className="section">
       <h3>Trash</h3>
       <p className="hint" style={{ marginBottom: 12 }}>
-        Deleted entries are hidden from your list and from autofill, and are removed for good after{' '}
-        {TRASH_RETENTION_DAYS} days.
+        {copy.trashRetention}
       </p>
       {error && <p className="hint" style={{ color: 'var(--danger)' }}>{error}</p>}
 
@@ -440,7 +476,7 @@ function Trash({ version, onChanged }: { version: number; onChanged: () => void 
                   Restore
                 </button>
                 <button type="button" className="ghost danger-text" onClick={() => setConfirming(entry)}>
-                  Delete forever
+                  {copy.deleteForever}
                 </button>
               </span>
             </span>
@@ -451,7 +487,7 @@ function Trash({ version, onChanged }: { version: number; onChanged: () => void 
       <ConfirmDialog
         open={confirming !== null}
         title="Delete this entry for good?"
-        confirmLabel="Delete forever"
+        confirmLabel={copy.deleteForever}
         danger
         onCancel={() => setConfirming(null)}
         onConfirm={() => {
@@ -741,7 +777,7 @@ function VaultHealth({ onChanged }: { onChanged: () => void }) {
       <ConfirmDialog
         open={confirmTrash}
         title={`Move ${selectedIds.length} ${selectedIds.length === 1 ? 'entry' : 'entries'} to the trash?`}
-        confirmLabel="Move to trash"
+        confirmLabel={copy.moveToTrash}
         danger
         onCancel={() => setConfirmTrash(false)}
         onConfirm={() => {
@@ -980,22 +1016,101 @@ function DangerZone({
 
 function EntryForm({
   draft,
+  folders,
+  attachmentTotalBytes,
+  generatorDefaults,
   busy,
   onChange,
   onSave,
   onCancel,
   onDelete,
   onRemovePasskey,
+  onFoldersChange,
 }: {
   draft: EntryDraft;
+  folders: FolderSummary[];
+  /** Vault-wide attachment bytes on disk, i.e. before any edits made in this draft. */
+  attachmentTotalBytes: number;
+  generatorDefaults: GeneratorOptions;
   busy: boolean;
   onChange: (draft: EntryDraft) => void;
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
   onRemovePasskey: (passkeyId: string) => void;
+  onFoldersChange: (folders: FolderSummary[]) => void;
 }) {
   const [revealed, setRevealed] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  // Snapshot of what this entry contributed to `attachmentTotalBytes` on open, so
+  // edits here can be weighed against the vault-wide budget without double-counting
+  // this entry's own on-disk attachments.
+  const [originalAttachmentBytes] = useState(() => draft.attachments.reduce((s, a) => s + a.sizeBytes, 0));
+  const draftAttachmentBytes = draft.attachments.reduce((s, a) => s + a.sizeBytes, 0);
+  const vaultUsedBytes = attachmentTotalBytes - originalAttachmentBytes + draftAttachmentBytes;
+
+  const addAttachment = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      window.alert(`Attachment is too large (max ${MAX_ATTACHMENT_BYTES} bytes).`);
+      return;
+    }
+    if (vaultUsedBytes + file.size > MAX_ATTACHMENTS_VAULT_BYTES) {
+      window.alert(`Attachments would exceed the vault budget of ${MAX_ATTACHMENTS_VAULT_BYTES} bytes.`);
+      return;
+    }
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    onChange({
+      ...draft,
+      attachments: [
+        ...draft.attachments,
+        {
+          id: randomUuid(),
+          name: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          sizeBytes: file.size,
+          dataB64: bytesToB64(buffer),
+        },
+      ],
+    });
+  };
+
+  const downloadAttachment = (att: Attachment) => {
+    const bytes = b64ToBytes(att.dataB64);
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const blob = new Blob([copy], { type: att.mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = att.name;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const createFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const response = await sendToBackground({ type: 'CREATE_FOLDER', name });
+    if (response.ok && response.type === 'FOLDERS') {
+      onFoldersChange(response.folders);
+      const created = response.folders.find((f) => f.name === name);
+      if (created) onChange({ ...draft, folderId: created.id });
+      setNewFolderName('');
+    }
+  };
+
+  const deleteCurrentFolder = async () => {
+    if (!draft.folderId) return;
+    const target = folders.find((f) => f.id === draft.folderId);
+    if (!target) return;
+    if (!window.confirm(`Delete the folder "${target.name}"? Entries in it are not deleted.`)) return;
+    const response = await sendToBackground({ type: 'DELETE_FOLDER', folderId: target.id });
+    if (response.ok && response.type === 'FOLDERS') {
+      onFoldersChange(response.folders);
+      onChange({ ...draft, folderId: null });
+    }
+  };
 
   return (
     <div>
@@ -1045,7 +1160,7 @@ function EntryForm({
             className="icon"
             title="Generate"
             onClick={() => {
-              onChange({ ...draft, password: generatePassword(DEFAULT_GENERATOR_OPTIONS) });
+              onChange({ ...draft, password: generatePassword(generatorDefaults) });
               setRevealed(true);
             }}
           >
@@ -1072,12 +1187,62 @@ function EntryForm({
       </div>
 
       <div className="field">
+        <label htmlFor="opt-tags">Tags (comma-separated)</label>
+        <input
+          id="opt-tags"
+          value={draft.tags.join(', ')}
+          onChange={(e) =>
+            onChange({
+              ...draft,
+              tags: e.target.value
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="opt-folder">Folder</label>
+        <div className="field-row">
+          <select
+            id="opt-folder"
+            value={draft.folderId ?? ''}
+            onChange={(e) => onChange({ ...draft, folderId: e.target.value || null })}
+          >
+            <option value="">No folder</option>
+            {folders.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+          {draft.folderId && (
+            <button type="button" className="icon" title="Delete this folder" onClick={() => void deleteCurrentFolder()}>
+              <Icon name="trash" />
+            </button>
+          )}
+        </div>
+        <div className="field-row" style={{ marginTop: 8 }}>
+          <input
+            placeholder="New folder name"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+          />
+          <button type="button" className="ghost" disabled={!newFolderName.trim()} onClick={() => void createFolder()}>
+            Add folder
+          </button>
+        </div>
+      </div>
+
+      <div className="field">
         <label htmlFor="opt-notes">Notes</label>
         <textarea id="opt-notes" value={draft.notes} onChange={(e) => onChange({ ...draft, notes: e.target.value })} />
       </div>
 
       <div className="field">
-        <label htmlFor="opt-totp">TOTP secret (optional)</label>
+        <label htmlFor="opt-totp">{copy.authenticatorField}</label>
         <input
           id="opt-totp"
           className="mono"
@@ -1097,20 +1262,233 @@ function EntryForm({
             });
           }}
         />
-        {draft.totpConfig && (
-          <p className="hint">
-            Non-default parameters: {draft.totpConfig.digits} digits · {draft.totpConfig.periodSeconds}s ·{' '}
-            {draft.totpConfig.algorithm}
-          </p>
+        {draft.totpSecret && (
+          <div className="field-row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 8 }}>
+            <label className="hint" htmlFor="opt-totp-digits">
+              Digits
+            </label>
+            <input
+              id="opt-totp-digits"
+              type="number"
+              min={6}
+              max={10}
+              style={{ width: 64 }}
+              value={draft.totpConfig?.digits ?? 6}
+              onChange={(e) =>
+                onChange({
+                  ...draft,
+                  totpConfig: normalizeTotpConfig({
+                    digits: Number(e.target.value) || 6,
+                    periodSeconds: draft.totpConfig?.periodSeconds ?? 30,
+                    algorithm: draft.totpConfig?.algorithm ?? 'SHA-1',
+                  }),
+                })
+              }
+            />
+            <label className="hint" htmlFor="opt-totp-period">
+              Period (s)
+            </label>
+            <input
+              id="opt-totp-period"
+              type="number"
+              min={1}
+              max={3600}
+              style={{ width: 72 }}
+              value={draft.totpConfig?.periodSeconds ?? 30}
+              onChange={(e) =>
+                onChange({
+                  ...draft,
+                  totpConfig: normalizeTotpConfig({
+                    digits: draft.totpConfig?.digits ?? 6,
+                    periodSeconds: Number(e.target.value) || 30,
+                    algorithm: draft.totpConfig?.algorithm ?? 'SHA-1',
+                  }),
+                })
+              }
+            />
+            <label className="hint" htmlFor="opt-totp-alg">
+              Algorithm
+            </label>
+            <select
+              id="opt-totp-alg"
+              value={draft.totpConfig?.algorithm ?? 'SHA-1'}
+              onChange={(e) =>
+                onChange({
+                  ...draft,
+                  totpConfig: normalizeTotpConfig({
+                    digits: draft.totpConfig?.digits ?? 6,
+                    periodSeconds: draft.totpConfig?.periodSeconds ?? 30,
+                    algorithm: e.target.value as TotpConfig['algorithm'],
+                  }),
+                })
+              }
+            >
+              <option value="SHA-1">SHA-1</option>
+              <option value="SHA-256">SHA-256</option>
+              <option value="SHA-512">SHA-512</option>
+            </select>
+          </div>
         )}
       </div>
 
+      <div className="section">
+        <h3>Custom fields</h3>
+        {draft.customFields.map((field) => (
+          <div key={field.id} className="field" style={{ marginBottom: 12 }}>
+            <div className="field-row">
+              <input
+                placeholder="Label"
+                value={field.label}
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    customFields: draft.customFields.map((f) =>
+                      f.id === field.id ? { ...f, label: e.target.value } : f,
+                    ),
+                  })
+                }
+              />
+              <button
+                type="button"
+                className="icon"
+                title="Remove field"
+                onClick={() =>
+                  onChange({ ...draft, customFields: draft.customFields.filter((f) => f.id !== field.id) })
+                }
+              >
+                <Icon name="trash" />
+              </button>
+            </div>
+            <div className="field-row" style={{ marginTop: 6 }}>
+              <input
+                className={field.secret ? 'mono' : undefined}
+                type={field.secret ? 'password' : 'text'}
+                placeholder="Value"
+                value={field.value}
+                autoComplete="off"
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    customFields: draft.customFields.map((f) =>
+                      f.id === field.id ? { ...f, value: e.target.value } : f,
+                    ),
+                  })
+                }
+              />
+            </div>
+            <div className="checkbox-row" style={{ marginTop: 6 }}>
+              <input
+                id={`secret-${field.id}`}
+                type="checkbox"
+                checked={field.secret}
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    customFields: draft.customFields.map((f) =>
+                      f.id === field.id ? { ...f, secret: e.target.checked } : f,
+                    ),
+                  })
+                }
+              />
+              <label htmlFor={`secret-${field.id}`}>Secret</label>
+            </div>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="ghost"
+          onClick={() =>
+            onChange({
+              ...draft,
+              customFields: [
+                ...draft.customFields,
+                { id: randomUuid(), label: '', value: '', secret: false },
+              ],
+            })
+          }
+        >
+          Add custom field
+        </button>
+      </div>
+
+      <div className="section">
+        <h3>Attachments</h3>
+        <p className="hint" style={{ marginBottom: 8 }}>
+          {vaultUsedBytes} / {MAX_ATTACHMENTS_VAULT_BYTES} bytes used across the vault (max {MAX_ATTACHMENT_BYTES} per
+          file).
+        </p>
+        {draft.attachments.map((att) => (
+          <div key={att.id} className="history-row" style={{ marginBottom: 8 }}>
+            <span className="meta">
+              {att.name} · {att.sizeBytes} bytes
+            </span>
+            <div className="button-row">
+              <button type="button" onClick={() => downloadAttachment(att)}>
+                Download
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() =>
+                  onChange({ ...draft, attachments: draft.attachments.filter((a) => a.id !== att.id) })
+                }
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        ))}
+        <label className="ghost" style={{ display: 'inline-block', cursor: 'pointer' }}>
+          Add attachment…
+          <input
+            type="file"
+            hidden
+            onChange={(e) => {
+              void addAttachment(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+      </div>
+
+      {draft.history.length > 0 && (
+        <div className="section">
+          <h3>Previous passwords</h3>
+          <ul className="entry-list">
+            {draft.history.map((old) => (
+              <li key={`${old.changedAt}:${old.password}`}>
+                <div className="history-row">
+                  <span className="meta">Replaced {new Date(old.changedAt).toLocaleString()}</span>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(old.password);
+                      }}
+                    >
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChange({ ...draft, password: old.password });
+                        setRevealed(true);
+                      }}
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {draft.passkeys.length > 0 && (
         <div className="field">
-          <label>Passkeys</label>
-          <p className="hint">
-            Created on iPhone. Sign in with Safari or iOS AutoFill — Chrome cannot assert these passkeys.
-          </p>
+          <label>{copy.passkeysSection}</label>
+          <p className="hint">{copy.passkeysHint}</p>
           <ul className="entry-list" style={{ border: '1px solid var(--border)', borderRadius: 8, marginTop: 8 }}>
             {draft.passkeys.map((pk) => (
               <li key={pk.id} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
@@ -1128,7 +1506,7 @@ function EntryForm({
                   disabled={busy || !draft.id}
                   onClick={() => onRemovePasskey(pk.id)}
                 >
-                  Remove passkey
+                  {copy.removePasskey}
                 </button>
               </li>
             ))}
@@ -1136,31 +1514,112 @@ function EntryForm({
         </div>
       )}
 
-      {draft.customFields.length > 0 && (
-        <div className="field">
-          <label>Custom fields</label>
-          <p className="hint">
-            {draft.customFields.map((f) => f.label || '(unnamed)').join(', ')} — edit these in the desktop app for now.
-          </p>
-        </div>
-      )}
-
-      {draft.attachments.length > 0 && (
-        <div className="field">
-          <label>Attachments</label>
-          <p className="hint">
-            {draft.attachments.map((a) => a.name).join(', ')} — download or replace from the desktop app.
-          </p>
-        </div>
-      )}
-
       {onDelete && (
         <div className="section">
           <button type="button" className="danger" onClick={onDelete}>
-            Delete entry
+            {copy.moveToTrash}
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function VaultPrefs() {
+  const [autoLockMinutes, setAutoLockMinutes] = useState(15);
+  const [clipboardClearSeconds, setClipboardClearSeconds] = useState(30);
+  const [lockOnHide, setLockOnHide] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const state = await sendToBackground({ type: 'GET_STATE' });
+      if (!state.ok || state.type !== 'STATE' || state.locked) return;
+      setAutoLockMinutes(state.autoLockMinutes);
+      setClipboardClearSeconds(state.clipboardClearSeconds);
+      setLockOnHide(state.lockOnHide);
+    })();
+  }, []);
+
+  const save = async () => {
+    const response = await sendToBackground({
+      type: 'UPDATE_VAULT_SETTINGS',
+      autoLockMinutes,
+      clipboardClearSeconds,
+      lockOnHide,
+    });
+    setStatus(response.ok ? 'Saved.' : response.error);
+  };
+
+  return (
+    <div className="section">
+      <h3>Vault settings</h3>
+      <div className="field">
+        <label htmlFor="ext-autolock">Auto-lock (minutes)</label>
+        <input
+          id="ext-autolock"
+          type="number"
+          min={0.5}
+          max={1440}
+          step={0.5}
+          value={autoLockMinutes}
+          onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor="ext-clipboard">Clipboard clear (seconds, 0 = never)</label>
+        <input
+          id="ext-clipboard"
+          type="number"
+          min={0}
+          max={600}
+          value={clipboardClearSeconds}
+          onChange={(e) => setClipboardClearSeconds(Number(e.target.value))}
+        />
+      </div>
+      <div className="checkbox-row">
+        <input
+          id="ext-lock-hide"
+          type="checkbox"
+          checked={lockOnHide}
+          onChange={(e) => setLockOnHide(e.target.checked)}
+        />
+        <label htmlFor="ext-lock-hide">Lock when the browser tab is hidden</label>
+      </div>
+      <button type="button" className="primary" style={{ marginTop: 12 }} onClick={() => void save()}>
+        Save settings
+      </button>
+      {status && <p className="hint">{status}</p>}
+    </div>
+  );
+}
+
+function ExtensionGenerator({ onDefaultsChange }: { onDefaultsChange: (options: GeneratorOptions) => void }) {
+  const [options, setOptions] = useState<GeneratorOptions>(DEFAULT_GENERATOR_OPTIONS);
+
+  useEffect(() => {
+    void (async () => {
+      const state = await sendToBackground({ type: 'GET_STATE' });
+      if (!state.ok || state.type !== 'STATE' || state.locked) return;
+      setOptions(state.generator);
+    })();
+  }, []);
+
+  const saveDefaults = (next: GeneratorOptions) => {
+    setOptions(next);
+    onDefaultsChange(next);
+    void sendToBackground({ type: 'UPDATE_VAULT_SETTINGS', generator: next });
+  };
+
+  return (
+    <div className="section">
+      <GeneratorPanel
+        options={options}
+        onOptionsChange={saveDefaults}
+        onCopy={(value) => {
+          void navigator.clipboard.writeText(value);
+        }}
+      />
     </div>
   );
 }

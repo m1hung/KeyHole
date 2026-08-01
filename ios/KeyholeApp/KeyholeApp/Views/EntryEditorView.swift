@@ -105,7 +105,7 @@ struct EntryEditorView: View {
 
                 if kind == .login {
                     Section {
-                        TextField("Authenticator key or QR link", text: $totpSecret, axis: .vertical)
+                        TextField("Authenticator key or otpauth:// URI", text: $totpSecret, axis: .vertical)
                             .lineLimit(1...3)
                             .textInputAutocapitalization(.never)
                             .onChange(of: totpSecret) { _, newValue in

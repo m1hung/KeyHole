@@ -1,14 +1,13 @@
 import Foundation
 
-/// URL matching for autofill — port of `core/src/url-match.ts` (host / subdomain / exact).
-/// Domain (eTLD+1) mode is omitted until a public-suffix list ships in KeyholeCore.
+/// URL matching for autofill — port of `core/src/url-match.ts` (exact / host / subdomain / domain).
 
 public enum MatchStrength: String, Sendable {
-    case exact, host, subdomain, none
+    case exact, host, subdomain, domain, none
 }
 
 public enum MatchMode: String, Sendable {
-    case exact, host, subdomain
+    case exact, host, subdomain, domain
 }
 
 public struct ParsedTarget: Sendable, Equatable {
@@ -79,11 +78,19 @@ public func matchUrl(entryUrl: String, pageUrl: String, mode: MatchMode = .host)
         return .host
     }
     if mode == .host { return .none }
-    // Page below the stored entry (entry reddit.com → old.reddit.com).
+    // Page below the stored entry (entry reddit.com → old.reddit.com). Only the
+    // stored entry may act as the broader base — the reverse would let a
+    // credential saved for accounts.example.com fill on example.com.
     if isSubdomainOf(candidate: page.hostname, base: entry.hostname)
         || isSubdomainOf(candidate: page.hostname, base: stripLeadingWWW(entry.hostname))
     {
         return .subdomain
+    }
+    if mode == .subdomain { return .none }
+    // Same registrable domain, either direction. `registrableDomain` returns nil
+    // rather than guessing, so an unknown namespace never widens the match.
+    if let base = registrableDomain(entry.hostname), base == registrableDomain(page.hostname) {
+        return .domain
     }
     return .none
 }
@@ -131,6 +138,7 @@ private func strengthRank(_ s: MatchStrength) -> Int {
     case .exact: return 4
     case .host: return 3
     case .subdomain: return 2
+    case .domain: return 1
     case .none: return 0
     }
 }

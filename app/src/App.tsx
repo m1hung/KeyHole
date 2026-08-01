@@ -13,10 +13,10 @@ import {
   liveEntries,
   purgeEntry,
   restoreEntry,
+  removePasskey,
   trashedEntries,
   displayHost,
   searchEntries,
-  TRASH_RETENTION_DAYS,
   updateEntry,
   updateSettings,
   vaultAttachmentBytes,
@@ -34,6 +34,7 @@ import { SettingsPanel } from './components/SettingsPanel.tsx';
 import { ConfirmDialog, EmptyState, Toast } from './components/common.tsx';
 import { Icon } from './components/Icon.tsx';
 import { readLegacyBrowserVault } from './storage.ts';
+import { copy } from './copy.ts';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
 type ListFilter = 'all' | 'trash' | EntryKind | { folderId: string };
@@ -314,8 +315,8 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
                     <span className="entry-body">
                       <div className="title">{entry.title}</div>
                       <div className="meta">
-                        Deleted {entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''} · removed for good
-                        after {TRASH_RETENTION_DAYS} days
+                        Deleted {entry.deletedAt ? new Date(entry.deletedAt).toLocaleString() : ''} ·{' '}
+                        {copy.trashRemovedAfter}
                       </div>
                     </span>
                     <span className="button-row">
@@ -327,7 +328,7 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
                         className="ghost danger-text"
                         onClick={() => setConfirmPurge(entry.id)}
                       >
-                        Delete forever
+                        {copy.deleteForever}
                       </button>
                     </span>
                   </div>
@@ -417,6 +418,9 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
               onCopy={(value, label) => void clipboard.copy(value, label)}
               onClose={() => setView({ kind: 'none' })}
               onSave={(patch) => void vault.mutate((current) => updateEntry(current, selected.id, patch))}
+              onRemovePasskey={(passkeyId) =>
+                void vault.mutate((current) => removePasskey(current, selected.id, passkeyId))
+              }
               onDelete={() => {
                 setView({ kind: 'none' });
                 void vault.mutate((current) => deleteEntry(current, selected.id));
@@ -439,7 +443,7 @@ export function App({ legacyBrowserVaultAvailable = false }: AppProps) {
       <ConfirmDialog
         open={confirmPurge !== null}
         title="Delete this entry for good?"
-        confirmLabel="Delete forever"
+        confirmLabel={copy.deleteForever}
         danger
         onCancel={() => setConfirmPurge(null)}
         onConfirm={() => {

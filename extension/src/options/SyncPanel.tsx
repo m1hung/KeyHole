@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { sendToBackground } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
+import { copy } from '../../../app/src/copy.ts';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8787';
 
@@ -298,10 +299,10 @@ export function SyncPanel({ theme, onThemeChange }: SyncPanelProps) {
 
       <div className="button-row">
         <button type="button" onClick={() => void register()} disabled={busy}>
-          {busy ? 'Working…' : 'Register & upload'}
+          {busy ? copy.syncWorking : copy.syncRegister}
         </button>
         <button type="button" className="primary" onClick={() => void syncNow()} disabled={busy}>
-          {busy ? 'Syncing…' : 'Sync now'}
+          {busy ? copy.syncSyncing : copy.syncNow}
         </button>
       </div>
 

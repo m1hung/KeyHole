@@ -27,12 +27,15 @@
 
 import {
   DecryptionError,
+  DEFAULT_GENERATOR_OPTIONS,
   analyzeVaultHealth,
   createEntry,
   changeMasterPassword,
+  createFolder,
   createVault,
   deleteEntry as coreDeleteEntry,
   deleteEntries as coreDeleteEntries,
+  deleteFolder,
   deriveSyncAuthSecret,
   displayHost,
   findMatchingEntries,
@@ -50,6 +53,8 @@ import {
   trashedEntries,
   unlockVault,
   updateEntry,
+  updateSettings,
+  vaultAttachmentBytes,
   type Entry,
   type EntryInput,
   type MatchMode,
@@ -325,8 +330,12 @@ async function handle(request: Request): Promise<Response> {
         // make "12 entries" disagree with the list the user is looking at.
         entryCount: session ? liveEntries(session.data).length : 0,
         autoLockMinutes: session?.data.settings.autoLockMinutes ?? prefs.autoLockMinutes,
+        clipboardClearSeconds: session?.data.settings.clipboardClearSeconds ?? prefs.clipboardClearSeconds,
+        lockOnHide: session?.data.settings.lockOnHide ?? prefs.lockOnHide,
         theme: session?.data.settings.theme ?? prefs.theme,
         breachCheckEnabled: session?.data.settings.breachCheckEnabled ?? false,
+        generator: session?.data.settings.generator ?? DEFAULT_GENERATOR_OPTIONS,
+        attachmentTotalBytes: session ? vaultAttachmentBytes(session.data) : 0,
         foreignSchemaVersion: session?.foreignSchemaVersion ?? null,
       };
     }
@@ -427,11 +436,13 @@ async function handle(request: Request): Promise<Response> {
           urls: entry.urls,
           notes: entry.notes,
           tags: entry.tags,
+          folderId: entry.folderId,
           totpSecret: entry.totpSecret,
           totpConfig: entry.totpConfig,
           customFields: entry.customFields,
           attachments: entry.attachments,
           passkeys: entry.passkeys.map(toPasskeySummary),
+          history: entry.history,
         },
       };
     }
@@ -590,6 +601,62 @@ async function handle(request: Request): Promise<Response> {
           settings: { ...session.data.settings, breachCheckEnabled: request.enabled },
         },
       };
+      await persist();
+      return { ok: true, type: 'OK' };
+    }
+
+    case 'LIST_FOLDERS': {
+      if (!session) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      return { ok: true, type: 'FOLDERS', folders: session.data.folders };
+    }
+
+    case 'CREATE_FOLDER': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        const { data } = createFolder(session.data, request.name);
+        session.data = data;
+        await persist();
+        return { ok: true, type: 'FOLDERS', folders: session.data.folders };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
+    }
+
+    case 'DELETE_FOLDER': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        session.data = deleteFolder(session.data, request.folderId);
+        await persist();
+        return { ok: true, type: 'FOLDERS', folders: session.data.folders };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
+    }
+
+    case 'UPDATE_VAULT_SETTINGS': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      const patch: {
+        autoLockMinutes?: number;
+        clipboardClearSeconds?: number;
+        lockOnHide?: boolean;
+        generator?: typeof session.data.settings.generator;
+      } = {};
+      if (request.autoLockMinutes !== undefined) patch.autoLockMinutes = request.autoLockMinutes;
+      if (request.clipboardClearSeconds !== undefined) patch.clipboardClearSeconds = request.clipboardClearSeconds;
+      if (request.lockOnHide !== undefined) patch.lockOnHide = request.lockOnHide;
+      if (request.generator !== undefined) patch.generator = request.generator;
+      session.data = updateSettings(session.data, patch);
+      await savePrefs({
+        ...(patch.autoLockMinutes !== undefined ? { autoLockMinutes: patch.autoLockMinutes } : {}),
+        ...(patch.clipboardClearSeconds !== undefined
+          ? { clipboardClearSeconds: patch.clipboardClearSeconds }
+          : {}),
+        ...(patch.lockOnHide !== undefined ? { lockOnHide: patch.lockOnHide } : {}),
+      });
       await persist();
       return { ok: true, type: 'OK' };
     }
@@ -1046,6 +1113,9 @@ async function saveEntry(raw: unknown): Promise<Response> {
       if ('attachments' in input && Array.isArray(input.attachments)) {
         patch.attachments = input.attachments as NonNullable<EntryInput['attachments']>;
       }
+      if ('folderId' in input) {
+        patch.folderId = typeof input.folderId === 'string' ? input.folderId : null;
+      }
       session.data = updateEntry(session.data, existingId, patch);
     } else {
       session.data = createEntry(session.data, {
@@ -1055,6 +1125,7 @@ async function saveEntry(raw: unknown): Promise<Response> {
         urls: Array.isArray(input.urls) ? (input.urls as string[]) : [],
         notes: typeof input.notes === 'string' ? input.notes : '',
         tags: Array.isArray(input.tags) ? (input.tags as string[]) : [],
+        folderId: typeof input.folderId === 'string' ? input.folderId : null,
         totpSecret: typeof input.totpSecret === 'string' ? input.totpSecret : null,
         totpConfig: (input.totpConfig as EntryInput['totpConfig']) ?? null,
         customFields: Array.isArray(input.customFields)

@@ -92,7 +92,6 @@ the toggle off clears it.
 
 - App Store signing / CI
 - **Trash management UI on older builds.** Deleting is a soft delete; restore/purge live under the Trash filter now.
-- Public-suffix “domain” autofill mode (host / subdomain / exact only for now)
 
 ## AutoFill
 
