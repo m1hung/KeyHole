@@ -40,6 +40,7 @@ interface SuggestEntry {
   username: string;
   host: string | null;
   matchStrength?: string;
+  hasPasskey?: boolean;
 }
 
 interface SuggestResponse {
@@ -964,6 +965,7 @@ function renderSuggestList(entries: SuggestEntry[]): void {
     meta.className = 'popup-item-meta';
     const bits = [entry.username || 'No username'];
     if (entry.host) bits.push(entry.host);
+    if (entry.hasPasskey) bits.push('passkey');
     meta.textContent = bits.join(' · ');
 
     main.appendChild(title);
@@ -972,6 +974,9 @@ function renderSuggestList(entries: SuggestEntry[]): void {
     const fill = document.createElement('span');
     fill.className = 'fill-button';
     fill.textContent = 'Fill';
+    if (entry.hasPasskey) {
+      fill.title = 'Password fill only — passkeys require Safari or iOS AutoFill';
+    }
 
     button.appendChild(main);
     button.appendChild(fill);

@@ -131,6 +131,12 @@ export function findMatchingEntries(entries: readonly Entry[], pageUrl: string, 
       const strength = matchUrl(url, pageUrl, mode);
       if (RANK[strength] > RANK[best]) best = strength;
     }
+    // Passkeys created on iOS store the WebAuthn RP id; treat it like a saved host
+    // so the entry still surfaces in the extension even when URLs are empty.
+    for (const passkey of entry.passkeys) {
+      const strength = matchUrl(`https://${passkey.relyingPartyId}`, pageUrl, mode);
+      if (RANK[strength] > RANK[best]) best = strength;
+    }
     if (best !== 'none') matches.push({ entry, strength: best });
   }
   return matches.sort((a, b) => RANK[b.strength] - RANK[a.strength] || a.entry.title.localeCompare(b.entry.title));

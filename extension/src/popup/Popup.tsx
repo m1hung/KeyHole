@@ -274,6 +274,7 @@ export function Popup() {
                 <div className="popup-item-meta">
                   {entry.username || <em>no username</em>}
                   {entry.host ? ` · ${entry.host}` : ''}
+                  {entry.hasPasskey ? ' · passkey' : ''}
                 </div>
               </div>
               <div className="popup-item-actions">
@@ -302,6 +303,11 @@ export function Popup() {
                   >
                     <Icon name="clock" size={17} />
                   </button>
+                )}
+                {entry.hasPasskey && (
+                  <span className="icon" title="Passkey — use Safari or iOS AutoFill to sign in" aria-label="Has passkey">
+                    <Icon name="key" size={17} />
+                  </span>
                 )}
                 <button type="button" className="fill-button" onClick={() => void fill(entry.id)}>
                   Fill

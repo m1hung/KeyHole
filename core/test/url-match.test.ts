@@ -210,3 +210,38 @@ describe('trashed entries', () => {
     expect(findMatchingEntries(restoreEntry(deleteEntry(data, id), id).entries, 'https://example.com')).toHaveLength(1);
   });
 });
+
+describe('passkey relying-party matching', () => {
+  it('matches an entry by passkey RP when it has no URLs', () => {
+    const { data, entry } = createEntry(emptyVaultData(), { title: 'Passkey only', urls: [] });
+    const withPasskey = {
+      ...data,
+      entries: data.entries.map((e) =>
+        e.id === entry.id
+          ? {
+              ...e,
+              passkeys: [
+                {
+                  id: '55555555-5555-4555-8555-555555555555',
+                  credentialIdB64: Buffer.from('cred').toString('base64'),
+                  relyingPartyId: 'accounts.example.com',
+                  relyingPartyName: 'Example',
+                  userName: 'user',
+                  userDisplayName: 'User',
+                  userHandleB64: Buffer.from('h').toString('base64'),
+                  privateKeyB64: Buffer.from('key-material-32-bytes-long!!!!!!').toString('base64'),
+                  signCount: 0,
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  lastUsedAt: null,
+                },
+              ],
+            }
+          : e,
+      ),
+    };
+
+    const matches = findMatchingEntries(withPasskey.entries, 'https://accounts.example.com/login', 'domain');
+    expect(matches.map((m) => m.entry.title)).toEqual(['Passkey only']);
+    expect(matches[0]?.strength).toBe('exact');
+  });
+});

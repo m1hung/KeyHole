@@ -21,7 +21,7 @@ import {
   type HealthIssueKind,
   type TotpConfig,
 } from '@keyhole/core';
-import { sendToBackground, type EntrySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
+import { sendToBackground, type EntrySummary, type PasskeySummary, type Response as BackgroundResponse } from '../shared/messages.ts';
 import { Icon } from '../../../app/src/components/Icon.tsx';
 import { ConfirmDialog, FINDINGS_PAGE } from '../../../app/src/components/common.tsx';
 import { SyncPanel } from './SyncPanel.tsx';
@@ -41,6 +41,7 @@ interface EntryDraft {
   totpConfig: TotpConfig | null;
   customFields: CustomField[];
   attachments: Attachment[];
+  passkeys: PasskeySummary[];
 }
 
 const blankDraft = (): EntryDraft => ({
@@ -54,6 +55,7 @@ const blankDraft = (): EntryDraft => ({
   totpConfig: null,
   customFields: [],
   attachments: [],
+  passkeys: [],
 });
 
 export function Options() {
@@ -129,6 +131,7 @@ export function Options() {
       totpConfig: entry.totpConfig,
       customFields: entry.customFields,
       attachments: entry.attachments,
+      passkeys: entry.passkeys,
     });
   };
 
@@ -143,6 +146,24 @@ export function Options() {
     }
     setDraft(null);
     flash('Entry saved.');
+    await refresh();
+  };
+
+  const removePasskeyFromDraft = async (passkeyId: string) => {
+    if (!draft?.id) return;
+    setBusy(true);
+    const response = await sendToBackground({
+      type: 'REMOVE_PASSKEY',
+      entryId: draft.id,
+      passkeyId,
+    });
+    setBusy(false);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    setDraft({ ...draft, passkeys: draft.passkeys.filter((pk) => pk.id !== passkeyId) });
+    flash('Passkey removed.');
     await refresh();
   };
 
@@ -300,6 +321,7 @@ export function Options() {
                         <div className="meta">
                           {entry.username || <em>no username</em>}
                           {entry.host ? ` · ${entry.host}` : ''}
+                          {entry.hasPasskey ? ' · passkey' : ''}
                         </div>
                       </button>
                     </li>
@@ -319,6 +341,7 @@ export function Options() {
                   onChange={setDraft}
                   onSave={() => void saveDraft()}
                   onCancel={() => setDraft(null)}
+                  onRemovePasskey={(passkeyId) => void removePasskeyFromDraft(passkeyId)}
                   {...(draft.id ? { onDelete: () => void removeEntry(draft.id!) } : {})}
                 />
               ) : (
@@ -962,6 +985,7 @@ function EntryForm({
   onSave,
   onCancel,
   onDelete,
+  onRemovePasskey,
 }: {
   draft: EntryDraft;
   busy: boolean;
@@ -969,6 +993,7 @@ function EntryForm({
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
+  onRemovePasskey: (passkeyId: string) => void;
 }) {
   const [revealed, setRevealed] = useState(false);
 
@@ -1079,6 +1104,37 @@ function EntryForm({
           </p>
         )}
       </div>
+
+      {draft.passkeys.length > 0 && (
+        <div className="field">
+          <label>Passkeys</label>
+          <p className="hint">
+            Created on iPhone. Sign in with Safari or iOS AutoFill — Chrome cannot assert these passkeys.
+          </p>
+          <ul className="entry-list" style={{ border: '1px solid var(--border)', borderRadius: 8, marginTop: 8 }}>
+            {draft.passkeys.map((pk) => (
+              <li key={pk.id} style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)' }}>
+                <div className="title">{pk.userName || pk.userDisplayName || pk.relyingPartyId}</div>
+                <div className="meta">{pk.relyingPartyId}</div>
+                {pk.lastUsedAt && (
+                  <p className="hint" style={{ marginTop: 4 }}>
+                    Last used {new Date(pk.lastUsedAt).toLocaleString()}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="danger"
+                  style={{ marginTop: 8 }}
+                  disabled={busy || !draft.id}
+                  onClick={() => onRemovePasskey(pk.id)}
+                >
+                  Remove passkey
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {draft.customFields.length > 0 && (
         <div className="field">

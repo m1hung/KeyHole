@@ -34,6 +34,7 @@ import {
   type Attachment,
   type CustomField,
   type Entry,
+  type PasskeyRecord,
   type PasswordHistoryEntry,
   type Folder,
   type Settings,
@@ -449,6 +450,50 @@ export function updateEntry(data: VaultData, id: string, patch: Partial<EntryInp
   return next;
 }
 
+/** Live passkeys whose relying party matches `rpId` (exact, case-insensitive). */
+export function findPasskeys(
+  data: VaultData,
+  rpId: string,
+): Array<{ entry: Entry; passkey: PasskeyRecord }> {
+  const needle = rpId.toLowerCase();
+  const out: Array<{ entry: Entry; passkey: PasskeyRecord }> = [];
+  for (const entry of liveEntries(data)) {
+    for (const passkey of entry.passkeys) {
+      if (passkey.relyingPartyId.toLowerCase() === needle) out.push({ entry, passkey });
+    }
+  }
+  return out;
+}
+
+/** Locate a passkey by its stored credential id (standard Base64). */
+export function findPasskey(
+  data: VaultData,
+  credentialIdB64: string,
+): { entry: Entry; passkey: PasskeyRecord } | undefined {
+  for (const entry of liveEntries(data)) {
+    const passkey = entry.passkeys.find((pk) => pk.credentialIdB64 === credentialIdB64);
+    if (passkey) return { entry, passkey };
+  }
+  return undefined;
+}
+
+/**
+ * Remove one passkey from an entry. Create/use stays on iOS AutoFill; desktop and
+ * the extension only manage what is already stored.
+ */
+export function removePasskey(data: VaultData, entryId: string, passkeyId: string): VaultData {
+  const index = data.entries.findIndex((e) => e.id === entryId);
+  if (index === -1) throw new ValidationError(`No entry with id ${entryId}.`);
+  const existing = data.entries[index]!;
+  const nextPasskeys = existing.passkeys.filter((pk) => pk.id !== passkeyId);
+  if (nextPasskeys.length === existing.passkeys.length) {
+    throw new ValidationError(`No passkey with id ${passkeyId}.`);
+  }
+  const entries = [...data.entries];
+  entries[index] = { ...existing, passkeys: nextPasskeys, updatedAt: now() };
+  return { ...data, entries };
+}
+
 /**
  * Move an entry to the trash. Reversible with `restoreEntry`.
  *
@@ -617,6 +662,13 @@ export function searchEntries(data: VaultData, query: string): Entry[] {
         e.urls.some((u) => u.toLowerCase().includes(q)) ||
         // Labels only — never values, matching the rule that passwords are never searched.
         e.customFields.some((f) => f.label.toLowerCase().includes(q)) ||
+        // Relying-party host / usernames for synced passkeys — never private key material.
+        e.passkeys.some(
+          (pk) =>
+            pk.relyingPartyId.toLowerCase().includes(q) ||
+            pk.userName.toLowerCase().includes(q) ||
+            pk.userDisplayName.toLowerCase().includes(q),
+        ) ||
         (e.kind === 'note' && e.notes.toLowerCase().includes(q))
       );
     })

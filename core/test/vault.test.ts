@@ -6,8 +6,11 @@ import {
   createVault,
   deleteEntry,
   deleteEntries,
+  findPasskey,
+  findPasskeys,
   purgeEntry,
   purgeExpiredTrash,
+  removePasskey,
   restoreEntry,
   trashedEntries,
   deleteFolder,
@@ -798,5 +801,36 @@ describe('schema 4 fields', () => {
         ],
       }),
     ).toThrow(ValidationError);
+  });
+
+  it('removes a passkey without touching the rest of the entry', () => {
+    const { data, entry } = createEntry(emptyVaultData(), { title: 'Site', password: 'x' });
+    const passkey = {
+      id: '44444444-4444-4444-8444-444444444444',
+      credentialIdB64: Buffer.from('cred').toString('base64'),
+      relyingPartyId: 'example.com',
+      relyingPartyName: 'Example',
+      userName: 'user',
+      userDisplayName: 'User',
+      userHandleB64: Buffer.from('handle').toString('base64'),
+      privateKeyB64: Buffer.from('key-material-32-bytes-long!!!!!!').toString('base64'),
+      signCount: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null as string | null,
+    };
+    const withPasskey = {
+      ...data,
+      entries: data.entries.map((e) => (e.id === entry.id ? { ...e, passkeys: [passkey] } : e)),
+    };
+
+    const found = findPasskeys(withPasskey, 'example.com');
+    expect(found).toHaveLength(1);
+    expect(found[0]?.passkey.id).toBe(passkey.id);
+    expect(findPasskey(withPasskey, passkey.credentialIdB64)?.entry.id).toBe(entry.id);
+
+    const removed = removePasskey(withPasskey, entry.id, passkey.id);
+    expect(getEntry(removed, entry.id)?.passkeys).toEqual([]);
+    expect(getEntry(removed, entry.id)?.password).toBe('x');
+    expect(() => removePasskey(removed, entry.id, passkey.id)).toThrow(ValidationError);
   });
 });

@@ -43,6 +43,7 @@ import {
   purgeEntry,
   purgeExpiredTrash,
   registrableDomain,
+  removePasskey,
   restoreEntry,
   saveVault,
   searchEntries,
@@ -52,6 +53,7 @@ import {
   type Entry,
   type EntryInput,
   type MatchMode,
+  type PasskeyRecord,
   type VaultFile,
   type VaultSession,
 } from '@keyhole/core';
@@ -429,6 +431,7 @@ async function handle(request: Request): Promise<Response> {
           totpConfig: entry.totpConfig,
           customFields: entry.customFields,
           attachments: entry.attachments,
+          passkeys: entry.passkeys.map(toPasskeySummary),
         },
       };
     }
@@ -516,6 +519,19 @@ async function handle(request: Request): Promise<Response> {
       touch();
       try {
         session.data = coreDeleteEntry(session.data, request.entryId);
+        await persist();
+        void updateMatchBadge();
+        return { ok: true, type: 'OK' };
+      } catch (err) {
+        return { ok: false, error: describe(err) };
+      }
+    }
+
+    case 'REMOVE_PASSKEY': {
+      if (!session || !vaultFile) return { ok: false, error: 'Vault is locked.' };
+      touch();
+      try {
+        session.data = removePasskey(session.data, request.entryId, request.passkeyId);
         await persist();
         void updateMatchBadge();
         return { ok: true, type: 'OK' };
@@ -1353,8 +1369,23 @@ function toSummary(entry: Entry): EntrySummary {
     id: entry.id,
     title: entry.title,
     username: entry.username,
-    host: entry.urls[0] ? displayHost(entry.urls[0]) : null,
+    host: entry.urls[0] ? displayHost(entry.urls[0]) : entry.passkeys[0]?.relyingPartyId ?? null,
     hasTotp: entry.totpSecret !== null,
+    hasPasskey: entry.passkeys.length > 0,
+  };
+}
+
+/** Metadata only — private key / credential id stay in the sealed vault. */
+function toPasskeySummary(passkey: PasskeyRecord) {
+  return {
+    id: passkey.id,
+    relyingPartyId: passkey.relyingPartyId,
+    relyingPartyName: passkey.relyingPartyName,
+    userName: passkey.userName,
+    userDisplayName: passkey.userDisplayName,
+    createdAt: passkey.createdAt,
+    lastUsedAt: passkey.lastUsedAt,
+    signCount: passkey.signCount,
   };
 }
 

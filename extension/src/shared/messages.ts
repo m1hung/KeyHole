@@ -64,6 +64,17 @@ export const requestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('SAVE_ENTRY'), entry: z.unknown() }).strict(),
   z.object({ type: z.literal('DELETE_ENTRY'), entryId: z.uuid() }).strict(),
   /**
+   * Remove one synced passkey from an entry. Create/use is iOS AutoFill only;
+   * the extension can list and delete what sync already carries.
+   */
+  z
+    .object({
+      type: z.literal('REMOVE_PASSKEY'),
+      entryId: z.uuid(),
+      passkeyId: z.uuid(),
+    })
+    .strict(),
+  /**
    * Move several entries to the trash in one save — what the health panel's
    * batch action sends. Reversible, like `DELETE_ENTRY`; the irreversible
    * `PURGE_ENTRY` stays deliberately one entry at a time.
@@ -167,6 +178,24 @@ export interface EntrySummary {
   /** Loosest is `domain`: same registrable domain, a different host. */
   matchStrength?: 'exact' | 'host' | 'subdomain' | 'domain';
   hasTotp: boolean;
+  /** Synced WebAuthn passkeys (created on iOS). Browser cannot assert them. */
+  hasPasskey: boolean;
+}
+
+/**
+ * Passkey metadata for the options editor. Deliberately omits private key and
+ * credential id bytes — those never leave the service worker except inside the
+ * encrypted vault envelope.
+ */
+export interface PasskeySummary {
+  id: string;
+  relyingPartyId: string;
+  relyingPartyName: string;
+  userName: string;
+  userDisplayName: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  signCount: number;
 }
 
 export type Response =
@@ -203,6 +232,7 @@ export type Response =
         totpConfig: TotpConfig | null;
         customFields: CustomField[];
         attachments: Attachment[];
+        passkeys: PasskeySummary[];
       };
     }
   | {
