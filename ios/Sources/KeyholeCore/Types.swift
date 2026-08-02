@@ -10,7 +10,22 @@ public let MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024
 public let MAX_ATTACHMENTS_VAULT_BYTES = 5 * 1024 * 1024
 
 /// Current version of the on-disk envelope. Bump when `VaultFile` changes shape.
-public let FORMAT_VERSION = 1
+/// Highest envelope version this build can *read*.
+///
+///  1 — master password alone.
+///  2 — master password + a device-held Secret Key, with an optional Recovery Kit.
+public let FORMAT_VERSION = 2
+
+/// Envelope version `createVault` writes by default.
+///
+/// Deliberately trailing `FORMAT_VERSION`, and matching `DEFAULT_NEW_VAULT_FORMAT_VERSION`
+/// in the TypeScript core: a format-2 vault is unopenable without its Secret Key, so
+/// minting one from a surface that cannot yet store that key or show the Recovery Kit
+/// would lock the user out of the vault they just created.
+public let DEFAULT_NEW_VAULT_FORMAT_VERSION = 1
+
+/// Envelope versions that bind derivation to a Secret Key.
+public let SECRET_KEY_FORMAT_VERSION = 2
 
 /// Magic string identifying a Keyhole vault envelope.
 public let VAULT_FORMAT_ID = "keyhole.vault"
@@ -496,16 +511,26 @@ public struct VaultFile: Codable, Sendable, Equatable {
     public var kdf: KdfParams
     public var wrappedKey: EncryptedBlob
     public var payload: EncryptedBlob
+    /// KDF parameters for the Recovery Code. Format 2+, present iff a Recovery Kit
+    /// has been issued. Nil encodes as an absent key, matching the TypeScript core.
+    public var recoveryKdf: KdfParams?
+    /// The *same* vault encryption key, wrapped a second time under the Recovery Code.
+    ///
+    /// CRITICAL INVARIANT: it wraps the VEK, so anything that rotates the VEK must
+    /// re-wrap or clear it. See `changeMasterPassword`.
+    public var recoveryWrappedKey: EncryptedBlob?
 
     public init(
         format: String = VAULT_FORMAT_ID,
-        formatVersion: Int = FORMAT_VERSION,
+        formatVersion: Int = DEFAULT_NEW_VAULT_FORMAT_VERSION,
         vaultId: String,
         createdAt: String,
         updatedAt: String,
         kdf: KdfParams,
         wrappedKey: EncryptedBlob,
-        payload: EncryptedBlob
+        payload: EncryptedBlob,
+        recoveryKdf: KdfParams? = nil,
+        recoveryWrappedKey: EncryptedBlob? = nil
     ) {
         self.format = format
         self.formatVersion = formatVersion
@@ -515,6 +540,8 @@ public struct VaultFile: Codable, Sendable, Equatable {
         self.kdf = kdf
         self.wrappedKey = wrappedKey
         self.payload = payload
+        self.recoveryKdf = recoveryKdf
+        self.recoveryWrappedKey = recoveryWrappedKey
     }
 }
 

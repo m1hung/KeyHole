@@ -241,8 +241,37 @@ export const vaultFileSchema = z
     kdf: kdfParamsSchema,
     wrappedKey: encryptedBlobSchema,
     payload: encryptedBlobSchema,
+    // Format 2+. Optional at the schema level and constrained by version in
+    // `assertEnvelopeShape`, because Zod cannot express "these two travel together,
+    // and only above version 1" without splitting the schema into a union that
+    // would report unhelpful errors for the common case.
+    recoveryKdf: kdfParamsSchema.optional(),
+    recoveryWrappedKey: encryptedBlobSchema.optional(),
   })
   .strict();
+
+/**
+ * Cross-field envelope rules that the schema deliberately does not encode.
+ *
+ * Runs on parse, so every reader gets them — a v1 envelope carrying a recovery blob
+ * is malformed no matter which surface opened it, and a half-written Recovery Kit
+ * (one field without the other) must be caught here rather than surfacing later as
+ * an unexplained decryption failure during recovery, which is the worst possible
+ * moment to discover it.
+ */
+export function assertEnvelopeShape(file: z.infer<typeof vaultFileSchema>): void {
+  const hasKdf = file.recoveryKdf !== undefined;
+  const hasBlob = file.recoveryWrappedKey !== undefined;
+
+  if (hasKdf !== hasBlob) {
+    throw new VaultFormatError(
+      'Vault has an incomplete Recovery Kit: recoveryKdf and recoveryWrappedKey must both be present or both absent.',
+    );
+  }
+  if (file.formatVersion < 2 && hasKdf) {
+    throw new VaultFormatError(`A format-${file.formatVersion} vault cannot carry a Recovery Kit.`);
+  }
+}
 
 /** Parse an untrusted vault envelope, converting Zod failures into our error type. */
 export function parseVaultFile(input: unknown): z.infer<typeof vaultFileSchema> {
@@ -250,6 +279,7 @@ export function parseVaultFile(input: unknown): z.infer<typeof vaultFileSchema> 
   if (!result.success) {
     throw new VaultFormatError(`Not a valid Keyhole vault file: ${result.error.issues[0]?.message ?? 'unknown error'}`);
   }
+  assertEnvelopeShape(result.data);
   return result.data;
 }
 

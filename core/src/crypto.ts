@@ -181,19 +181,53 @@ async function argon2Root(masterPassword: string, params: KdfParams): Promise<Ui
 }
 
 /**
- * master password → Argon2id → non-extractable AES-256-GCM CryptoKey.
+ * Mix the Secret Key into the Argon2id output.
+ *
+ * WHY THE OUTPUT SIDE, not the salt. Feeding the Secret Key in as (part of) the
+ * Argon2id salt would work cryptographically, but it would put the mixing *inside*
+ * the memory-hard step — and `deriveKeyMaterial` exists precisely to run that step
+ * once and derive two secrets from it. Binding afterwards keeps that single-run
+ * optimisation intact and costs one HKDF call.
+ *
+ * Soundness: HKDF-Extract is a PRF, so a party holding the Argon2id output but not
+ * the Secret Key learns nothing about the result, and vice versa. An attacker who
+ * has stolen the envelope must now guess the password *and* hold 128 bits of
+ * uniformly random key material, which is not a search anyone finishes.
+ *
+ * The Secret Key is the salt rather than the IKM because HKDF-Extract's security
+ * argument treats the IKM as the entropy source: the Argon2id output is the value
+ * we want stretched, and the Secret Key is the independent value that domain-
+ * separates it.
+ */
+async function bindSecretKey(root: Uint8Array, secretKey: Uint8Array): Promise<Uint8Array> {
+  return hkdfSha256(root, secretKey, HKDF_INFO_SECRET_KEY, CRYPTO.KEY_BYTES);
+}
+
+/**
+ * master password (+ optional Secret Key) → non-extractable AES-256-GCM CryptoKey.
  *
  * The derived bytes are imported and zeroed before returning. The resulting
  * CryptoKey is `extractable: false`, so even a same-origin XSS cannot read the
  * key back out — it can only ask the browser to use it.
+ *
+ * Omitting `secretKey` reproduces the format-1 derivation byte for byte. That is a
+ * compatibility requirement, not a convenience: every vault written before format 2
+ * — including the published demo vault — must keep opening forever.
  */
-export async function deriveMasterKey(masterPassword: string, params: KdfParams): Promise<CryptoKey> {
+export async function deriveMasterKey(
+  masterPassword: string,
+  params: KdfParams,
+  secretKey?: Uint8Array,
+): Promise<CryptoKey> {
   let derived: Uint8Array | undefined;
+  let bound: Uint8Array | undefined;
   try {
     derived = await argon2Root(masterPassword, params);
-    return await importAesKey(derived);
+    if (secretKey === undefined) return await importAesKey(derived);
+    bound = await bindSecretKey(derived, secretKey);
+    return await importAesKey(bound);
   } finally {
-    zeroize(derived);
+    zeroize(derived, bound);
   }
 }
 
@@ -206,6 +240,12 @@ export async function deriveMasterKey(masterPassword: string, params: KdfParams)
  * existing server credential, so it is versioned.
  */
 const HKDF_INFO_SYNC_AUTH = 'keyhole/sync-auth/v1';
+
+/** As above, for vaults whose derivation is bound to a Secret Key (format 2+). */
+const HKDF_INFO_SYNC_AUTH_V2 = 'keyhole/sync-auth/v2';
+
+/** HKDF label mixing the Secret Key into the Argon2id output. */
+const HKDF_INFO_SECRET_KEY = 'keyhole/secret-key-binding/v2';
 
 async function hkdfSha256(root: Uint8Array, salt: Uint8Array, info: string, byteLength: number): Promise<Uint8Array> {
   const key = await subtle().importKey('raw', toBufferSource(root), 'HKDF', false, ['deriveBits']);
@@ -240,16 +280,33 @@ async function hkdfSha256(root: Uint8Array, salt: Uint8Array, info: string, byte
  *
  * The HKDF salt is the vault's own KDF salt, so two vaults sharing a password
  * still produce unrelated auth secrets.
+ *
+ *  - When the vault is bound to a Secret Key, this secret is derived from the
+ *    *bound* root and carries a `/v2` label. Deriving it from the unbound root
+ *    would leave a stolen master password sufficient for server write access,
+ *    which would make the second factor worthless on exactly the path where the
+ *    attacker already holds a copy of the envelope.
  */
-export async function deriveSyncAuthSecret(masterPassword: string, params: KdfParams): Promise<string> {
+export async function deriveSyncAuthSecret(
+  masterPassword: string,
+  params: KdfParams,
+  secretKey?: Uint8Array,
+): Promise<string> {
   let root: Uint8Array | undefined;
+  let bound: Uint8Array | undefined;
   let secret: Uint8Array | undefined;
   try {
     root = await argon2Root(masterPassword, params);
-    secret = await hkdfSha256(root, b64ToBytes(params.saltB64), HKDF_INFO_SYNC_AUTH, CRYPTO.KEY_BYTES);
+    bound = secretKey === undefined ? undefined : await bindSecretKey(root, secretKey);
+    secret = await hkdfSha256(
+      bound ?? root,
+      b64ToBytes(params.saltB64),
+      secretKey === undefined ? HKDF_INFO_SYNC_AUTH : HKDF_INFO_SYNC_AUTH_V2,
+      CRYPTO.KEY_BYTES,
+    );
     return bytesToB64(secret);
   } finally {
-    zeroize(root, secret);
+    zeroize(root, bound, secret);
   }
 }
 
@@ -262,16 +319,24 @@ export async function deriveSyncAuthSecret(masterPassword: string, params: KdfPa
 export async function deriveKeyMaterial(
   masterPassword: string,
   params: KdfParams,
+  secretKey?: Uint8Array,
 ): Promise<{ masterKey: CryptoKey; syncAuthSecretB64: string }> {
   let root: Uint8Array | undefined;
+  let bound: Uint8Array | undefined;
   let secret: Uint8Array | undefined;
   try {
     root = await argon2Root(masterPassword, params);
-    const masterKey = await importAesKey(root);
-    secret = await hkdfSha256(root, b64ToBytes(params.saltB64), HKDF_INFO_SYNC_AUTH, CRYPTO.KEY_BYTES);
+    bound = secretKey === undefined ? undefined : await bindSecretKey(root, secretKey);
+    const masterKey = await importAesKey(bound ?? root);
+    secret = await hkdfSha256(
+      bound ?? root,
+      b64ToBytes(params.saltB64),
+      secretKey === undefined ? HKDF_INFO_SYNC_AUTH : HKDF_INFO_SYNC_AUTH_V2,
+      CRYPTO.KEY_BYTES,
+    );
     return { masterKey, syncAuthSecretB64: bytesToB64(secret) };
   } finally {
-    zeroize(root, secret);
+    zeroize(root, bound, secret);
   }
 }
 
@@ -351,11 +416,20 @@ export async function decrypt(key: CryptoKey, blob: EncryptedBlob, aad: Uint8Arr
  */
 export type VaultHeader = Pick<VaultFile, 'vaultId' | 'formatVersion' | 'kdf'>;
 
+/**
+ * Associated data for the wrapped VEK.
+ *
+ * The template string is versioned alongside the envelope because format 2 derives
+ * the master key differently (Secret Key bound in). `formatVersion` is already one
+ * of the joined fields, so editing a v2 envelope down to v1 in the hope of being
+ * granted the weaker password-only derivation breaks the tag either way — the
+ * distinct prefix simply makes the intent legible in a hex dump.
+ */
 export function wrappedKeyAad(header: VaultHeader): Uint8Array {
   const { kdf } = header;
   return utf8ToBytes(
     [
-      'keyhole.wrapkey.v1',
+      header.formatVersion >= 2 ? 'keyhole.wrapkey.v2' : 'keyhole.wrapkey.v1',
       header.vaultId,
       header.formatVersion,
       kdf.algorithm,
@@ -364,6 +438,31 @@ export function wrappedKeyAad(header: VaultHeader): Uint8Array {
       kdf.parallelism,
       kdf.keyLength,
       kdf.saltB64,
+    ].join('|'),
+  );
+}
+
+/**
+ * Associated data for the recovery-wrapped VEK.
+ *
+ * Bound to the recovery KDF params rather than the master-password ones, so that
+ * changing the master password (which rotates `kdf` and the VEK) does not have to
+ * invalidate a Recovery Kit for AAD reasons — it invalidates it for the *real*
+ * reason, which is that the VEK underneath has changed and the blob must be
+ * re-wrapped. Keeping those two concerns separate is what makes that bug catchable.
+ */
+export function recoveryAad(header: Pick<VaultFile, 'vaultId' | 'formatVersion'>, recoveryKdf: KdfParams): Uint8Array {
+  return utf8ToBytes(
+    [
+      'keyhole.recovery.v1',
+      header.vaultId,
+      header.formatVersion,
+      recoveryKdf.algorithm,
+      recoveryKdf.memoryKiB,
+      recoveryKdf.iterations,
+      recoveryKdf.parallelism,
+      recoveryKdf.keyLength,
+      recoveryKdf.saltB64,
     ].join('|'),
   );
 }

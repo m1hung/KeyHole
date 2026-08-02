@@ -39,6 +39,10 @@ public struct SymmetricVaultKey: Sendable {
 
 public enum KeyholeCrypto {
     private static let hkdfInfoSyncAuth = "keyhole/sync-auth/v1"
+    /// As above, for vaults whose derivation is bound to a Secret Key (format 2+).
+    private static let hkdfInfoSyncAuthV2 = "keyhole/sync-auth/v2"
+    /// HKDF label mixing the Secret Key into the Argon2id output.
+    private static let hkdfInfoSecretKey = "keyhole/secret-key-binding/v2"
 
     // MARK: Randomness
 
@@ -141,19 +145,51 @@ public enum KeyholeCrypto {
         return out
     }
 
-    public static func deriveMasterKey(masterPassword: String, params: KdfParams) throws -> SymmetricVaultKey {
-        var derived = try argon2Root(masterPassword: masterPassword, params: params)
-        defer { zeroize(&derived) }
-        return try SymmetricVaultKey(raw: derived)
+    /// Mix the Secret Key into the Argon2id output.
+    ///
+    /// Output-side rather than salt-side, so the memory-hard step runs once and both
+    /// the master key and the sync auth secret derive from its result. See the
+    /// TypeScript original for the full argument.
+    private static func bindSecretKey(root: [UInt8], secretKey: [UInt8]) throws -> [UInt8] {
+        try hkdfSha256(
+            root: root,
+            salt: secretKey,
+            info: hkdfInfoSecretKey,
+            byteLength: CryptoConstants.keyBytes
+        )
     }
 
-    public static func deriveSyncAuthSecret(masterPassword: String, params: KdfParams) throws -> String {
+    /// Passing `secretKey: nil` reproduces the format-1 derivation byte for byte.
+    /// That is a compatibility requirement — every vault written before format 2 must
+    /// keep opening forever.
+    public static func deriveMasterKey(
+        masterPassword: String,
+        params: KdfParams,
+        secretKey: [UInt8]? = nil
+    ) throws -> SymmetricVaultKey {
+        var derived = try argon2Root(masterPassword: masterPassword, params: params)
+        defer { zeroize(&derived) }
+        guard let secretKey else {
+            return try SymmetricVaultKey(raw: derived)
+        }
+        var bound = try bindSecretKey(root: derived, secretKey: secretKey)
+        defer { zeroize(&bound) }
+        return try SymmetricVaultKey(raw: bound)
+    }
+
+    public static func deriveSyncAuthSecret(
+        masterPassword: String,
+        params: KdfParams,
+        secretKey: [UInt8]? = nil
+    ) throws -> String {
         var root = try argon2Root(masterPassword: masterPassword, params: params)
         defer { zeroize(&root) }
+        var bound = try secretKey.map { try bindSecretKey(root: root, secretKey: $0) }
+        defer { if bound != nil { zeroize(&bound!) } }
         var secret = try hkdfSha256(
-            root: root,
+            root: bound ?? root,
             salt: try EncodingUtil.b64ToBytes(params.saltB64),
-            info: hkdfInfoSyncAuth,
+            info: secretKey == nil ? hkdfInfoSyncAuth : hkdfInfoSyncAuthV2,
             byteLength: CryptoConstants.keyBytes
         )
         defer { zeroize(&secret) }
@@ -162,15 +198,18 @@ public enum KeyholeCrypto {
 
     public static func deriveKeyMaterial(
         masterPassword: String,
-        params: KdfParams
+        params: KdfParams,
+        secretKey: [UInt8]? = nil
     ) throws -> (masterKey: SymmetricVaultKey, syncAuthSecretB64: String) {
         var root = try argon2Root(masterPassword: masterPassword, params: params)
         defer { zeroize(&root) }
-        let masterKey = try SymmetricVaultKey(raw: root)
+        var bound = try secretKey.map { try bindSecretKey(root: root, secretKey: $0) }
+        defer { if bound != nil { zeroize(&bound!) } }
+        let masterKey = try SymmetricVaultKey(raw: bound ?? root)
         var secret = try hkdfSha256(
-            root: root,
+            root: bound ?? root,
             salt: try EncodingUtil.b64ToBytes(params.saltB64),
-            info: hkdfInfoSyncAuth,
+            info: secretKey == nil ? hkdfInfoSyncAuth : hkdfInfoSyncAuthV2,
             byteLength: CryptoConstants.keyBytes
         )
         defer { zeroize(&secret) }
@@ -252,10 +291,14 @@ public enum KeyholeCrypto {
         }
     }
 
+    /// The template string is versioned alongside the envelope because format 2
+    /// derives the master key differently. `formatVersion` is already one of the
+    /// joined fields, so a downgrade edit breaks the tag either way — the distinct
+    /// prefix simply makes the intent legible in a hex dump.
     public static func wrappedKeyAad(_ header: VaultHeader) -> [UInt8] {
         let kdf = header.kdf
         let parts: [String] = [
-            "keyhole.wrapkey.v1",
+            header.formatVersion >= 2 ? "keyhole.wrapkey.v2" : "keyhole.wrapkey.v1",
             header.vaultId,
             String(header.formatVersion),
             kdf.algorithm,
@@ -264,6 +307,23 @@ public enum KeyholeCrypto {
             String(kdf.parallelism),
             String(kdf.keyLength),
             kdf.saltB64,
+        ]
+        return EncodingUtil.utf8ToBytes(parts.joined(separator: "|"))
+    }
+
+    /// Bound to the recovery KDF params rather than the master-password ones, so the
+    /// two concerns stay separable. See the TypeScript original.
+    public static func recoveryAad(vaultId: String, formatVersion: Int, recoveryKdf: KdfParams) -> [UInt8] {
+        let parts: [String] = [
+            "keyhole.recovery.v1",
+            vaultId,
+            String(formatVersion),
+            recoveryKdf.algorithm,
+            String(recoveryKdf.memoryKiB),
+            String(recoveryKdf.iterations),
+            String(recoveryKdf.parallelism),
+            String(recoveryKdf.keyLength),
+            recoveryKdf.saltB64,
         ]
         return EncodingUtil.utf8ToBytes(parts.joined(separator: "|"))
     }

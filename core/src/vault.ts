@@ -16,15 +16,19 @@ import {
   importAesKey,
   payloadAad,
   randomUuid,
+  recoveryAad,
   wrappedKeyAad,
   zeroize,
   type KdfPresetName,
 } from './crypto.ts';
+import { formatSecret, generateSecretKeyBytes, parseSecret, type SecretKind } from './secret-key.ts';
 import { bytesToUtf8, utf8ToBytes } from './encoding.ts';
 import { UnsupportedVersionError, ValidationError, VaultFormatError } from './errors.ts';
 import { DEFAULT_GENERATOR_OPTIONS } from './password-gen.ts';
 import {
+  DEFAULT_NEW_VAULT_FORMAT_VERSION,
   FORMAT_VERSION,
+  SECRET_KEY_FORMAT_VERSION,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS_VAULT_BYTES,
   PASSWORD_HISTORY_LIMIT,
@@ -33,7 +37,9 @@ import {
   VAULT_FORMAT_ID,
   type Attachment,
   type CustomField,
+  type EncryptedBlob,
   type Entry,
+  type KdfParams,
   type PasskeyRecord,
   type PasswordHistoryEntry,
   type Folder,
@@ -83,27 +89,70 @@ export function emptyVaultData(): VaultData {
 // Create / unlock / save
 // ---------------------------------------------------------------------------
 
+/**
+ * The two halves of a printed Recovery Kit.
+ *
+ * Returned exactly once, at the moment they are minted, and never recoverable from
+ * the envelope afterwards. A caller that drops this object has thrown away the
+ * user's only recovery path — surfaces must render it before persisting anything.
+ */
+export interface RecoveryKit {
+  /**
+   * Formatted Secret Key. Stored on each device (OS keychain / `safeStorage` /
+   * `chrome.storage.local`) *and* printed, since a device loss otherwise takes the
+   * vault with it.
+   */
+  secretKey: string;
+  /**
+   * Formatted Recovery Code. Printed only. Keyhole never stores this anywhere, on
+   * any surface — that is precisely what keeps it a recovery path rather than a
+   * backdoor.
+   */
+  recoveryCode: string;
+}
+
+/** A Secret Key or Recovery Code as bytes, or as the string a user typed. */
+export type SecretInput = Uint8Array | string;
+
+function toSecretBytes(kind: SecretKind, input: SecretInput): Uint8Array {
+  // Always a fresh copy. Everything here zeroizes its key material on the way out,
+  // and doing that to a buffer the caller still owns would wipe *their* Secret Key
+  // — silently, and only visibly on the second unlock.
+  return typeof input === 'string' ? parseSecret(kind, input) : Uint8Array.from(input);
+}
+
 export interface CreateVaultOptions {
   kdfPreset?: KdfPresetName;
   initialData?: VaultData;
+  /**
+   * Envelope version to write. Defaults to `DEFAULT_NEW_VAULT_FORMAT_VERSION`.
+   * Pass 2 only from a surface that can both persist the Secret Key and show the
+   * Recovery Kit to the user.
+   */
+  formatVersion?: 1 | 2;
 }
 
 /**
- * Build a brand-new encrypted vault. Returns both the envelope (to persist) and
- * an unlocked session, so the caller does not have to immediately re-run the
- * KDF just to use the vault it created.
+ * Build a brand-new encrypted vault. Returns the envelope (to persist), an
+ * unlocked session — so the caller does not have to immediately re-run the KDF
+ * just to use the vault it created — and, for format 2, the Recovery Kit.
  */
 export async function createVault(
   masterPassword: string,
   options: CreateVaultOptions = {},
-): Promise<{ file: VaultFile; session: VaultSession }> {
+): Promise<{ file: VaultFile; session: VaultSession; kit: RecoveryKit | null }> {
   assertMasterPasswordAcceptable(masterPassword);
 
+  const formatVersion = options.formatVersion ?? DEFAULT_NEW_VAULT_FORMAT_VERSION;
   const vaultId = randomUuid();
   const kdf = defaultKdfParams(options.kdfPreset ?? 'interactive');
-  const header = { vaultId, formatVersion: FORMAT_VERSION, kdf };
+  const header = { vaultId, formatVersion, kdf };
 
-  const masterKey = await deriveMasterKey(masterPassword, kdf);
+  const bound = formatVersion >= SECRET_KEY_FORMAT_VERSION;
+  const secretKeyBytes = bound ? generateSecretKeyBytes() : undefined;
+  const recoveryCodeBytes = bound ? generateSecretKeyBytes() : undefined;
+
+  const masterKey = await deriveMasterKey(masterPassword, kdf, secretKeyBytes);
   const vekBytes = generateVaultKeyBytes();
   try {
     const wrappedKey = await encrypt(masterKey, vekBytes, wrappedKeyAad(header));
@@ -112,24 +161,70 @@ export async function createVault(
     const data = options.initialData ?? emptyVaultData();
     const payload = await encrypt(vaultKey, utf8ToBytes(JSON.stringify(data)), payloadAad(header));
 
+    const recovery = recoveryCodeBytes
+      ? await wrapForRecovery(vekBytes, recoveryCodeBytes, header, options.kdfPreset)
+      : undefined;
+
     const timestamp = now();
     const file: VaultFile = {
       format: VAULT_FORMAT_ID,
-      formatVersion: FORMAT_VERSION,
+      formatVersion,
       vaultId,
       createdAt: timestamp,
       updatedAt: timestamp,
       kdf,
       wrappedKey,
       payload,
+      ...recovery,
     };
     return {
       file,
       session: { vaultId, key: vaultKey, data, unlockedAt: Date.now(), foreignSchemaVersion: null },
+      kit:
+        secretKeyBytes && recoveryCodeBytes
+          ? {
+              secretKey: formatSecret('secret-key', secretKeyBytes),
+              recoveryCode: formatSecret('recovery-code', recoveryCodeBytes),
+            }
+          : null,
     };
   } finally {
-    zeroize(vekBytes);
+    zeroize(vekBytes, secretKeyBytes, recoveryCodeBytes);
   }
+}
+
+/**
+ * Wrap the VEK a second time under a Recovery Code.
+ *
+ * Argon2id over a 128-bit uniformly random code buys no meaningful search
+ * resistance — the same argument the sync server makes for hashing its verifier
+ * with a single SHA-256. It is used anyway because it costs one run on a path taken
+ * at most once per vault, and because carrying real KDF params in the format is
+ * what would let a future version accept a user-chosen recovery passphrase without
+ * another envelope version.
+ */
+async function wrapForRecovery(
+  vekBytes: Uint8Array,
+  recoveryCodeBytes: Uint8Array,
+  header: { vaultId: string; formatVersion: number },
+  kdfPreset?: KdfPresetName,
+): Promise<{ recoveryKdf: KdfParams; recoveryWrappedKey: EncryptedBlob }> {
+  const recoveryKdf = defaultKdfParams(kdfPreset ?? 'interactive');
+  const recoveryKey = await deriveMasterKey(formatSecret('recovery-code', recoveryCodeBytes), recoveryKdf);
+  return {
+    recoveryKdf,
+    recoveryWrappedKey: await encrypt(recoveryKey, vekBytes, recoveryAad(header, recoveryKdf)),
+  };
+}
+
+/** True when this envelope cannot be unlocked without a Secret Key. */
+export function vaultRequiresSecretKey(file: Pick<VaultFile, 'formatVersion'>): boolean {
+  return file.formatVersion >= SECRET_KEY_FORMAT_VERSION;
+}
+
+/** True when a Recovery Kit was issued for this envelope and can still open it. */
+export function vaultHasRecoveryKit(file: Pick<VaultFile, 'recoveryWrappedKey'>): boolean {
+  return file.recoveryWrappedKey !== undefined;
 }
 
 /**
@@ -139,7 +234,11 @@ export async function createVault(
  * password throws before we ever touch the payload ciphertext. No partial state
  * is constructed on any failure path.
  */
-export async function unlockVault(file: unknown, masterPassword: string): Promise<VaultSession> {
+export async function unlockVault(
+  file: unknown,
+  masterPassword: string,
+  secretKey?: SecretInput,
+): Promise<VaultSession> {
   const parsed = parseVaultFile(file);
   if (parsed.formatVersion > FORMAT_VERSION) {
     throw new UnsupportedVersionError(
@@ -147,11 +246,26 @@ export async function unlockVault(file: unknown, masterPassword: string): Promis
     );
   }
 
-  const header = { vaultId: parsed.vaultId, formatVersion: parsed.formatVersion, kdf: parsed.kdf };
-  const masterKey = await deriveMasterKey(masterPassword, parsed.kdf);
+  // Checked before the KDF runs so the two "you gave us the wrong thing" cases are
+  // named, rather than both surfacing 105 ms later as an indistinguishable bad tag.
+  if (vaultRequiresSecretKey(parsed) && secretKey === undefined) {
+    throw new ValidationError('This vault needs its Secret Key as well as the master password.');
+  }
+  if (!vaultRequiresSecretKey(parsed) && secretKey !== undefined) {
+    throw new ValidationError('This vault does not use a Secret Key.');
+  }
 
-  // Throws DecryptionError on a wrong password — the GCM tag is the verifier.
-  const vekBytes = await decrypt(masterKey, parsed.wrappedKey, wrappedKeyAad(header));
+  const header = { vaultId: parsed.vaultId, formatVersion: parsed.formatVersion, kdf: parsed.kdf };
+  const secretKeyBytes = secretKey === undefined ? undefined : toSecretBytes('secret-key', secretKey);
+  let vekBytes: Uint8Array;
+  try {
+    const masterKey = await deriveMasterKey(masterPassword, parsed.kdf, secretKeyBytes);
+    // Throws DecryptionError on a wrong password — the GCM tag is the verifier.
+    vekBytes = await decrypt(masterKey, parsed.wrappedKey, wrappedKeyAad(header));
+  } finally {
+    zeroize(secretKeyBytes);
+  }
+
   let vaultKey: CryptoKey;
   try {
     vaultKey = await importAesKey(vekBytes);
@@ -236,19 +350,28 @@ export async function changeMasterPassword(
   file: VaultFile,
   currentPassword: string,
   newPassword: string,
-  options: { kdfPreset?: KdfPresetName } = {},
-): Promise<{ file: VaultFile; session: VaultSession }> {
+  options: { kdfPreset?: KdfPresetName; secretKey?: SecretInput } = {},
+): Promise<{ file: VaultFile; session: VaultSession; kit: RecoveryKit | null }> {
   assertMasterPasswordAcceptable(newPassword);
 
   // Verifies the current password by unlocking; throws before anything mutates.
-  const current = await unlockVault(file, currentPassword);
+  const current = await unlockVault(file, currentPassword, options.secretKey);
 
+  // The envelope version never changes here: a password change must not silently
+  // upgrade a vault into needing a Secret Key. `upgradeToV2` is the explicit path.
+  const formatVersion = file.formatVersion;
   const kdf = defaultKdfParams(options.kdfPreset ?? 'interactive');
-  const header = { vaultId: file.vaultId, formatVersion: FORMAT_VERSION, kdf };
-  const newMasterKey = await deriveMasterKey(newPassword, kdf);
+  const header = { vaultId: file.vaultId, formatVersion, kdf };
+
+  const secretKeyBytes =
+    options.secretKey === undefined ? undefined : toSecretBytes('secret-key', options.secretKey);
 
   const vekBytes = generateVaultKeyBytes();
+  // Reissued rather than preserved — see the note below.
+  const recoveryCodeBytes = vaultHasRecoveryKit(file) ? generateSecretKeyBytes() : undefined;
+
   try {
+    const newMasterKey = await deriveMasterKey(newPassword, kdf, secretKeyBytes);
     const wrappedKey = await encrypt(newMasterKey, vekBytes, wrappedKeyAad(header));
     const newVaultKey = await importAesKey(vekBytes);
 
@@ -256,11 +379,43 @@ export async function changeMasterPassword(
     const payload = await encrypt(
       newVaultKey,
       utf8ToBytes(JSON.stringify(data)),
-      payloadAad({ vaultId: file.vaultId, formatVersion: FORMAT_VERSION }),
+      payloadAad({ vaultId: file.vaultId, formatVersion }),
     );
 
+    /*
+     * THE RECOVERY BLOB MUST NOT SURVIVE THIS UNTOUCHED.
+     *
+     * `{ ...file }` below carries every field we do not name, and until format 2
+     * that was exactly right. It no longer is: `recoveryWrappedKey` wraps the VEK,
+     * this function rotates the VEK, and so a carried-over blob decrypts to a key
+     * that no longer opens anything. The vault would keep working perfectly and the
+     * Recovery Kit would be dead — discovered only by someone who has already
+     * forgotten their password and has nothing else left to try.
+     *
+     * We cannot re-wrap the *existing* code: it lives only on the user's printout,
+     * by design. So the kit is reissued, and the caller is handed a new one it is
+     * obliged to show. The old printout stops working, which is the honest outcome
+     * — a rotated VEK genuinely invalidates it, and saying so beats a kit that
+     * looks valid and is not.
+     */
+    // `{}` rather than explicit undefineds: `recoveryCodeBytes` is unset only when
+    // the vault had no kit to begin with, so there is nothing for `...file` to carry
+    // through and nothing to blank out.
+    const recovery =
+      recoveryCodeBytes === undefined
+        ? {}
+        : await wrapForRecovery(vekBytes, recoveryCodeBytes, header, options.kdfPreset);
+
     return {
-      file: { ...file, formatVersion: FORMAT_VERSION, kdf, wrappedKey, payload, updatedAt: data.updatedAt },
+      file: {
+        ...file,
+        formatVersion,
+        kdf,
+        wrappedKey,
+        payload,
+        updatedAt: data.updatedAt,
+        ...recovery,
+      },
       session: {
         vaultId: file.vaultId,
         key: newVaultKey,
@@ -269,9 +424,208 @@ export async function changeMasterPassword(
         // Carried over: re-keying re-encrypts, it does not reinterpret the payload.
         foreignSchemaVersion: current.foreignSchemaVersion,
       },
+      kit:
+        recoveryCodeBytes && options.secretKey !== undefined
+          ? {
+              // Unchanged: the Secret Key is a device factor, independent of the
+              // password. Reprinting the kit must still show it, since the two
+              // halves are useless apart.
+              secretKey: formatSecret('secret-key', toSecretBytes('secret-key', options.secretKey)),
+              recoveryCode: formatSecret('recovery-code', recoveryCodeBytes),
+            }
+          : null,
     };
   } finally {
+    zeroize(vekBytes, secretKeyBytes, recoveryCodeBytes);
+  }
+}
+
+/**
+ * Upgrade a format-1 vault to format 2: bind it to a fresh Secret Key and issue a
+ * Recovery Kit.
+ *
+ * The VEK is rotated, not reused. Reusing it would leave the pre-upgrade envelope —
+ * which anyone who copied it can still attack with the password alone — holding a
+ * key that decrypts everything written *after* the upgrade. Rotating means the old
+ * copy ages into a snapshot rather than a live key, which is the entire point of
+ * upgrading.
+ */
+export async function upgradeToV2(
+  file: VaultFile,
+  masterPassword: string,
+  options: { kdfPreset?: KdfPresetName } = {},
+): Promise<{ file: VaultFile; session: VaultSession; kit: RecoveryKit }> {
+  if (file.formatVersion >= SECRET_KEY_FORMAT_VERSION) {
+    throw new ValidationError('This vault already uses a Secret Key.');
+  }
+
+  const current = await unlockVault(file, masterPassword);
+
+  const formatVersion = SECRET_KEY_FORMAT_VERSION;
+  const kdf = defaultKdfParams(options.kdfPreset ?? 'interactive');
+  const header = { vaultId: file.vaultId, formatVersion, kdf };
+
+  const secretKeyBytes = generateSecretKeyBytes();
+  const recoveryCodeBytes = generateSecretKeyBytes();
+  const vekBytes = generateVaultKeyBytes();
+
+  try {
+    const masterKey = await deriveMasterKey(masterPassword, kdf, secretKeyBytes);
+    const wrappedKey = await encrypt(masterKey, vekBytes, wrappedKeyAad(header));
+    const vaultKey = await importAesKey(vekBytes);
+
+    const data: VaultData = { ...current.data, updatedAt: now() };
+    const payload = await encrypt(
+      vaultKey,
+      utf8ToBytes(JSON.stringify(data)),
+      payloadAad({ vaultId: file.vaultId, formatVersion }),
+    );
+    const recovery = await wrapForRecovery(vekBytes, recoveryCodeBytes, header, options.kdfPreset);
+
+    return {
+      file: { ...file, formatVersion, kdf, wrappedKey, payload, updatedAt: data.updatedAt, ...recovery },
+      session: {
+        vaultId: file.vaultId,
+        key: vaultKey,
+        data,
+        unlockedAt: Date.now(),
+        foreignSchemaVersion: current.foreignSchemaVersion,
+      },
+      kit: {
+        secretKey: formatSecret('secret-key', secretKeyBytes),
+        recoveryCode: formatSecret('recovery-code', recoveryCodeBytes),
+      },
+    };
+  } finally {
+    zeroize(vekBytes, secretKeyBytes, recoveryCodeBytes);
+  }
+}
+
+/**
+ * Open a vault with the Recovery Code alone — no master password, no Secret Key.
+ *
+ * Read access only; the envelope is unchanged. `recoverWithKit` is what actually
+ * returns the vault to a usable state.
+ *
+ * Note what this implies, and say it plainly in any UI that prints a kit: the
+ * Recovery Code is on its own equivalent to the vault. The printout is not a hint
+ * or a backup password — it is the vault, on paper, and belongs wherever a passport
+ * would go. No arrangement of this format can be otherwise while still offering
+ * recovery to someone who has forgotten everything else.
+ */
+export async function unlockWithRecoveryCode(file: unknown, recoveryCode: SecretInput): Promise<VaultSession> {
+  const parsed = parseVaultFile(file);
+  if (parsed.formatVersion > FORMAT_VERSION) {
+    throw new UnsupportedVersionError(
+      `This vault was written by a newer version of Keyhole (format ${parsed.formatVersion}). Please update.`,
+    );
+  }
+  if (parsed.recoveryWrappedKey === undefined || parsed.recoveryKdf === undefined) {
+    throw new ValidationError('No Recovery Kit was issued for this vault.');
+  }
+
+  const codeBytes = toSecretBytes('recovery-code', recoveryCode);
+  let vekBytes: Uint8Array;
+  try {
+    const recoveryKey = await deriveMasterKey(formatSecret('recovery-code', codeBytes), parsed.recoveryKdf);
+    vekBytes = await decrypt(
+      recoveryKey,
+      parsed.recoveryWrappedKey,
+      recoveryAad({ vaultId: parsed.vaultId, formatVersion: parsed.formatVersion }, parsed.recoveryKdf),
+    );
+  } finally {
+    zeroize(codeBytes);
+  }
+
+  let vaultKey: CryptoKey;
+  try {
+    vaultKey = await importAesKey(vekBytes);
+  } finally {
     zeroize(vekBytes);
+  }
+
+  const plaintext = await decrypt(
+    vaultKey,
+    parsed.payload,
+    payloadAad({ vaultId: parsed.vaultId, formatVersion: parsed.formatVersion }),
+  );
+  let data: VaultData;
+  try {
+    data = parseVaultData(JSON.parse(bytesToUtf8(plaintext)));
+  } catch (err) {
+    if (err instanceof SyntaxError) throw new VaultFormatError('Vault payload is not valid JSON.');
+    throw err;
+  } finally {
+    zeroize(plaintext);
+  }
+
+  return {
+    vaultId: parsed.vaultId,
+    key: vaultKey,
+    data: migrate(data),
+    unlockedAt: Date.now(),
+    foreignSchemaVersion: foreignSchemaVersion(data),
+  };
+}
+
+/**
+ * The full recovery flow: open with the Recovery Code, set a new master password,
+ * and issue a replacement kit.
+ *
+ * A fresh Secret Key is minted rather than the old one being carried across. The
+ * user is already re-establishing this vault everywhere, the previous envelope and
+ * key pair are retired together, and requiring the old Secret Key here would mean
+ * asking for a second thing from a person who has just proved they lost track of
+ * the first. The cost is that every other device must be given the new Secret Key —
+ * which is what the reissued kit is for.
+ */
+export async function recoverWithKit(
+  file: VaultFile,
+  recoveryCode: SecretInput,
+  newPassword: string,
+  options: { kdfPreset?: KdfPresetName } = {},
+): Promise<{ file: VaultFile; session: VaultSession; kit: RecoveryKit }> {
+  assertMasterPasswordAcceptable(newPassword);
+
+  const current = await unlockWithRecoveryCode(file, recoveryCode);
+
+  const formatVersion = Math.max(file.formatVersion, SECRET_KEY_FORMAT_VERSION);
+  const kdf = defaultKdfParams(options.kdfPreset ?? 'interactive');
+  const header = { vaultId: file.vaultId, formatVersion, kdf };
+
+  const secretKeyBytes = generateSecretKeyBytes();
+  const recoveryCodeBytes = generateSecretKeyBytes();
+  const vekBytes = generateVaultKeyBytes();
+
+  try {
+    const masterKey = await deriveMasterKey(newPassword, kdf, secretKeyBytes);
+    const wrappedKey = await encrypt(masterKey, vekBytes, wrappedKeyAad(header));
+    const vaultKey = await importAesKey(vekBytes);
+
+    const data: VaultData = { ...current.data, updatedAt: now() };
+    const payload = await encrypt(
+      vaultKey,
+      utf8ToBytes(JSON.stringify(data)),
+      payloadAad({ vaultId: file.vaultId, formatVersion }),
+    );
+    const recovery = await wrapForRecovery(vekBytes, recoveryCodeBytes, header, options.kdfPreset);
+
+    return {
+      file: { ...file, formatVersion, kdf, wrappedKey, payload, updatedAt: data.updatedAt, ...recovery },
+      session: {
+        vaultId: file.vaultId,
+        key: vaultKey,
+        data,
+        unlockedAt: Date.now(),
+        foreignSchemaVersion: current.foreignSchemaVersion,
+      },
+      kit: {
+        secretKey: formatSecret('secret-key', secretKeyBytes),
+        recoveryCode: formatSecret('recovery-code', recoveryCodeBytes),
+      },
+    };
+  } finally {
+    zeroize(vekBytes, secretKeyBytes, recoveryCodeBytes);
   }
 }
 

@@ -33,8 +33,28 @@ export const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024;
 /** Total attachment payload across the whole vault. */
 export const MAX_ATTACHMENTS_VAULT_BYTES = 5 * 1024 * 1024;
 
-/** Current version of the on-disk envelope. Bump when `VaultFile` changes shape. */
-export const FORMAT_VERSION = 1;
+/**
+ * Highest envelope version this build can *read*.
+ *
+ *  1 — master password alone.
+ *  2 — master password + a device-held Secret Key, with an optional Recovery Kit.
+ */
+export const FORMAT_VERSION = 2;
+
+/**
+ * Envelope version `createVault` writes by default.
+ *
+ * Deliberately trailing `FORMAT_VERSION`. A format-2 vault is unopenable without
+ * the Secret Key, so minting one from a surface that has nowhere to store that key
+ * and no UI to show the Recovery Kit would lock the user out of the vault they just
+ * created — the exact failure this project treats as unacceptable. Each surface
+ * opts in explicitly via `CreateVaultOptions.formatVersion`, and this default flips
+ * to 2 once all of them do.
+ */
+export const DEFAULT_NEW_VAULT_FORMAT_VERSION = 1;
+
+/** Envelope versions that bind derivation to a Secret Key. */
+export const SECRET_KEY_FORMAT_VERSION = 2;
 
 /** Magic string identifying a Keyhole vault envelope. */
 export const VAULT_FORMAT_ID = 'keyhole.vault';
@@ -239,6 +259,28 @@ export interface VaultFile {
   wrappedKey: EncryptedBlob;
   /** `VaultData` as JSON, encrypted with the vault encryption key. */
   payload: EncryptedBlob;
+  /**
+   * KDF parameters for the Recovery Code. Format 2+, present iff a Recovery Kit
+   * has been issued. Separate salt from `kdf` so the two derivations are unrelated.
+   */
+  // `| undefined` is load-bearing under `exactOptionalPropertyTypes`: these values
+  // arrive from `parseVaultFile`, and zod's `.optional()` infers `T | undefined`
+  // rather than a purely absent property. Without it every caller that round-trips a
+  // parsed envelope back into a `VaultFile` fails to typecheck.
+  recoveryKdf?: KdfParams | undefined;
+  /**
+   * The *same* vault encryption key, wrapped a second time under the Recovery Code.
+   * Format 2+, paired with `recoveryKdf`.
+   *
+   * This is what makes "no recovery, no backdoor" survivable: it is a second door
+   * to the same key, and the only thing that opens it is a code that exists solely
+   * on paper in the user's possession. No server holds it, no third party is
+   * trusted, and Keyhole itself cannot use it without being handed the printout.
+   *
+   * CRITICAL INVARIANT: it wraps the VEK, so anything that rotates the VEK must
+   * re-wrap or clear it. See `changeMasterPassword`.
+   */
+  recoveryWrappedKey?: EncryptedBlob | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -116,7 +116,8 @@ public func createVault(
 
     let vaultId = KeyholeCrypto.randomUuid()
     let kdf = KeyholeCrypto.defaultKdfParams(preset: options.kdfPreset)
-    let header = KeyholeCrypto.VaultHeader(vaultId: vaultId, formatVersion: FORMAT_VERSION, kdf: kdf)
+    let formatVersion = DEFAULT_NEW_VAULT_FORMAT_VERSION
+    let header = KeyholeCrypto.VaultHeader(vaultId: vaultId, formatVersion: formatVersion, kdf: kdf)
 
     let masterKey = try KeyholeCrypto.deriveMasterKey(masterPassword: masterPassword, params: kdf)
     var vekBytes = KeyholeCrypto.generateVaultKeyBytes()
@@ -134,13 +135,13 @@ public func createVault(
     let payload = try KeyholeCrypto.encrypt(
         key: vaultKey,
         plaintext: EncodingUtil.utf8ToBytes(payloadJSON),
-        aad: KeyholeCrypto.payloadAad(vaultId: vaultId, formatVersion: FORMAT_VERSION)
+        aad: KeyholeCrypto.payloadAad(vaultId: vaultId, formatVersion: formatVersion)
     )
 
     let timestamp = nowISO()
     let file = VaultFile(
         format: VAULT_FORMAT_ID,
-        formatVersion: FORMAT_VERSION,
+        formatVersion: formatVersion,
         vaultId: vaultId,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -157,7 +158,141 @@ public func createVault(
     return (file, session)
 }
 
-public func unlockVault(file input: Any, masterPassword: String) throws -> VaultSession {
+/// The two halves of a printed Recovery Kit.
+///
+/// Returned exactly once, at the moment they are minted, and never recoverable from
+/// the envelope afterwards. A caller that drops this has thrown away the user's only
+/// recovery path — surfaces must render it before persisting anything.
+public struct RecoveryKit: Sendable, Equatable {
+    /// Formatted Secret Key. Stored on each device *and* printed.
+    public let secretKey: String
+    /// Formatted Recovery Code. Printed only — Keyhole never stores this anywhere.
+    public let recoveryCode: String
+
+    public init(secretKey: String, recoveryCode: String) {
+        self.secretKey = secretKey
+        self.recoveryCode = recoveryCode
+    }
+}
+
+/// True when this envelope cannot be unlocked without a Secret Key.
+public func vaultRequiresSecretKey(_ file: VaultFile) -> Bool {
+    file.formatVersion >= SECRET_KEY_FORMAT_VERSION
+}
+
+/// True when a Recovery Kit was issued for this envelope and can still open it.
+public func vaultHasRecoveryKit(_ file: VaultFile) -> Bool {
+    file.recoveryWrappedKey != nil
+}
+
+/// Wrap the VEK a second time under a Recovery Code. See the TypeScript original for
+/// why Argon2id is used over a uniformly random 128-bit code.
+private func wrapForRecovery(
+    vekBytes: [UInt8],
+    recoveryCodeBytes: [UInt8],
+    vaultId: String,
+    formatVersion: Int,
+    kdfPreset: KdfPresetName
+) throws -> (recoveryKdf: KdfParams, recoveryWrappedKey: EncryptedBlob) {
+    let recoveryKdf = KeyholeCrypto.defaultKdfParams(preset: kdfPreset)
+    let recoveryKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: try SecretKeyCoding.formatSecret(.recoveryCode, recoveryCodeBytes),
+        params: recoveryKdf
+    )
+    let blob = try KeyholeCrypto.encrypt(
+        key: recoveryKey,
+        plaintext: vekBytes,
+        aad: KeyholeCrypto.recoveryAad(vaultId: vaultId, formatVersion: formatVersion, recoveryKdf: recoveryKdf)
+    )
+    return (recoveryKdf, blob)
+}
+
+/// Create a format-2 vault: bound to a fresh Secret Key, carrying a Recovery Kit.
+///
+/// Separate from `createVault` rather than a flag on it, so the obligation is in the
+/// type: you cannot mint a Secret Key-bound vault without receiving the kit that is
+/// the only way back into it. (The TypeScript core folds this into `createVault` with
+/// a nullable `kit`; the ports pin the *format*, not the ergonomics.)
+public func createVaultWithRecoveryKit(
+    masterPassword: String,
+    options: CreateVaultOptions = CreateVaultOptions()
+) throws -> (file: VaultFile, session: VaultSession, kit: RecoveryKit) {
+    try assertMasterPasswordAcceptable(masterPassword)
+
+    let vaultId = KeyholeCrypto.randomUuid()
+    let kdf = KeyholeCrypto.defaultKdfParams(preset: options.kdfPreset)
+    let formatVersion = SECRET_KEY_FORMAT_VERSION
+    let header = KeyholeCrypto.VaultHeader(vaultId: vaultId, formatVersion: formatVersion, kdf: kdf)
+
+    var secretKeyBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var recoveryCodeBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var vekBytes = KeyholeCrypto.generateVaultKeyBytes()
+    defer {
+        KeyholeCrypto.zeroize(&secretKeyBytes)
+        KeyholeCrypto.zeroize(&recoveryCodeBytes)
+        KeyholeCrypto.zeroize(&vekBytes)
+    }
+
+    let masterKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: masterPassword,
+        params: kdf,
+        secretKey: secretKeyBytes
+    )
+    let wrappedKey = try KeyholeCrypto.encrypt(
+        key: masterKey,
+        plaintext: vekBytes,
+        aad: KeyholeCrypto.wrappedKeyAad(header)
+    )
+    let vaultKey = try KeyholeCrypto.importAesKey(vekBytes)
+
+    let data = options.initialData ?? emptyVaultData()
+    let payload = try KeyholeCrypto.encrypt(
+        key: vaultKey,
+        plaintext: EncodingUtil.utf8ToBytes(try VaultJSON.stringifyPayload(data)),
+        aad: KeyholeCrypto.payloadAad(vaultId: vaultId, formatVersion: formatVersion)
+    )
+    let recovery = try wrapForRecovery(
+        vekBytes: vekBytes,
+        recoveryCodeBytes: recoveryCodeBytes,
+        vaultId: vaultId,
+        formatVersion: formatVersion,
+        kdfPreset: options.kdfPreset
+    )
+
+    let timestamp = nowISO()
+    let file = VaultFile(
+        format: VAULT_FORMAT_ID,
+        formatVersion: formatVersion,
+        vaultId: vaultId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        kdf: kdf,
+        wrappedKey: wrappedKey,
+        payload: payload,
+        recoveryKdf: recovery.recoveryKdf,
+        recoveryWrappedKey: recovery.recoveryWrappedKey
+    )
+    let session = VaultSession(
+        vaultId: vaultId,
+        key: vaultKey,
+        data: data,
+        unlockedAt: Date().timeIntervalSince1970 * 1000
+    )
+    return (
+        file,
+        session,
+        RecoveryKit(
+            secretKey: try SecretKeyCoding.formatSecret(.secretKey, secretKeyBytes),
+            recoveryCode: try SecretKeyCoding.formatSecret(.recoveryCode, recoveryCodeBytes)
+        )
+    )
+}
+
+public func unlockVault(
+    file input: Any,
+    masterPassword: String,
+    secretKey: String? = nil
+) throws -> VaultSession {
     let parsed = try parseVaultFile(input)
     if parsed.formatVersion > FORMAT_VERSION {
         throw KeyholeError.unsupportedVersion(
@@ -165,12 +300,28 @@ public func unlockVault(file input: Any, masterPassword: String) throws -> Vault
         )
     }
 
+    // Checked before the KDF runs so the two "you gave us the wrong thing" cases are
+    // named, rather than both surfacing 105 ms later as an indistinguishable bad tag.
+    if vaultRequiresSecretKey(parsed) && secretKey == nil {
+        throw KeyholeError.validation("This vault needs its Secret Key as well as the master password.")
+    }
+    if !vaultRequiresSecretKey(parsed) && secretKey != nil {
+        throw KeyholeError.validation("This vault does not use a Secret Key.")
+    }
+
     let header = KeyholeCrypto.VaultHeader(
         vaultId: parsed.vaultId,
         formatVersion: parsed.formatVersion,
         kdf: parsed.kdf
     )
-    let masterKey = try KeyholeCrypto.deriveMasterKey(masterPassword: masterPassword, params: parsed.kdf)
+    var secretKeyBytes = try secretKey.map { try SecretKeyCoding.parseSecret(.secretKey, $0) }
+    defer { if secretKeyBytes != nil { KeyholeCrypto.zeroize(&secretKeyBytes!) } }
+
+    let masterKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: masterPassword,
+        params: parsed.kdf,
+        secretKey: secretKeyBytes
+    )
 
     var vekBytes = try KeyholeCrypto.decrypt(
         key: masterKey,
@@ -255,18 +406,34 @@ public func changeMasterPassword(
     file: VaultFile,
     currentPassword: String,
     newPassword: String,
-    kdfPreset: KdfPresetName = .interactive
-) throws -> (file: VaultFile, session: VaultSession) {
+    kdfPreset: KdfPresetName = .interactive,
+    secretKey: String? = nil
+) throws -> (file: VaultFile, session: VaultSession, kit: RecoveryKit?) {
     try assertMasterPasswordAcceptable(newPassword)
-    let current = try unlockVault(file: file, masterPassword: currentPassword)
+    let current = try unlockVault(file: file, masterPassword: currentPassword, secretKey: secretKey)
 
+    // The envelope version never changes here. It previously hardcoded
+    // FORMAT_VERSION, which was harmless while that was 1 and would now silently
+    // convert a format-1 vault into one demanding a Secret Key nobody has.
+    let formatVersion = file.formatVersion
     let kdf = KeyholeCrypto.defaultKdfParams(preset: kdfPreset)
-    let header = KeyholeCrypto.VaultHeader(vaultId: file.vaultId, formatVersion: FORMAT_VERSION, kdf: kdf)
-    let newMasterKey = try KeyholeCrypto.deriveMasterKey(masterPassword: newPassword, params: kdf)
+    let header = KeyholeCrypto.VaultHeader(vaultId: file.vaultId, formatVersion: formatVersion, kdf: kdf)
 
+    var secretKeyBytes = try secretKey.map { try SecretKeyCoding.parseSecret(.secretKey, $0) }
     var vekBytes = KeyholeCrypto.generateVaultKeyBytes()
-    defer { KeyholeCrypto.zeroize(&vekBytes) }
+    // Reissued rather than preserved — see below.
+    var recoveryCodeBytes = vaultHasRecoveryKit(file) ? SecretKeyCoding.generateSecretKeyBytes() : nil
+    defer {
+        if secretKeyBytes != nil { KeyholeCrypto.zeroize(&secretKeyBytes!) }
+        if recoveryCodeBytes != nil { KeyholeCrypto.zeroize(&recoveryCodeBytes!) }
+        KeyholeCrypto.zeroize(&vekBytes)
+    }
 
+    let newMasterKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: newPassword,
+        params: kdf,
+        secretKey: secretKeyBytes
+    )
     let wrappedKey = try KeyholeCrypto.encrypt(
         key: newMasterKey,
         plaintext: vekBytes,
@@ -279,15 +446,49 @@ public func changeMasterPassword(
     let payload = try KeyholeCrypto.encrypt(
         key: newVaultKey,
         plaintext: EncodingUtil.utf8ToBytes(try VaultJSON.stringifyPayload(data)),
-        aad: KeyholeCrypto.payloadAad(vaultId: file.vaultId, formatVersion: FORMAT_VERSION)
+        aad: KeyholeCrypto.payloadAad(vaultId: file.vaultId, formatVersion: formatVersion)
     )
 
     var next = file
-    next.formatVersion = FORMAT_VERSION
+    next.formatVersion = formatVersion
     next.kdf = kdf
     next.wrappedKey = wrappedKey
     next.payload = payload
     next.updatedAt = data.updatedAt
+
+    /*
+     * THE RECOVERY BLOB MUST NOT SURVIVE THIS UNTOUCHED.
+     *
+     * `var next = file` copies every field, and until format 2 that was exactly
+     * right. It no longer is: `recoveryWrappedKey` wraps the VEK, this function
+     * rotates the VEK, and a carried-over blob therefore decrypts to a key that no
+     * longer opens anything. The vault would keep working perfectly and only the
+     * Recovery Kit would be dead — discovered by someone who has already forgotten
+     * their password and has nothing else left to try.
+     *
+     * The existing code cannot be re-wrapped: it lives only on the user's printout,
+     * by design. So the kit is reissued and the caller is handed a new one it is
+     * obliged to show.
+     */
+    var kit: RecoveryKit?
+    if let recoveryCodeBytes, let secretKeyBytes {
+        let recovery = try wrapForRecovery(
+            vekBytes: vekBytes,
+            recoveryCodeBytes: recoveryCodeBytes,
+            vaultId: file.vaultId,
+            formatVersion: formatVersion,
+            kdfPreset: kdfPreset
+        )
+        next.recoveryKdf = recovery.recoveryKdf
+        next.recoveryWrappedKey = recovery.recoveryWrappedKey
+        kit = RecoveryKit(
+            // Unchanged: the Secret Key is a device factor, independent of the
+            // password. The reprinted kit must still carry it, since the two halves
+            // are useless apart.
+            secretKey: try SecretKeyCoding.formatSecret(.secretKey, secretKeyBytes),
+            recoveryCode: try SecretKeyCoding.formatSecret(.recoveryCode, recoveryCodeBytes)
+        )
+    }
 
     return (
         next,
@@ -295,7 +496,232 @@ public func changeMasterPassword(
             vaultId: file.vaultId,
             key: newVaultKey,
             data: data,
-            unlockedAt: Date().timeIntervalSince1970 * 1000
+            unlockedAt: Date().timeIntervalSince1970 * 1000,
+            foreignSchemaVersion: current.foreignSchemaVersion
+        ),
+        kit
+    )
+}
+
+/// Upgrade a format-1 vault to format 2: bind it to a fresh Secret Key and issue a
+/// Recovery Kit.
+///
+/// The VEK is rotated, not reused: otherwise the pre-upgrade envelope — attackable
+/// with the password alone by anyone who copied it — would still hold a key that
+/// decrypts everything written after the upgrade.
+public func upgradeToV2(
+    file: VaultFile,
+    masterPassword: String,
+    kdfPreset: KdfPresetName = .interactive
+) throws -> (file: VaultFile, session: VaultSession, kit: RecoveryKit) {
+    guard file.formatVersion < SECRET_KEY_FORMAT_VERSION else {
+        throw KeyholeError.validation("This vault already uses a Secret Key.")
+    }
+    let current = try unlockVault(file: file, masterPassword: masterPassword)
+
+    let formatVersion = SECRET_KEY_FORMAT_VERSION
+    let kdf = KeyholeCrypto.defaultKdfParams(preset: kdfPreset)
+    let header = KeyholeCrypto.VaultHeader(vaultId: file.vaultId, formatVersion: formatVersion, kdf: kdf)
+
+    var secretKeyBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var recoveryCodeBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var vekBytes = KeyholeCrypto.generateVaultKeyBytes()
+    defer {
+        KeyholeCrypto.zeroize(&secretKeyBytes)
+        KeyholeCrypto.zeroize(&recoveryCodeBytes)
+        KeyholeCrypto.zeroize(&vekBytes)
+    }
+
+    let masterKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: masterPassword,
+        params: kdf,
+        secretKey: secretKeyBytes
+    )
+    let wrappedKey = try KeyholeCrypto.encrypt(
+        key: masterKey,
+        plaintext: vekBytes,
+        aad: KeyholeCrypto.wrappedKeyAad(header)
+    )
+    let vaultKey = try KeyholeCrypto.importAesKey(vekBytes)
+
+    var data = current.data
+    data.updatedAt = nowISO()
+    let payload = try KeyholeCrypto.encrypt(
+        key: vaultKey,
+        plaintext: EncodingUtil.utf8ToBytes(try VaultJSON.stringifyPayload(data)),
+        aad: KeyholeCrypto.payloadAad(vaultId: file.vaultId, formatVersion: formatVersion)
+    )
+    let recovery = try wrapForRecovery(
+        vekBytes: vekBytes,
+        recoveryCodeBytes: recoveryCodeBytes,
+        vaultId: file.vaultId,
+        formatVersion: formatVersion,
+        kdfPreset: kdfPreset
+    )
+
+    var next = file
+    next.formatVersion = formatVersion
+    next.kdf = kdf
+    next.wrappedKey = wrappedKey
+    next.payload = payload
+    next.updatedAt = data.updatedAt
+    next.recoveryKdf = recovery.recoveryKdf
+    next.recoveryWrappedKey = recovery.recoveryWrappedKey
+
+    return (
+        next,
+        VaultSession(
+            vaultId: file.vaultId,
+            key: vaultKey,
+            data: data,
+            unlockedAt: Date().timeIntervalSince1970 * 1000,
+            foreignSchemaVersion: current.foreignSchemaVersion
+        ),
+        RecoveryKit(
+            secretKey: try SecretKeyCoding.formatSecret(.secretKey, secretKeyBytes),
+            recoveryCode: try SecretKeyCoding.formatSecret(.recoveryCode, recoveryCodeBytes)
+        )
+    )
+}
+
+/// Open a vault with the Recovery Code alone — no master password, no Secret Key.
+///
+/// Read access only. Note what this implies, and say it plainly wherever a kit is
+/// printed: the Recovery Code is on its own equivalent to the vault. The printout is
+/// not a hint or a backup password — it is the vault, on paper.
+public func unlockWithRecoveryCode(file input: Any, recoveryCode: String) throws -> VaultSession {
+    let parsed = try parseVaultFile(input)
+    if parsed.formatVersion > FORMAT_VERSION {
+        throw KeyholeError.unsupportedVersion(
+            "This vault was written by a newer version of Keyhole (format \(parsed.formatVersion)). Please update."
+        )
+    }
+    guard let recoveryKdf = parsed.recoveryKdf, let recoveryWrappedKey = parsed.recoveryWrappedKey else {
+        throw KeyholeError.validation("No Recovery Kit was issued for this vault.")
+    }
+
+    var codeBytes = try SecretKeyCoding.parseSecret(.recoveryCode, recoveryCode)
+    defer { KeyholeCrypto.zeroize(&codeBytes) }
+
+    let recoveryKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: try SecretKeyCoding.formatSecret(.recoveryCode, codeBytes),
+        params: recoveryKdf
+    )
+    var vekBytes = try KeyholeCrypto.decrypt(
+        key: recoveryKey,
+        blob: recoveryWrappedKey,
+        aad: KeyholeCrypto.recoveryAad(
+            vaultId: parsed.vaultId,
+            formatVersion: parsed.formatVersion,
+            recoveryKdf: recoveryKdf
+        )
+    )
+    let vaultKey = try KeyholeCrypto.importAesKey(vekBytes)
+    KeyholeCrypto.zeroize(&vekBytes)
+
+    var plaintext = try KeyholeCrypto.decrypt(
+        key: vaultKey,
+        blob: parsed.payload,
+        aad: KeyholeCrypto.payloadAad(vaultId: parsed.vaultId, formatVersion: parsed.formatVersion)
+    )
+    defer { KeyholeCrypto.zeroize(&plaintext) }
+
+    let data: VaultData
+    do {
+        data = try parseVaultData(EncodingUtil.bytesToUtf8(plaintext))
+    } catch {
+        if error is DecodingError {
+            throw KeyholeError.vaultFormat("Vault payload is not valid JSON.")
+        }
+        throw error
+    }
+
+    return VaultSession(
+        vaultId: parsed.vaultId,
+        key: vaultKey,
+        data: try migrateVaultData(data),
+        unlockedAt: Date().timeIntervalSince1970 * 1000,
+        foreignSchemaVersion: foreignSchemaVersion(data)
+    )
+}
+
+/// The full recovery flow: open with the Recovery Code, set a new master password,
+/// and issue a replacement kit.
+///
+/// A fresh Secret Key is minted rather than the old one carried across. The user is
+/// re-establishing this vault everywhere anyway, and requiring the old Secret Key
+/// would mean asking for a second thing from someone who has just proved they lost
+/// track of the first.
+public func recoverWithKit(
+    file: VaultFile,
+    recoveryCode: String,
+    newPassword: String,
+    kdfPreset: KdfPresetName = .interactive
+) throws -> (file: VaultFile, session: VaultSession, kit: RecoveryKit) {
+    try assertMasterPasswordAcceptable(newPassword)
+    let current = try unlockWithRecoveryCode(file: file, recoveryCode: recoveryCode)
+
+    let formatVersion = max(file.formatVersion, SECRET_KEY_FORMAT_VERSION)
+    let kdf = KeyholeCrypto.defaultKdfParams(preset: kdfPreset)
+    let header = KeyholeCrypto.VaultHeader(vaultId: file.vaultId, formatVersion: formatVersion, kdf: kdf)
+
+    var secretKeyBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var recoveryCodeBytes = SecretKeyCoding.generateSecretKeyBytes()
+    var vekBytes = KeyholeCrypto.generateVaultKeyBytes()
+    defer {
+        KeyholeCrypto.zeroize(&secretKeyBytes)
+        KeyholeCrypto.zeroize(&recoveryCodeBytes)
+        KeyholeCrypto.zeroize(&vekBytes)
+    }
+
+    let masterKey = try KeyholeCrypto.deriveMasterKey(
+        masterPassword: newPassword,
+        params: kdf,
+        secretKey: secretKeyBytes
+    )
+    let wrappedKey = try KeyholeCrypto.encrypt(
+        key: masterKey,
+        plaintext: vekBytes,
+        aad: KeyholeCrypto.wrappedKeyAad(header)
+    )
+    let vaultKey = try KeyholeCrypto.importAesKey(vekBytes)
+
+    var data = current.data
+    data.updatedAt = nowISO()
+    let payload = try KeyholeCrypto.encrypt(
+        key: vaultKey,
+        plaintext: EncodingUtil.utf8ToBytes(try VaultJSON.stringifyPayload(data)),
+        aad: KeyholeCrypto.payloadAad(vaultId: file.vaultId, formatVersion: formatVersion)
+    )
+    let recovery = try wrapForRecovery(
+        vekBytes: vekBytes,
+        recoveryCodeBytes: recoveryCodeBytes,
+        vaultId: file.vaultId,
+        formatVersion: formatVersion,
+        kdfPreset: kdfPreset
+    )
+
+    var next = file
+    next.formatVersion = formatVersion
+    next.kdf = kdf
+    next.wrappedKey = wrappedKey
+    next.payload = payload
+    next.updatedAt = data.updatedAt
+    next.recoveryKdf = recovery.recoveryKdf
+    next.recoveryWrappedKey = recovery.recoveryWrappedKey
+
+    return (
+        next,
+        VaultSession(
+            vaultId: file.vaultId,
+            key: vaultKey,
+            data: data,
+            unlockedAt: Date().timeIntervalSince1970 * 1000,
+            foreignSchemaVersion: current.foreignSchemaVersion
+        ),
+        RecoveryKit(
+            secretKey: try SecretKeyCoding.formatSecret(.secretKey, secretKeyBytes),
+            recoveryCode: try SecretKeyCoding.formatSecret(.recoveryCode, recoveryCodeBytes)
         )
     )
 }

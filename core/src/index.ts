@@ -9,6 +9,7 @@ export * from './types.ts';
 export * from './errors.ts';
 export * from './encoding.ts';
 export * from './crypto.ts';
+export * from './secret-key.ts';
 export * from './password-gen.ts';
 export * from './wordlist.ts';
 export * from './public-suffix.ts';

@@ -103,6 +103,33 @@ enum Validation {
         try validateKdf(file.kdf)
         try validateBlob(file.wrappedKey)
         try validateBlob(file.payload)
+        try assertEnvelopeShape(file)
+    }
+
+    /// Cross-field envelope rules, mirroring `assertEnvelopeShape` in the TypeScript
+    /// core.
+    ///
+    /// Runs on parse so every reader gets them: a half-written Recovery Kit must be
+    /// caught here rather than surfacing later as an unexplained decryption failure
+    /// during recovery, which is the worst possible moment to discover it.
+    public static func assertEnvelopeShape(_ file: VaultFile) throws {
+        let hasKdf = file.recoveryKdf != nil
+        let hasBlob = file.recoveryWrappedKey != nil
+
+        guard hasKdf == hasBlob else {
+            throw KeyholeError.vaultFormat(
+                "Vault has an incomplete Recovery Kit: recoveryKdf and recoveryWrappedKey must both be present or both absent."
+            )
+        }
+        if file.formatVersion < 2 && hasKdf {
+            throw KeyholeError.vaultFormat("A format-\(file.formatVersion) vault cannot carry a Recovery Kit.")
+        }
+        if let recoveryKdf = file.recoveryKdf {
+            try validateKdf(recoveryKdf)
+        }
+        if let recoveryWrappedKey = file.recoveryWrappedKey {
+            try validateBlob(recoveryWrappedKey)
+        }
     }
 
     private static func validateKdf(_ kdf: KdfParams) throws {
