@@ -18,6 +18,7 @@ When the mark changes, also update:
 3. `server/src/status-page.ts`
 4. Extension icons via `npm run icons -w extension`
 5. Installed-app icons via `npm run icons -w @keyhole/app`
+6. iOS app icon + in-app mark via `node ios/KeyholeApp/scripts/render-ios-icons.mjs`
 
 The two icon scripts are independent on purpose. The extension's rasterises this
 SVG with `sharp`; the app's redraws the same geometry from scratch in

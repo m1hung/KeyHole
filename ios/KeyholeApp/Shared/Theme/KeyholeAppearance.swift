@@ -51,11 +51,16 @@ enum KeyholeAppearance {
 
 extension View {
     /// Shared Form chrome: cool slate canvas, no system grouped grey.
-    func keyholeFormChrome() -> some View {
+    /// Inline titles avoid large-title rubber-banding that hides the title
+    /// and leaves empty space above the form.
+    func keyholeFormChrome(titleDisplayMode: NavigationBarItem.TitleDisplayMode = .inline) -> some View {
         self
             .scrollContentBackground(.hidden)
             .background(KeyholeColors.bg)
             .tint(KeyholeColors.accent)
+            .navigationBarTitleDisplayMode(titleDisplayMode)
+            .toolbarBackground(KeyholeColors.surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
     }
 
     func keyholeListRowSurface() -> some View {

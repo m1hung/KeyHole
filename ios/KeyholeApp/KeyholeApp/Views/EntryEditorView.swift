@@ -207,6 +207,40 @@ struct EntryEditorView: View {
                 }
                 .listRowBackground(KeyholeColors.surface)
 
+                if let entry, !entry.passkeys.isEmpty {
+                    Section {
+                        Text("Sign in with Safari or AutoFill. Remove here if you no longer need one.")
+                            .font(KeyholeFonts.meta)
+                            .foregroundStyle(KeyholeColors.textDim)
+                        ForEach(entry.passkeys) { pk in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(pk.userDisplayName.isEmpty
+                                     ? (pk.userName.isEmpty ? pk.relyingPartyId : pk.userName)
+                                     : pk.userDisplayName)
+                                    .font(KeyholeFonts.bodySemibold)
+                                    .foregroundStyle(KeyholeColors.text)
+                                Text(pk.relyingPartyId)
+                                    .font(KeyholeFonts.meta)
+                                    .foregroundStyle(KeyholeColors.textDim)
+                                Button("Remove passkey", role: .destructive) {
+                                    Task {
+                                        await session.mutate { data in
+                                            try removePasskey(data: data, entryId: entry.id, passkeyId: pk.id)
+                                        }
+                                        onDone()
+                                        dismiss()
+                                    }
+                                }
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.danger)
+                            }
+                        }
+                    } header: {
+                        KeyholeFieldLabel(text: "Passkeys")
+                    }
+                    .listRowBackground(KeyholeColors.surface)
+                }
+
                 if entry.map({ !$0.history.isEmpty }) == true {
                     Section {
                         Text("Older passwords are saved when you change this one.")

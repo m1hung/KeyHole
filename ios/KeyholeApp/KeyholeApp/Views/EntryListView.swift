@@ -5,6 +5,7 @@ enum VaultListFilter: Equatable {
     case all
     case logins
     case notes
+    case passkeys
     case trash
     case folder(String)
 }
@@ -42,6 +43,8 @@ struct EntryListView: View {
             base = liveEntries(data).filter { $0.kind == .login }
         case .notes:
             base = liveEntries(data).filter { $0.kind == .note }
+        case .passkeys:
+            base = liveEntries(data).filter { !$0.passkeys.isEmpty }
         case .folder(let id):
             base = liveEntries(data).filter { $0.folderId == id }
         }
@@ -137,6 +140,12 @@ struct EntryListView: View {
                 KeyholeFilterChip(title: "Notes", icon: .secureNote, active: filter == .notes) {
                     filter = .notes
                     session.registerActivity()
+                }
+                if let data, liveEntries(data).contains(where: { !$0.passkeys.isEmpty }) {
+                    KeyholeFilterChip(title: "Passkeys", icon: .key, active: filter == .passkeys) {
+                        filter = .passkeys
+                        session.registerActivity()
+                    }
                 }
                 if !trashed.isEmpty {
                     KeyholeFilterChip(
@@ -280,10 +289,23 @@ struct EntryListView: View {
                     Text("Note")
                         .font(KeyholeFonts.meta)
                         .foregroundStyle(KeyholeColors.textDim)
+                } else if !entry.passkeys.isEmpty, entry.username.isEmpty {
+                    Text(entry.passkeys.first?.relyingPartyId ?? "Passkey")
+                        .font(KeyholeFonts.meta)
+                        .foregroundStyle(KeyholeColors.textDim)
+                        .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
-            if !entry.tags.isEmpty {
+            if !entry.passkeys.isEmpty {
+                Text(entry.passkeys.count == 1 ? "passkey" : "\(entry.passkeys.count) passkeys")
+                    .font(KeyholeFonts.caption)
+                    .foregroundStyle(KeyholeColors.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(KeyholeColors.accentSoft)
+                    .clipShape(Capsule())
+            } else if !entry.tags.isEmpty {
                 Text(entry.tags.prefix(2).joined(separator: ", "))
                     .font(KeyholeFonts.caption)
                     .foregroundStyle(KeyholeColors.accent)
@@ -329,6 +351,7 @@ struct EntryListView: View {
         switch filter {
         case .trash: return "Trash is empty"
         case .folder: return "This folder is empty"
+        case .passkeys: return "No passkeys yet"
         default: return "No entries yet"
         }
     }
@@ -338,6 +361,7 @@ struct EntryListView: View {
         switch filter {
         case .trash: return .trash
         case .folder: return .folder
+        case .passkeys: return .key
         default: return .vault
         }
     }
@@ -347,6 +371,7 @@ struct EntryListView: View {
         switch filter {
         case .trash: return "Deleted entries appear here for 30 days."
         case .folder: return "Add an entry and assign it to this folder."
+        case .passkeys: return "Create a passkey in Safari or an app, then choose Keyhole."
         default: return "Tap + to add a login or note."
         }
     }
@@ -548,17 +573,38 @@ struct EntryDetailView: View {
 
                     if !entry.passkeys.isEmpty {
                         Section {
+                            Text("Sign in with Safari or AutoFill. Passkeys stay encrypted in this vault.")
+                                .font(KeyholeFonts.meta)
+                                .foregroundStyle(KeyholeColors.textDim)
                             ForEach(entry.passkeys) { pk in
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text(pk.userName.isEmpty ? pk.relyingPartyId : pk.userName)
-                                        .font(KeyholeFonts.body)
-                                    Text(pk.relyingPartyId)
-                                        .font(KeyholeFonts.meta)
-                                        .foregroundStyle(KeyholeColors.textDim)
-                                    if let last = pk.lastUsedAt {
-                                        Text(KeyholeDateFormat.updatedLabel(last))
-                                            .font(KeyholeFonts.meta)
-                                            .foregroundStyle(KeyholeColors.textDim)
+                                    HStack(alignment: .top, spacing: 10) {
+                                        KeyholeIcon(name: .key, size: 16)
+                                            .foregroundStyle(KeyholeColors.accent)
+                                            .padding(.top, 2)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(pk.userDisplayName.isEmpty
+                                                 ? (pk.userName.isEmpty ? pk.relyingPartyId : pk.userName)
+                                                 : pk.userDisplayName)
+                                                .font(KeyholeFonts.bodySemibold)
+                                                .foregroundStyle(KeyholeColors.text)
+                                            if !pk.userName.isEmpty, pk.userName != pk.userDisplayName {
+                                                Text(pk.userName)
+                                                    .font(KeyholeFonts.meta)
+                                                    .foregroundStyle(KeyholeColors.textDim)
+                                            }
+                                            Text(pk.relyingPartyId)
+                                                .font(KeyholeFonts.meta)
+                                                .foregroundStyle(KeyholeColors.textDim)
+                                            Text("Created \(KeyholeDateFormat.absolute(pk.createdAt))")
+                                                .font(KeyholeFonts.meta)
+                                                .foregroundStyle(KeyholeColors.textDim)
+                                            if let last = pk.lastUsedAt {
+                                                Text("Last used \(KeyholeDateFormat.absolute(last))")
+                                                    .font(KeyholeFonts.meta)
+                                                    .foregroundStyle(KeyholeColors.textDim)
+                                            }
+                                        }
                                     }
                                     Button("Remove passkey", role: .destructive) {
                                         Task {
@@ -568,6 +614,7 @@ struct EntryDetailView: View {
                                         }
                                     }
                                     .font(KeyholeFonts.meta)
+                                    .foregroundStyle(KeyholeColors.danger)
                                 }
                             }
                         } header: {

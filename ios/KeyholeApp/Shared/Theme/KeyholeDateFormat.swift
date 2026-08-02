@@ -46,6 +46,12 @@ enum KeyholeDateFormat {
         "Updated \(relativeOrAbsolute(iso))"
     }
 
+    /// Medium date + short time, e.g. “Jul 31, 2026 at 3:15 PM”.
+    static func absolute(_ iso: String) -> String {
+        guard let date = parseISO(iso) else { return iso }
+        return absolute.string(from: date)
+    }
+
     static func passwordChangedLabel(_ iso: String) -> String {
         guard let date = parseISO(iso) else { return "Password changed \(iso)" }
         return "Password changed \(dayOnly.string(from: date))"
