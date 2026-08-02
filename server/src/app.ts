@@ -11,6 +11,7 @@
  */
 
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { statSync } from 'node:fs';
 import {
   AttemptLimiter,
   decoyKdfParams,
@@ -69,6 +70,20 @@ export interface BuildOptions {
  * as remote, and a header we do not know about would only ever cost a local
  * user their buttons — the failure is in the safe direction.
  */
+/**
+ * Size of the vault database, for the dashboard. Absent rather than wrong when
+ * it cannot be read — an in-memory store has no file, and a stat failure is not
+ * worth failing a page render over.
+ */
+function databaseBytes(path: string): number | undefined {
+  if (path === ':memory:') return undefined;
+  try {
+    return statSync(path).size;
+  } catch {
+    return undefined;
+  }
+}
+
 function isDirectLoopback(request: FastifyRequest): boolean {
   const forwardingHeaders = [
     'x-forwarded-for',
@@ -209,7 +224,7 @@ export function buildApp({
     // a tailnet viewer gets a page with no controls and no credential to drive
     // them with. Their browser could not reach the control port regardless —
     // 127.0.0.1 there is their own machine — but the token should not travel.
-    const local = controlToken !== undefined && isDirectLoopback(request);
+    const local = isDirectLoopback(request);
     const html = renderStatusPage({
       port: config.port,
       accounts: db.accountCount(),
@@ -217,7 +232,26 @@ export function buildApp({
       // Show the address this request arrived on, so a page opened from another
       // device on the LAN does not tell the reader to use 127.0.0.1.
       origin: host ? `${request.protocol}://${host}` : undefined,
-      control: local ? { token: controlToken, port: config.controlPort } : undefined,
+      control:
+        controlToken !== undefined && local
+          ? {
+              token: controlToken,
+              port: config.controlPort,
+              allowRegistration: config.allowRegistration,
+            }
+          : undefined,
+      uptimeSeconds: Math.floor(process.uptime()),
+      machine: local
+        ? {
+            pid: process.pid,
+            databasePath: config.databasePath,
+            databaseBytes: databaseBytes(config.databasePath),
+          }
+        : undefined,
+      // Same gate as `machine`, deliberately the same ternary: account ids are
+      // the one piece of user-identifying data this server holds, and there
+      // should be exactly one decision about who sees them.
+      roster: local ? db.list(50) : undefined,
     });
     return reply.type('text/html; charset=utf-8').send(html);
   });

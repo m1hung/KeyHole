@@ -97,10 +97,13 @@ account on your machine.
 
 ## Control plane
 
-Off unless `KEYHOLE_CONTROL=true`. When on, a second listener offers exactly
-two actions — stop and restart — so the dashboard can drive the server without
-a terminal. There is no `start`: if the process is not running, nothing is here
-to answer.
+Off unless `KEYHOLE_CONTROL=true`. When on, a second listener carries the
+actions that affect the server itself — stop, restart, open/close registration,
+and download a backup — so the dashboard can drive it without a terminal. There
+is no `start`: if the process is not running, nothing is here to answer.
+
+No new environment variable is introduced for any of these. `KEYHOLE_CONTROL`
+turns the whole listener on or off, and that is the only switch.
 
 It is a separate listener rather than two more routes because the API is a blob
 store that cannot act on the machine, and this can. That difference earns it
@@ -117,8 +120,16 @@ three properties the API does not need:
   page on any other site cannot drive it through a browser running here.
 
 The dashboard renders the buttons only for a direct loopback request with no
-forwarding headers. Viewed through `tailscale serve` the page has no controls
-and no token in its source.
+forwarding headers. Viewed through `tailscale serve` the page has no controls,
+no account roster, no host details and no token in its source.
+
+Closing registration from the dashboard is remembered in `runtime.json`, written
+beside the database at mode `0644` — it holds no secret, unlike `control-token`.
+At boot the **restrictive** value wins: `KEYHOLE_ALLOW_REGISTRATION=false` can
+never be overridden into openness by that file, but a close made in the UI does
+survive a restart. While the process runs the toggle is authoritative in both
+directions. A corrupt `runtime.json` is ignored with a warning rather than
+treated as "closed", so a bad file can never lock you out of your own server.
 
 Under systemd, restart exits `75`; map it with `RestartForceExitStatus=75` and
 `SuccessExitStatus=75` so the unit comes back without recording a crash. Stop

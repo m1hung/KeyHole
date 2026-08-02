@@ -463,7 +463,8 @@ either way, since the desktop app's `app://` origin is a secure context and will
 block a plain-`http://` request whatever the server permits.
 
 Registration is open by default so a fresh deploy is usable. On an
-internet-facing host, close it the moment your devices are enrolled:
+internet-facing host, close it the moment your devices are enrolled — a click on
+the dashboard's **Close registration** button, or, without the control plane:
 
 ```sh
 KEYHOLE_ALLOW_REGISTRATION=false docker compose -f server/docker-compose.yml up -d

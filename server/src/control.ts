@@ -1,5 +1,21 @@
 /**
- * Control plane — stop and restart, and nothing else.
+ * Control plane — the things that act on the server rather than on a vault.
+ *
+ * Stop, restart, open or close registration, and download a snapshot of the
+ * database. Deliberately not a general admin API: the roster the dashboard
+ * shows is *not* here, because it is a read of derived facts rather than a
+ * capability, and putting it here would mean nobody could see it without first
+ * enabling a kill switch (KEYHOLE_CONTROL defaults to false).
+ *
+ * The line is what each route hands the caller:
+ *
+ *  - **Mutations** belong here. Registration is the setting DEPLOY.md calls the
+ *    most important one on an internet-facing host.
+ *  - **Bulk exports of the datastore** belong here too, even though a backup is
+ *    a read. A file containing every verifier hash and every stored envelope is
+ *    a capability, not a disclosure.
+ *  - **Derived facts** — account ids, uptime, database size — go on the status
+ *    page behind its loopback check, not here.
  *
  * This is a second listener, separate from the API, and the separation is the
  * point. The API is a blob store: the worst a caller can do is store or read
@@ -18,13 +34,18 @@
  *
  * There is deliberately no `start`: if the process is not running, nothing is
  * here to answer. Starting is the launcher's job, or systemd's.
+ *
+ * No new environment variable gates any of this — `KEYHOLE_CONTROL` turns the
+ * whole listener on or off, and always did.
  */
 
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { chmodSync, mkdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ServerConfig } from './config.ts';
+import type { Store } from './db.ts';
 
 /**
  * Exit code meaning "bring me back". The unit file maps it with
@@ -76,6 +97,17 @@ export interface ControlOptions {
   /** Called after the response has flushed. */
   onStop: () => void;
   onRestart: () => void;
+  /**
+   * Flip registration. Returns the value now in force and whether it was
+   * persisted — a read-only volume still permits the change for this process,
+   * and the caller has to be able to say so.
+   *
+   * Injected rather than done here so this module keeps knowing nothing about
+   * the filesystem, the same way it delegates process control.
+   */
+  setRegistration: (allow: boolean) => { allowRegistration: boolean; persisted: boolean };
+  /** The same Store the API is using — a second one would be a second connection. */
+  store: Store;
   logger?: boolean;
   /** Injected in tests so assertions do not depend on a real clock. */
   now?: () => number;
@@ -86,6 +118,8 @@ export function buildControlApp({
   token,
   onStop,
   onRestart,
+  setRegistration,
+  store,
   logger = false,
   now = () => Date.now(),
 }: ControlOptions): FastifyInstance {
@@ -134,6 +168,60 @@ export function buildControlApp({
     allowRegistration: config.allowRegistration,
     databasePath: config.databasePath,
   }));
+
+  /**
+   * A consistent snapshot of the vault database, as a download.
+   *
+   * On the control plane despite being a read: the file contains every
+   * account's verifier hash and every stored envelope. That is a capability,
+   * not a disclosure, and it belongs behind the same token as stop and restart.
+   */
+  app.get('/control/v1/backup', async (_request, reply) => {
+    const dest = join(tmpdir(), `keyhole-backup-${randomUUID()}.sqlite`);
+
+    // A truncated backup is worse than a failed one, because it looks like a
+    // backup. Refuse up front rather than discovering it mid-write.
+    if (config.databasePath !== ':memory:') {
+      try {
+        const need = statSync(config.databasePath).size * 1.2;
+        const fs = statfsSync(tmpdir());
+        if (fs.bavail * fs.bsize < need) {
+          return reply.code(507).send({ error: 'Not enough free space in the temp directory.' });
+        }
+      } catch {
+        // If we cannot measure, proceed — the finally below still cleans up.
+      }
+    }
+
+    try {
+      store.backupTo(dest);
+      // Read into a Buffer rather than streaming: a stream would move cleanup
+      // into close/error handlers on a path where getting it wrong leaves
+      // copies of the vault database in the temp directory. The cost is holding
+      // the file in memory, which for a personal sync server is megabytes.
+      const bytes = readFileSync(dest);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      return reply
+        .type('application/vnd.sqlite3')
+        .header('Content-Disposition', `attachment; filename="keyhole-backup-${stamp}.sqlite"`)
+        .send(bytes);
+    } finally {
+      rmSync(dest, { force: true });
+    }
+  });
+
+  app.post('/control/v1/registration', async (request, reply) => {
+    const body = request.body as { allow?: unknown } | undefined;
+    // Strictly a boolean. `{"allow": "false"}` is the shape this route would
+    // most plausibly ship broken: a truthy string would open registration while
+    // the caller believed it was closing it.
+    if (typeof body?.allow !== 'boolean') {
+      return reply.code(400).send({ error: 'allow must be a boolean.' });
+    }
+
+    const result = setRegistration(body.allow);
+    return reply.send({ ok: true, ...result });
+  });
 
   app.post('/control/v1/stop', async (_request, reply) => {
     // Reply first: the caller should learn it succeeded, which it cannot do if

@@ -98,7 +98,13 @@ On each device, point the client at `https://sync.example.com`:
 
 On the first device, *Register & upload*. On every device after that, *Sync now*.
 
-Then confirm the server sees exactly the accounts you expect, and nothing else:
+Then confirm the server sees exactly the accounts you expect, and nothing else.
+Open the dashboard **on the host itself** — `http://127.0.0.1:8787` — and read
+the **Accounts** block: one row per enrolled account, with its last sync, vault
+version and size. That block is deliberately absent when the page is viewed
+through a proxy, so it will not appear at `https://sync.example.com`.
+
+From elsewhere, the count alone is still on the page:
 
 ```bash
 curl -s https://sync.example.com/ | grep -A1 Accounts
@@ -107,6 +113,14 @@ curl -s https://sync.example.com/ | grep -A1 Accounts
 ---
 
 ## 3. Close registration — same session
+
+With `KEYHOLE_CONTROL=true`, this is a button. On the host, open
+`http://127.0.0.1:8787` and click **Close registration**. It takes effect on the
+next request — no restart — and is remembered in `runtime.json` beside the
+database, so it survives one. To enroll another device later, click **Open
+registration**, enroll, and close it again.
+
+Otherwise, redeploy with the variable set:
 
 ```bash
 KEYHOLE_DOMAIN=sync.example.com KEYHOLE_ALLOW_REGISTRATION=false \
@@ -117,15 +131,9 @@ Do not leave this for later. Until it is done, anyone who finds the host can
 create an account on it. The window is exactly as long as you make it — and a
 host with a DNS record gets found by scanners in hours, not weeks.
 
-**Then confirm it, do not assume it.** The compose file interpolates this
-variable from your shell, so a typo in the name fails open rather than loudly:
-
-```bash
-KEYHOLE_ALLOW_REGISTRATION=false docker compose -f server/docker-compose.yml config | grep REGISTRATION
-```
-
-and check the running server agrees — the status page's **Registration** row
-should read `Closed`, and a registration attempt should be refused:
+**Then confirm it, do not assume it** — whichever route you took. The status
+page's **Registration** row should read `Closed`, and a registration attempt
+should be refused:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" -X POST https://sync.example.com/api/v1/account -H 'Content-Type: application/json' -d '{}'
@@ -134,8 +142,15 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST https://sync.example.com/api/v1
 `403` means closed. `400` means it is still open and merely rejecting your empty
 body.
 
-To enroll another device afterwards, flip it back to `true`, enroll, and close
-it again.
+If you set the variable through compose, it is worth checking that the shell
+actually interpolated it — a typo in the name fails open rather than loudly:
+
+```bash
+KEYHOLE_ALLOW_REGISTRATION=false docker compose -f server/docker-compose.yml config | grep REGISTRATION
+```
+
+Note the precedence if you use both: at boot the restrictive value wins, so
+`KEYHOLE_ALLOW_REGISTRATION=false` cannot be reopened by a stale `runtime.json`.
 
 ---
 
@@ -147,9 +162,18 @@ state, and losing them means every device falls back to its local vault with no
 common history.
 
 SQLite runs in WAL mode, so copying `keyhole.sqlite` out from under a running
-server can miss committed data. Take a consistent snapshot with SQLite's own
-`VACUUM INTO`, which needs no downtime and no extra tooling — `node:sqlite` is
-built into the runtime the image already has:
+server can miss committed data. A consistent snapshot needs SQLite's own
+`VACUUM INTO`, which requires no downtime and no extra tooling.
+
+With `KEYHOLE_CONTROL=true`, the dashboard does exactly that: open
+`http://127.0.0.1:8787` on the host and click **Download backup**. You get a
+single `.sqlite` file with no `-wal` or `-shm` beside it, which is what the
+restore step below expects. The snapshot blocks the server for as long as it
+takes to write — tens of milliseconds at personal scale, longer on a large
+database.
+
+The same thing by hand, for a host without the control plane or for a scripted
+backup — `node:sqlite` is built into the runtime the image already has:
 
 ```bash
 docker compose -f server/docker-compose.yml exec keyhole-sync node -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync("/data/keyhole.sqlite");db.prepare("VACUUM INTO ?").run("/tmp/keyhole-backup.sqlite");db.close()'

@@ -25,6 +25,24 @@ export interface AccountRow {
   updatedAt: string;
 }
 
+/** One row of the dashboard roster. No credential material, by construction. */
+export interface AccountSummary {
+  accountId: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  /**
+   * Size of the stored envelope in bytes.
+   *
+   * Measured with `length(CAST(envelope AS BLOB))`, not `length(envelope)`:
+   * SQLite's length() over TEXT counts characters, and JSON.stringify does not
+   * escape non-ASCII, so any envelope containing a multi-byte character would
+   * otherwise report short. (octet_length() would say this more clearly but
+   * needs SQLite 3.43+, which the engines floor does not guarantee.)
+   */
+  envelopeBytes: number;
+}
+
 const SCHEMA = `
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
@@ -92,10 +110,55 @@ export class Store {
     };
   }
 
+  /**
+   * Write a consistent snapshot of the whole database to `destination`.
+   *
+   * WAL mode means copying the `.sqlite` file out from under a running server
+   * can miss committed data — `VACUUM INTO` is SQLite's own answer, needs no
+   * downtime, and produces a single file with no `-wal`/`-shm` beside it.
+   *
+   * `node:sqlite` is synchronous, so this blocks the event loop for roughly a
+   * full read-and-write of the database. That is what makes the snapshot
+   * trivially consistent — nothing else in this process can interleave a write
+   * — and also the reason a large database will stall requests while it runs.
+   *
+   * The destination must not already exist; SQLite refuses to overwrite, and
+   * the backup route relies on that rather than checking separately.
+   */
+  backupTo(destination: string): void {
+    this.db.prepare('VACUUM INTO ?').run(destination);
+  }
+
   /** How many accounts are enrolled — for the status page only. */
   accountCount(): number {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM accounts').get() as { n: number };
     return Number(row.n);
+  }
+
+  /**
+   * Enrolled accounts, for the dashboard's roster.
+   *
+   * Deliberately does not select the verifier salt or hash: a list method that
+   * returned them would eventually get rendered by accident. `limit` is not a
+   * pagination story, it is a ceiling — measuring every envelope means reading
+   * every envelope, and they can be 16 MB each.
+   */
+  list(limit = 100): AccountSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT account_id, version, created_at, updated_at,
+                length(CAST(envelope AS BLOB)) AS envelope_bytes
+         FROM accounts ORDER BY created_at ASC LIMIT ?`,
+      )
+      .all(limit) as Record<string, string | number>[];
+
+    return rows.map((row) => ({
+      accountId: String(row['account_id']),
+      version: Number(row['version']),
+      createdAt: String(row['created_at']),
+      updatedAt: String(row['updated_at']),
+      envelopeBytes: Number(row['envelope_bytes']),
+    }));
   }
 
   create(account: Omit<AccountRow, 'version' | 'createdAt' | 'updatedAt'>): AccountRow {

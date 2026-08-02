@@ -351,3 +351,92 @@ describe('live console', () => {
     await logged.close();
   });
 });
+
+describe('Store.list — the dashboard roster', () => {
+  it('is empty for a fresh store', () => {
+    expect(new Store(':memory:').list()).toEqual([]);
+  });
+
+  it('returns accounts oldest first, at version 1', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'alice', authSecret: SECRET, envelope: envelope() },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'bob', authSecret: OTHER_SECRET, envelope: envelope() },
+    });
+
+    const rows = store.list();
+    expect(rows.map((r) => r.accountId)).toEqual(['alice', 'bob']);
+    expect(rows.every((r) => r.version === 1)).toBe(true);
+    expect(Date.parse(rows[0]!.createdAt)).not.toBeNaN();
+  });
+
+  it('honours the limit', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'alice', authSecret: SECRET, envelope: envelope() },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'bob', authSecret: OTHER_SECRET, envelope: envelope() },
+    });
+    expect(store.list(1)).toHaveLength(1);
+  });
+
+  it('tracks version and updatedAt across a write', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/account',
+      payload: { accountId: 'alice', authSecret: SECRET, envelope: envelope() },
+    });
+    const before = store.list()[0]!;
+
+    await app.inject({
+      method: 'PUT',
+      url: '/api/v1/vault',
+      headers: { authorization: basic('alice', SECRET) },
+      payload: { envelope: envelope({ vaultId: '22222222-2222-4222-8222-222222222222' }), expectedVersion: 1 },
+    });
+
+    const after = store.list()[0]!;
+    expect(after.version).toBe(2);
+    expect(Date.parse(after.updatedAt)).toBeGreaterThanOrEqual(Date.parse(before.updatedAt));
+  });
+
+  // The regression that motivated CAST(envelope AS BLOB): SQLite's length()
+  // over TEXT counts characters, and JSON.stringify leaves non-ASCII unescaped,
+  // so a plain length() reports short for any envelope containing one.
+  it('reports envelope size in bytes, not characters', () => {
+    const fresh = new Store(':memory:');
+    const stored = JSON.stringify({ note: 'zażółć gęślą jaźń — 日本語' });
+    fresh.create({
+      accountId: 'multibyte',
+      verifierSalt: 'c2FsdA==',
+      verifierHash: 'aGFzaA==',
+      envelope: stored,
+    });
+
+    const row = fresh.list()[0]!;
+    expect(row.envelopeBytes).toBe(Buffer.byteLength(stored, 'utf8'));
+    expect(row.envelopeBytes).toBeGreaterThan(stored.length);
+    fresh.close();
+  });
+
+  it('does not return verifier material', () => {
+    const fresh = new Store(':memory:');
+    fresh.create({
+      accountId: 'alice',
+      verifierSalt: 'c2FsdA==',
+      verifierHash: 'aGFzaA==',
+      envelope: '{}',
+    });
+    expect(JSON.stringify(fresh.list())).not.toContain('aGFzaA==');
+    fresh.close();
+  });
+});
