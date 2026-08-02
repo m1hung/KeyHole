@@ -1,5 +1,7 @@
 # 🔑 Keyhole
 
+[![CI](https://github.com/m1hung/KeyHole/actions/workflows/ci.yml/badge.svg)](https://github.com/m1hung/KeyHole/actions/workflows/ci.yml)
+
 A local-first, zero-knowledge password manager across surfaces that share one
 vault format (desktop/extension via `@keyhole/core`; iOS via a Swift port):
 
@@ -25,7 +27,7 @@ threat-model row below).
 ## Repository layout
 
 ```
-core/         framework-agnostic crypto + vault (no I/O, 248 tests)
+core/         framework-agnostic crypto + vault (no I/O, 251 tests)
 app/          the UI (Vite + React + TypeScript) — shipped by desktop/, shared with extension/
 desktop/      Electron shell → portable Windows .exe, vault as a real file
 extension/    Chrome MV3 extension (popup, service worker, autofill)
@@ -50,7 +52,7 @@ Requires Node 22+ (developed and tested on Node 24.18.0).
 
 ```sh
 npm install
-npm test                    # 368 tests: 248 core + 73 extension + 47 server
+npm test                    # 412 tests: 251 core + 74 extension + 87 server
 npm run demo                # end-to-end crypto proof, printed to the terminal
 ```
 
@@ -578,7 +580,7 @@ Regenerate the app icons from the brand mark with `npm run icons -w @keyhole/app
 ## Development
 
 ```sh
-npm test                                       # 368 tests across core + extension + server
+npm test                                       # 412 tests across core + extension + server
 npm run typecheck                              # tsc --noEmit, all workspaces
 npm run demo                                   # end-to-end crypto proof
 npm run demo:vault --workspace @keyhole/core   # regenerate examples/
@@ -662,4 +664,5 @@ so does the sync server.
 
 ## License
 
-MIT. See [ARCHITECTURE.md](ARCHITECTURE.md) for data-flow diagrams.
+MIT — see [LICENSE](LICENSE). See [ARCHITECTURE.md](ARCHITECTURE.md) for
+data-flow diagrams, and [SECURITY.md](SECURITY.md) to report a vulnerability.
