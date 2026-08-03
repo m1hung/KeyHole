@@ -29,12 +29,16 @@ import { useVault } from './hooks/useVault.ts';
 import { useClipboard } from './hooks/useClipboard.ts';
 import { UnlockScreen } from './components/UnlockScreen.tsx';
 import { EntryEditor } from './components/EntryEditor.tsx';
-import { GeneratorPanel } from './components/GeneratorPanel.tsx';
 import { SettingsPanel } from './components/SettingsPanel.tsx';
-import { ConfirmDialog, EmptyState, Toast } from './components/common.tsx';
-import { Icon } from './components/Icon.tsx';
+import {
+  ConfirmDialog,
+  EmptyState,
+  GeneratorPanel,
+  Icon,
+  Toast,
+  copy,
+} from '@keyhole/shared';
 import { readLegacyBrowserVault } from './storage.ts';
-import { copy } from './copy.ts';
 
 type View = { kind: 'entry'; id: string } | { kind: 'generator' } | { kind: 'settings' } | { kind: 'none' };
 type ListFilter = 'all' | 'trash' | EntryKind | { folderId: string };

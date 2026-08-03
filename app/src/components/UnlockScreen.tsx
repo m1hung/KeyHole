@@ -7,11 +7,9 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 import { MIN_MASTER_PASSWORD_LENGTH, estimateStrength } from '@keyhole/core';
-import { ConfirmDialog, StrengthMeter } from './common.tsx';
+import { ConfirmDialog, Icon, StrengthMeter, copy } from '@keyhole/shared';
 import { readVaultFromBlob } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
-import { Icon } from './Icon.tsx';
-import { copy } from '../copy.ts';
 
 /** Below this we warn but still allow — the length floor is the hard gate. */
 const RECOMMENDED_BITS = 60;

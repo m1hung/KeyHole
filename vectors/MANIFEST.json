@@ -1,0 +1,23 @@
+{
+  "package": "@keyhole/vectors",
+  "version": "1.0.0",
+  "description": "Sealed vault fixtures for Keyhole TS ↔ Swift format contract tests",
+  "format": {
+    "vaultFormatId": "keyhole.vault",
+    "formatVersion": 1,
+    "schemaVersion": 5
+  },
+  "fixtures": [
+    {
+      "id": "demo-vault",
+      "file": "demo-vault.keyhole.json",
+      "masterPassword": "demo-master-passphrase-2026",
+      "sha256": "d321c529d74845f28f1dabd193017275d81e84cacf30ce82d576f6fecb75777c",
+      "notes": "Fabricated entries on RFC 2606 reserved domains. Published master password — intended to be opened."
+    }
+  ],
+  "consumers": {
+    "ios": "Copy fixtures into Tests/KeyholeCoreTests/Fixtures/ (see scripts/sync-vectors.sh)",
+    "typescript": "examples/demo-vault.keyhole.json is the canonical checked-in copy"
+  }
+}

@@ -1,34 +1,30 @@
 {
-  "name": "keyhole",
+  "name": "keyhole-desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Keyhole - local-first, zero-knowledge password manager (installable standalone app + Chrome MV3 extension)",
+  "description": "Keyhole desktop app (Electron) — also publishes @keyhole/core and @keyhole/shared",
   "license": "MIT",
   "type": "module",
   "workspaces": [
     "core",
+    "shared",
     "app",
-    "desktop",
-    "extension",
-    "server",
-    "server-tray"
+    "desktop"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "npm run test --workspaces --if-present",
+    "build:libs": "npm run build --workspace @keyhole/core && npm run build --workspace @keyhole/shared",
+    "test": "npm run build:libs && npm run test --workspaces --if-present",
     "demo": "npm run demo --workspace @keyhole/core",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspaces --if-present",
-    "//dev:app": "Develops the renderer that the desktop app ships and the extension borrows from. Not a way to serve Keyhole to browsers — there is no installable web build any more.",
-    "dev:app": "npm run dev --workspace @keyhole/app",
-    "desktop": "npm start --workspace @keyhole/desktop",
+    "typecheck": "npm run build:libs && npm run typecheck --workspaces --if-present",
+    "build": "npm run build:libs && npm run build --workspaces --if-present",
+    "dev:app": "npm run build:libs && npm run dev --workspace @keyhole/app",
+    "desktop": "npm run build:libs && npm start --workspace @keyhole/desktop",
     "build:desktop": "npm run build --workspace @keyhole/desktop",
-    "server:tray": "npm start --workspace @keyhole/server-tray",
-    "build:server-tray": "npm run build --workspace @keyhole/server-tray",
-    "dev:server": "KEYHOLE_HOST=127.0.0.1 npm start --workspace @keyhole/server",
-    "build:extension": "npm run build --workspace @keyhole/extension"
+    "pack:vectors": "npm run pack:vectors --workspace @keyhole/core",
+    "publish:libs": "npm run build:libs && npm publish --workspace @keyhole/core && npm publish --workspace @keyhole/shared"
   },
   "devDependencies": {
     "typescript": "5.9.3"

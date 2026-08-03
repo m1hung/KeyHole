@@ -4,7 +4,7 @@
  * Stores only baseUrl and accountId — never the auth secret.
  */
 
-import type { SyncConfig } from './client.ts';
+import type { SyncConfig } from '@keyhole/shared';
 
 const STORAGE_KEY = 'keyhole.sync.v1';
 

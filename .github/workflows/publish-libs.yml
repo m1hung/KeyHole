@@ -1,0 +1,50 @@
+# Publish @keyhole/core and @keyhole/shared on version tags.
+#
+#   git tag v1.0.1 && git push origin v1.0.1
+#
+# Requires repository secret NPM_TOKEN. Vectors are uploaded as a workflow
+# artifact; attach vectors/dist/*.tar.gz to the GitHub Release for keyhole-ios.
+
+name: Publish libs
+
+on:
+  push:
+    tags:
+      - 'core-v*'
+      - 'shared-v*'
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22.x'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+      - run: npm run build:libs
+      - run: npm test
+      - run: npm run pack:vectors
+
+      - name: Publish @keyhole/core
+        if: startsWith(github.ref, 'refs/tags/core-v') || startsWith(github.ref, 'refs/tags/v')
+        run: npm publish --workspace @keyhole/core --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @keyhole/shared
+        if: startsWith(github.ref, 'refs/tags/shared-v') || startsWith(github.ref, 'refs/tags/v')
+        run: npm publish --workspace @keyhole/shared --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Pack vectors for manual release attach
+        run: ls -la vectors/dist/

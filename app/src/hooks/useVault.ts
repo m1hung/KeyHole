@@ -34,7 +34,7 @@ import {
   writeToHandle,
 } from '../storage.ts';
 import { loadSyncConfig } from '../sync/storage.ts';
-import { rotateSyncAuthAfterRekey } from '../sync/runSync.ts';
+import { rotateSyncAuthAfterRekey } from '@keyhole/shared';
 
 export type VaultStatus = 'loading' | 'no-vault' | 'locked' | 'unlocked';
 
@@ -355,8 +355,7 @@ export function useVault(): VaultController {
       const file = fileRef.current;
       if (!session || !file) throw new Error('Unlock the vault before syncing.');
 
-      const { fetchPrelogin } = await import('../sync/client.ts');
-      const { performSync } = await import('../sync/runSync.ts');
+      const { fetchPrelogin, performSync } = await import('@keyhole/shared');
       const { deriveSyncAuthSecret } = await import('@keyhole/core');
 
       const { kdf: accountKdf } = await fetchPrelogin(args.baseUrl, args.accountId);

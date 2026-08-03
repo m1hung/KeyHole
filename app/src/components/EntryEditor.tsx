@@ -25,10 +25,14 @@ import {
   type PasskeyRecord,
   type TotpConfig,
 } from '@keyhole/core';
-import { ConfirmDialog, SecretField, StrengthMeter } from './common.tsx';
-import { GeneratorOptionsForm } from './GeneratorOptionsForm.tsx';
-import { Icon } from './Icon.tsx';
-import { copy } from '../copy.ts';
+import {
+  ConfirmDialog,
+  GeneratorOptionsForm,
+  Icon,
+  SecretField,
+  StrengthMeter,
+  copy,
+} from '@keyhole/shared';
 
 interface EntryEditorProps {
   entry: Entry;

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Keyhole renderer — the UI the desktop app ships and the extension shares",
+  "description": "Keyhole desktop renderer — UI packaged by @keyhole/desktop",
   "//scripts": "No `preview`/`start`: this workspace is not served to browsers as a product. `dev` is for developing the renderer; `build` produces what desktop/scripts/stage.mjs copies into the Electron package.",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@keyhole/core": "*",
+    "@keyhole/shared": "*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

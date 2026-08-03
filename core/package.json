@@ -1,19 +1,33 @@
 {
   "name": "@keyhole/core",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "Framework-agnostic crypto + vault core for Keyhole",
-  "main": "./src/index.ts",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "demo": "node --experimental-strip-types harness/demo.ts",
     "typecheck": "tsc --noEmit",
-    "demo:vault": "node --experimental-strip-types harness/make-demo-vault.ts"
+    "demo:vault": "node --experimental-strip-types harness/make-demo-vault.ts",
+    "pack:vectors": "node --experimental-strip-types harness/pack-vectors.ts"
   },
   "dependencies": {
     "hash-wasm": "4.12.0",

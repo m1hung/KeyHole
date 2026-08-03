@@ -39,7 +39,4 @@ export default defineConfig({
     sourcemap: true,
     emptyOutDir: true,
   },
-  // The core is consumed as TypeScript source from the workspace, so Vite must
-  // transpile it rather than treat it as a pre-built dependency.
-  optimizeDeps: { exclude: ['@keyhole/core'] },
 });

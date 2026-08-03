@@ -1,6 +1,11 @@
 # Keyhole — Architecture
 
-## Module layout
+> **Repository note.** Crypto and the desktop app live in **keyhole-desktop**
+> (this repo). The browser extension, sync server, and iOS app are separate
+> repositories — see [REPOS.md](REPOS.md). `@keyhole/shared` is the published
+> sync client + shared UI formerly imported from `app/src` by the extension.
+
+## Module layout (desktop repo)
 
 ```mermaid
 graph TD
@@ -18,25 +23,21 @@ graph TD
     breach["breach.ts<br/>HIBP k-anonymity (no I/O)"]
   end
 
+  subgraph sharedPkg["@keyhole/shared — published"]
+    syncClient["sync/client · runSync"]
+    sharedUI["Icon · GeneratorPanel · copy · styles"]
+  end
+
   subgraph app["@keyhole/app — the renderer"]
     useVault["useVault.ts<br/>lock state machine"]
     appStorage["storage.ts<br/>backend switch · File System Access"]
     appUI["React UI"]
-    syncClient["sync/client.ts · runSync.ts<br/>shared with the extension"]
   end
 
   subgraph desktop["@keyhole/desktop — Electron"]
     main["main.js<br/>app:// server · atomic vault writes"]
     preload["preload.cjs<br/>7 IPC verbs, no plaintext"]
-    vaultFile[("%APPDATA%\Keyhole\<br/>keyhole-vault.keyhole.json")]
-  end
-
-  subgraph ext["@keyhole/extension — Chrome MV3"]
-    sw["service-worker.ts<br/>SOLE session holder"]
-    popup["popup"]
-    options["options page"]
-    content["content/autofill.ts<br/>dependency-free"]
-    extStorage["storage.ts<br/>chrome.storage.local"]
+    vaultFile[("%APPDATA%\\Keyhole\\<br/>keyhole-vault.keyhole.json")]
   end
 
   vault --> crypto
@@ -44,12 +45,12 @@ graph TD
   vault --> types
   crypto --> types
 
+  syncClient --> vault
+  sharedUI --> gen
   useVault --> vault
   useVault --> appStorage
   appUI --> useVault
-  appUI --> gen
-  appUI --> totp
-  appUI --> syncClient
+  appUI --> sharedPkg
 
   appStorage -.ciphertext only.-> preload
   preload --> main
@@ -58,28 +59,17 @@ graph TD
 
   urlmatch --> psl
 
-  sw --> vault
-  sw --> urlmatch
-  sw --> totp
-  sw --> extStorage
-  sw --> syncClient
-  popup -.messages.-> sw
-  options -.messages.-> sw
-  sw -.one credential.-> content
-
-  style content fill:#3a1d1d,stroke:#c62828
-  style sw fill:#1b3a2a,stroke:#1b7f47
   style main fill:#1b3a2a,stroke:#1b7f47
   style vaultFile fill:#3a1d1d,stroke:#c62828
 ```
 
 Note that `@keyhole/desktop` attaches to `storage.ts` and nothing else. It does not fork the UI, import `core`, or participate in encryption — it swaps one persistence backend for another and serves the same bundle over a secure `app://` origin. That is why the desktop build needs no separate crypto review: the only new trust boundary is the preload bridge, across which nothing but sealed ciphertext ever travels.
 
-`core` is imported by every TypeScript surface and performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the desktop app and the extension, and what makes it exhaustively unit-testable.
+`core` performs no I/O whatsoever — no `fetch`, no storage, no filesystem. That is what lets the same audited code back the desktop app and the extension (via npm), and what makes it exhaustively unit-testable.
 
-`ios/KeyholeCore` is a **Swift port** of `@keyhole/core` (same envelope format, AAD templates, Argon2id params, AES-GCM `ct||tag` layout). It is a separate implementation and therefore a **separate audit surface** — interchange is guaranteed by shared format + vector tests (including the published demo vault), not by sharing object code. The SwiftUI app under `ios/KeyholeApp` owns persistence, session lock state, and optional sync HTTP the same way `app/` does on desktop.
+The **keyhole-ios** repo holds a **Swift port** of `@keyhole/core` (same envelope format, AAD templates, Argon2id params, AES-GCM `ct||tag` layout). It is a separate implementation and therefore a **separate audit surface** — interchange is guaranteed by shared format + vector tests under `vectors/` (including the published demo vault), not by sharing object code.
 
-`@keyhole/app` is a renderer, not a third product. It is what `desktop/` packages, and the extension imports its sync client, `Icon.tsx` and stylesheet directly from source. Keyhole has no installable web build: there is no web manifest and no service worker on this side, so `service-worker.ts` in the extension — the sole holder of the unlocked session — is the only service worker in the repository. Nothing serves the renderer over HTTP except the dev server.
+`@keyhole/app` is a renderer, not a third product. It is what `desktop/` packages. The extension lives in **keyhole-extension** and depends on `@keyhole/core` + `@keyhole/shared`. Keyhole has no installable web build.
 
 ---
 

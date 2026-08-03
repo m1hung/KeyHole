@@ -16,9 +16,16 @@ import {
   type Settings,
   type VaultFile,
 } from '@keyhole/core';
-import { ConfirmDialog, FINDINGS_PAGE, StrengthMeter } from './common.tsx';
-import { Icon } from './Icon.tsx';
-import { copy } from '../copy.ts';
+import {
+  ConfirmDialog,
+  FINDINGS_PAGE,
+  Icon,
+  StrengthMeter,
+  SyncClientError,
+  copy,
+  healthCheck,
+  registerAccount,
+} from '@keyhole/shared';
 import {
   downloadVaultFile,
   forgetStoredHandle,
@@ -33,7 +40,6 @@ import {
   writeToHandle,
 } from '../storage.ts';
 import type { VaultController } from '../hooks/useVault.ts';
-import { healthCheck, registerAccount, SyncClientError } from '../sync/client.ts';
 import { loadSyncConfig, saveSyncConfig } from '../sync/storage.ts';
 
 interface SettingsPanelProps {
@@ -637,7 +643,7 @@ function VaultHealthSection({
     setBreachError(null);
     setBreaches(null);
     try {
-      const { checkPasswordBreachCount } = await import('../breach/check.ts');
+      const { checkPasswordBreachCount } = await import('@keyhole/shared');
       const { liveEntries } = await import('@keyhole/core');
       const findings: { entryId: string; title: string; count: number }[] = [];
       // One range request per unique password — not per entry — so a reused
